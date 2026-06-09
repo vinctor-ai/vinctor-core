@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from secrets import token_urlsafe
+
+from vinctor_core.models import Boundary, BoundaryRegistrationInput
+
+
+@dataclass
+class BoundaryRegistry:
+    _boundaries: dict[str, Boundary] = field(default_factory=dict)
+
+    def add(self, boundary: Boundary) -> Boundary:
+        self._boundaries[boundary.boundary_id] = boundary
+        return boundary
+
+    def get(self, boundary_id: str) -> Boundary | None:
+        return self._boundaries.get(boundary_id)
+
+    def list_for_workspace(self, workspace_id: str) -> list[Boundary]:
+        return [
+            boundary
+            for boundary in self._boundaries.values()
+            if boundary.workspace_id == workspace_id
+        ]
+
+
+def register_boundary(
+    registry: BoundaryRegistry,
+    registration: BoundaryRegistrationInput,
+    *,
+    now: datetime | None = None,
+    boundary_id: str | None = None,
+) -> Boundary:
+    if registration.mode != "fail_closed":
+        raise ValueError("boundary mode must be fail_closed")
+    if registration.status not in {"active", "disabled"}:
+        raise ValueError("boundary status must be active or disabled")
+
+    timestamp = now or datetime.now(UTC)
+    boundary = Boundary(
+        boundary_id=boundary_id or _new_boundary_id(),
+        workspace_id=registration.workspace_id,
+        name=registration.name,
+        runtime=registration.runtime,
+        boundary_type=registration.boundary_type,
+        mode=registration.mode,
+        status=registration.status,
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+    return registry.add(boundary)
+
+
+def _new_boundary_id() -> str:
+    return f"bnd_{token_urlsafe(12)}"
