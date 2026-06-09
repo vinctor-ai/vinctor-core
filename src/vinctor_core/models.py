@@ -32,6 +32,19 @@ class Boundary:
     created_at: datetime
     updated_at: datetime
 
+    def with_status(self, status: BoundaryStatus, *, updated_at: datetime) -> Boundary:
+        return Boundary(
+            boundary_id=self.boundary_id,
+            workspace_id=self.workspace_id,
+            name=self.name,
+            runtime=self.runtime,
+            boundary_type=self.boundary_type,
+            mode=self.mode,
+            status=status,
+            created_at=self.created_at,
+            updated_at=updated_at,
+        )
+
 
 @dataclass(frozen=True)
 class BoundaryRegistrationInput:
@@ -91,3 +104,23 @@ class AuditEvent:
     runtime: str | None
     boundary_type: str | None
     created_at: datetime
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {
+            "event_id": self.event_id,
+            "event_type": self.event_type,
+            "decision": self.decision,
+            "reason": self.reason,
+            "workspace_id": self.workspace_id,
+            "agent_id": self.agent_id,
+            "grant_id": self.grant_id,
+            "grant_ref": self.grant_ref,
+            "action": self.action,
+            "resource": self.resource,
+            "scope_attempted": self.scope_attempted,
+            "scope_matched": self.scope_matched,
+            "boundary_id": self.boundary_id,
+            "runtime": self.runtime,
+            "boundary_type": self.boundary_type,
+            "created_at": self.created_at.isoformat(),
+        }

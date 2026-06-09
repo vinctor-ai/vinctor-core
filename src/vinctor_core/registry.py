@@ -53,5 +53,31 @@ def register_boundary(
     return registry.add(boundary)
 
 
+def get_boundary_for_workspace(
+    registry: BoundaryRegistry,
+    boundary_id: str,
+    workspace_id: str,
+) -> Boundary | None:
+    boundary = registry.get(boundary_id)
+    if boundary is None or boundary.workspace_id != workspace_id:
+        return None
+    return boundary
+
+
+def disable_boundary(
+    registry: BoundaryRegistry,
+    *,
+    boundary_id: str,
+    workspace_id: str,
+    now: datetime | None = None,
+) -> Boundary | None:
+    boundary = get_boundary_for_workspace(registry, boundary_id, workspace_id)
+    if boundary is None:
+        return None
+
+    disabled = boundary.with_status("disabled", updated_at=now or datetime.now(UTC))
+    return registry.add(disabled)
+
+
 def _new_boundary_id() -> str:
     return f"bnd_{token_urlsafe(12)}"

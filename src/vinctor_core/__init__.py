@@ -10,7 +10,12 @@ from vinctor_core.models import (
     EnforceInput,
     Grant,
 )
-from vinctor_core.registry import BoundaryRegistry, register_boundary
+from vinctor_core.registry import (
+    BoundaryRegistry,
+    disable_boundary,
+    get_boundary_for_workspace,
+    register_boundary,
+)
 
 __all__ = [
     "AuditEvent",
@@ -22,6 +27,8 @@ __all__ = [
     "EnforceInput",
     "Grant",
     "build_audit_event",
+    "disable_boundary",
     "evaluate_enforce",
+    "get_boundary_for_workspace",
     "register_boundary",
 ]

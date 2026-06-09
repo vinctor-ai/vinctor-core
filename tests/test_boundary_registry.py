@@ -3,6 +3,8 @@ from datetime import UTC, datetime
 from vinctor_core import (
     BoundaryRegistrationInput,
     BoundaryRegistry,
+    disable_boundary,
+    get_boundary_for_workspace,
     register_boundary,
 )
 
@@ -101,3 +103,73 @@ def test_register_boundary_rejects_non_fail_closed_mode() -> None:
         assert str(exc) == "boundary mode must be fail_closed"
     else:
         raise AssertionError("expected invalid boundary mode to fail")
+
+
+def test_get_boundary_for_workspace_returns_none_for_wrong_workspace() -> None:
+    registry = BoundaryRegistry()
+    boundary = register_boundary(
+        registry,
+        BoundaryRegistrationInput(
+            workspace_id="ws_main",
+            name="claude-code-local",
+            runtime="claude-code",
+            boundary_type="pretooluse",
+        ),
+        boundary_id="bnd_main",
+    )
+
+    assert get_boundary_for_workspace(registry, "bnd_main", "ws_main") == boundary
+    assert get_boundary_for_workspace(registry, "bnd_main", "ws_other") is None
+
+
+def test_disable_boundary_marks_boundary_disabled_and_updates_timestamp() -> None:
+    registry = BoundaryRegistry()
+    created_at = datetime(2026, 6, 10, tzinfo=UTC)
+    disabled_at = datetime(2026, 6, 11, tzinfo=UTC)
+    register_boundary(
+        registry,
+        BoundaryRegistrationInput(
+            workspace_id="ws_main",
+            name="codex-local",
+            runtime="codex",
+            boundary_type="wrapper",
+        ),
+        now=created_at,
+        boundary_id="bnd_disable",
+    )
+
+    disabled = disable_boundary(
+        registry,
+        boundary_id="bnd_disable",
+        workspace_id="ws_main",
+        now=disabled_at,
+    )
+
+    assert disabled is not None
+    assert disabled.status == "disabled"
+    assert disabled.created_at == created_at
+    assert disabled.updated_at == disabled_at
+    assert registry.get("bnd_disable") == disabled
+
+
+def test_disable_boundary_returns_none_for_wrong_workspace() -> None:
+    registry = BoundaryRegistry()
+    register_boundary(
+        registry,
+        BoundaryRegistrationInput(
+            workspace_id="ws_main",
+            name="codex-local",
+            runtime="codex",
+            boundary_type="wrapper",
+        ),
+        boundary_id="bnd_disable",
+    )
+
+    assert (
+        disable_boundary(
+            registry,
+            boundary_id="bnd_disable",
+            workspace_id="ws_other",
+        )
+        is None
+    )

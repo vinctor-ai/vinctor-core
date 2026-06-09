@@ -17,6 +17,9 @@ Phase 4 authorization core vertical slice:
 - Added boundary-aware `evaluate_enforce`.
 - Added deterministic audit event construction.
 - Added behavior tests and an in-process E2E demo.
+- Added GitHub Actions CI for tests, demo, Ruff, and whitespace checks.
+- Added JSON-safe audit event serialization.
+- Added workspace-safe boundary lookup and boundary disable helpers.
 
 ## Next
 
@@ -25,6 +28,8 @@ Phase 4 authorization core vertical slice:
 - Add policy evaluation only after the already-issued grant model is stable.
 - Add stricter scope validation if the next slice needs malformed-scope errors.
 - Add packaging/release automation before publishing.
+- Decide whether boundary names should be unique within a workspace.
+- Decide whether disabled boundaries should support reactivation.
 
 ## Open Questions
 

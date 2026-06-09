@@ -133,6 +133,8 @@ documentation should change together.
 
 ## Testing
 
+Python 3.11 or newer is required.
+
 ```bash
 /opt/homebrew/bin/python3.11 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
@@ -146,6 +148,7 @@ git diff --check
 
 - `README.md` - public overview of this core package
 - `AGENTS.md` - instructions for AI coding agents
+- `.github/workflows/ci.yml` - public CI for tests, demo, lint, and whitespace
 - `docs/next-actions.md` - current work state and next tasks
 - `docs/decisions/` - durable design decisions when needed
 - `src/` - core authorization logic
