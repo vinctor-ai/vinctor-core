@@ -4,7 +4,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from vinctor_core import BoundaryRegistrationInput, Grant, disable_boundary, register_boundary
+from vinctor_core import BoundaryRegistrationInput, Grant, register_boundary
 from vinctor_service import SQLiteV1Service, V1EnforceRequest
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
@@ -87,6 +87,26 @@ def test_sqlite_v1_service_permits_and_records_audit(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_sqlite_v1_service_exposes_audit_events(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.insert_grant(grant())
+
+    permit = service.enforce(request(), now=NOW)
+    deny = service.enforce(
+        request(action="send", resource="email/external"),
+        now=NOW,
+    )
+
+    assert [event.event_id for event in service.audit_events] == [
+        permit.audit_event_id,
+        deny.audit_event_id,
+    ]
+    assert service.get_audit_event(permit.audit_event_id or "") == service.audit_events[0]
+    assert service.get_audit_event("evt_missing") is None
+    conn.close()
+
+
 def test_sqlite_v1_service_preserves_unknown_grant_no_audit(
     tmp_path: Path,
 ) -> None:
@@ -162,8 +182,7 @@ def test_sqlite_v1_service_fails_closed_for_disabled_boundary(
     conn = connect_db(tmp_path)
     service = SQLiteV1Service(conn)
     service.insert_grant(grant())
-    register_boundary(
-        service.boundary_registry,
+    service.register_boundary(
         BoundaryRegistrationInput(
             workspace_id="ws_main",
             name="claude-code-local",
@@ -173,8 +192,7 @@ def test_sqlite_v1_service_fails_closed_for_disabled_boundary(
         now=NOW,
         boundary_id="bnd_main",
     )
-    disable_boundary(
-        service.boundary_registry,
+    service.disable_boundary(
         boundary_id="bnd_main",
         workspace_id="ws_main",
         now=NOW + timedelta(seconds=1),
@@ -186,6 +204,42 @@ def test_sqlite_v1_service_fails_closed_for_disabled_boundary(
     assert response.decision == "deny"
     assert response.error == "boundary_inactive"
     assert audit_count(conn) == 1
+    conn.close()
+
+
+def test_sqlite_v1_service_manages_boundaries(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+
+    boundary = service.register_boundary(
+        BoundaryRegistrationInput(
+            workspace_id="ws_main",
+            name="claude-code-local",
+            runtime="claude-code",
+            boundary_type="pretooluse",
+        ),
+        now=NOW,
+        boundary_id="bnd_main",
+    )
+
+    assert service.list_boundaries("ws_main") == (boundary,)
+    disabled = service.disable_boundary(
+        boundary_id="bnd_main",
+        workspace_id="ws_main",
+        now=NOW + timedelta(seconds=1),
+    )
+    assert disabled is not None
+    assert disabled.status == "disabled"
+
+    enabled = service.enable_boundary(
+        boundary_id="bnd_main",
+        workspace_id="ws_main",
+        now=NOW + timedelta(seconds=2),
+    )
+    assert enabled is not None
+    assert enabled.status == "active"
+    assert service.list_boundaries("ws_main") == (enabled,)
+    assert service.list_boundaries("ws_other") == ()
     conn.close()
 
 

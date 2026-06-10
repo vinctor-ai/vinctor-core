@@ -48,6 +48,8 @@ V1 service contract boundary:
   active/disabled state, and boundary context in audit rows.
 - Added `SQLiteV1Service` to compose SQLite grant lookup, audit writing,
   boundary registry, and v1 enforce behavior for local in-process use.
+- Added small `SQLiteV1Service` helpers for audit lookup and boundary
+  registration/disable/enable/list operations.
 
 ## Next
 
