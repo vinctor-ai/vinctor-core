@@ -35,11 +35,11 @@ def main() -> None:
         thread.start()
         try:
             exports = render_env_exports(handle)
-            assert "export VINCTOR_ENDPOINT=" in exports
-            assert "export VINCTOR_AGENT_KEY=aak_demo" in exports
-            assert "export VINCTOR_GRANT_REF=grt_demo" in exports
-            assert "export VINCTOR_WORKSPACE_KEY=wsk_demo" in exports
-            assert "export VINCTOR_BOUNDARY_ID=" in exports
+            assert 'export VINCTOR_ENDPOINT="' in exports
+            assert 'export VINCTOR_AGENT_KEY="aak_demo"' in exports
+            assert 'export VINCTOR_GRANT_REF="grt_demo"' in exports
+            assert 'export VINCTOR_WORKSPACE_KEY="wsk_demo"' in exports
+            assert 'export VINCTOR_BOUNDARY_ID="' in exports
 
             # This mirrors the HTTP shape a local runtime hook can send after
             # reading VINCTOR_ENDPOINT, VINCTOR_AGENT_KEY, VINCTOR_GRANT_REF,
