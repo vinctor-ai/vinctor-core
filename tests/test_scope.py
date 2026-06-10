@@ -22,7 +22,6 @@ def test_rejects_unknown_or_malformed_action_verbs() -> None:
 
 def test_validates_requested_resources() -> None:
     for resource in (
-        "repo",
         "repo/feature/readme",
         "secret/env",
         "net/external/api.example.com",
@@ -34,6 +33,7 @@ def test_validates_requested_resources() -> None:
 def test_rejects_malformed_requested_resources() -> None:
     for resource in (
         "",
+        "repo",
         "/repo/readme",
         "repo/readme/",
         "repo//readme",
@@ -66,6 +66,7 @@ def test_rejects_malformed_grant_scopes() -> None:
         "write",
         "write:",
         ":repo/readme",
+        "write:repo",
         "write:repo:readme",
         "write:/repo/readme",
         "write:repo/readme/",

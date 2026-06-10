@@ -59,6 +59,8 @@ def _is_valid_resource(resource: str, *, allow_terminal_wildcard: bool) -> bool:
         return False
 
     segments = resource.split("/")
+    if len(segments) < 2:
+        return False
     if any(segment == "" for segment in segments):
         return False
 
