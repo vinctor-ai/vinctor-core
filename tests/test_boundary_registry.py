@@ -4,6 +4,7 @@ from vinctor_core import (
     BoundaryRegistrationInput,
     BoundaryRegistry,
     disable_boundary,
+    enable_boundary,
     get_boundary_for_workspace,
     register_boundary,
 )
@@ -226,6 +227,92 @@ def test_disable_boundary_returns_none_for_wrong_workspace() -> None:
         disable_boundary(
             registry,
             boundary_id="bnd_disable",
+            workspace_id="ws_other",
+        )
+        is None
+    )
+
+
+def test_enable_boundary_reactivates_disabled_boundary_and_updates_timestamp() -> None:
+    registry = BoundaryRegistry()
+    created_at = datetime(2026, 6, 10, tzinfo=UTC)
+    disabled_at = datetime(2026, 6, 11, tzinfo=UTC)
+    enabled_at = datetime(2026, 6, 12, tzinfo=UTC)
+    register_boundary(
+        registry,
+        BoundaryRegistrationInput(
+            workspace_id="ws_main",
+            name="codex-local",
+            runtime="codex",
+            boundary_type="wrapper",
+        ),
+        now=created_at,
+        boundary_id="bnd_enable",
+    )
+    disable_boundary(
+        registry,
+        boundary_id="bnd_enable",
+        workspace_id="ws_main",
+        now=disabled_at,
+    )
+
+    enabled = enable_boundary(
+        registry,
+        boundary_id="bnd_enable",
+        workspace_id="ws_main",
+        now=enabled_at,
+    )
+
+    assert enabled is not None
+    assert enabled.status == "active"
+    assert enabled.created_at == created_at
+    assert enabled.updated_at == enabled_at
+    assert registry.get("bnd_enable") == enabled
+
+
+def test_enable_boundary_returns_active_boundary_without_updating_timestamp() -> None:
+    registry = BoundaryRegistry()
+    created_at = datetime(2026, 6, 10, tzinfo=UTC)
+    boundary = register_boundary(
+        registry,
+        BoundaryRegistrationInput(
+            workspace_id="ws_main",
+            name="codex-local",
+            runtime="codex",
+            boundary_type="wrapper",
+        ),
+        now=created_at,
+        boundary_id="bnd_active",
+    )
+
+    enabled = enable_boundary(
+        registry,
+        boundary_id="bnd_active",
+        workspace_id="ws_main",
+        now=datetime(2026, 6, 12, tzinfo=UTC),
+    )
+
+    assert enabled == boundary
+    assert enabled.updated_at == created_at
+
+
+def test_enable_boundary_returns_none_for_wrong_workspace() -> None:
+    registry = BoundaryRegistry()
+    register_boundary(
+        registry,
+        BoundaryRegistrationInput(
+            workspace_id="ws_main",
+            name="codex-local",
+            runtime="codex",
+            boundary_type="wrapper",
+        ),
+        boundary_id="bnd_enable",
+    )
+
+    assert (
+        enable_boundary(
+            registry,
+            boundary_id="bnd_enable",
             workspace_id="ws_other",
         )
         is None

@@ -81,6 +81,23 @@ def disable_boundary(
     return registry.add(disabled)
 
 
+def enable_boundary(
+    registry: BoundaryRegistry,
+    *,
+    boundary_id: str,
+    workspace_id: str,
+    now: datetime | None = None,
+) -> Boundary | None:
+    boundary = get_boundary_for_workspace(registry, boundary_id, workspace_id)
+    if boundary is None:
+        return None
+    if boundary.status == "active":
+        return boundary
+
+    enabled = boundary.with_status("active", updated_at=now or datetime.now(UTC))
+    return registry.add(enabled)
+
+
 def _new_boundary_id() -> str:
     return f"bnd_{token_urlsafe(12)}"
 

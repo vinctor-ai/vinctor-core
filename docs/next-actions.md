@@ -27,10 +27,11 @@ Policy evaluation:
   candidates.
 - Added package build verification before publishing.
 - Enforced workspace-local boundary name uniqueness.
+- Added disabled boundary reactivation while preserving boundary identity.
 
 ## Next
 
-- Decide whether disabled boundaries should support reactivation.
+- Decide the next core/service boundary slice.
 
 ## Open Questions
 

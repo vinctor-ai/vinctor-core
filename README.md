@@ -135,6 +135,9 @@ event formats.
 Boundary names are unique within a workspace. Different workspaces may reuse
 the same boundary name.
 
+Disabled boundaries may be reactivated with `enable_boundary`, which preserves
+the boundary identity and updates `updated_at`.
+
 ## Relationship to the Authorization Service
 
 The authorization service, whether it lives in this repository later as
