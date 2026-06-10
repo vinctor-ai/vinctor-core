@@ -43,6 +43,9 @@ jobs:
       - name: Run V1 HTTP contract demo
         run: python demo/v1_http_contract_demo.py
 
+      - name: Run local V1 HTTP service demo
+        run: python demo/local_v1_http_service_demo.py
+
       - name: Run Ruff
         run: ruff check .
 
