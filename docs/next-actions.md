@@ -25,10 +25,10 @@ Policy evaluation:
   scope grammar, and terminal resource wildcards.
 - Added core-only policy evaluation across explicit already-issued grant
   candidates.
+- Added package build verification before publishing.
 
 ## Next
 
-- Add packaging/release automation before publishing.
 - Decide whether boundary names should be unique within a workspace.
 - Decide whether disabled boundaries should support reactivation.
 
