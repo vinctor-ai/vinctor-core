@@ -44,10 +44,13 @@ V1 service contract boundary:
   local demos.
 - Added SQLite-backed grant lookup and audit writing for the existing
   service-layer repository/writer abstractions.
+- Added SQLite-backed boundary registry support for durable boundary lookup,
+  active/disabled state, and boundary context in audit rows.
 
 ## Next
 
-- Add SQLite-backed boundary registry support.
+- Compose the SQLite grant/audit/boundary pieces into a local in-process
+  SQLite service object.
 
 ## Open Questions
 

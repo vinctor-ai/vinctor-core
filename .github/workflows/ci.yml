@@ -34,6 +34,9 @@ jobs:
       - name: Run SQLite grant/audit demo
         run: python demo/sqlite_grant_audit_demo.py
 
+      - name: Run SQLite boundary registry demo
+        run: python demo/sqlite_boundary_registry_demo.py
+
       - name: Run Ruff
         run: ruff check .
 

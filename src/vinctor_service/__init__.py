@@ -12,6 +12,7 @@ from vinctor_service.models import (
 from vinctor_service.repositories import GrantRepository, InMemoryGrantRepository
 from vinctor_service.sqlite import (
     SQLiteAuditWriter,
+    SQLiteBoundaryRegistry,
     SQLiteGrantRepository,
     init_sqlite_schema,
     insert_grant,
@@ -27,6 +28,7 @@ __all__ = [
     "InMemoryGrantRepository",
     "InMemoryV1Service",
     "SQLiteAuditWriter",
+    "SQLiteBoundaryRegistry",
     "SQLiteGrantRepository",
     "V1EnforceRequest",
     "V1EnforceResponse",

@@ -4,7 +4,7 @@ import json
 import sqlite3
 from datetime import datetime
 
-from vinctor_core.models import AuditEvent, Grant
+from vinctor_core.models import AuditEvent, Boundary, Grant
 
 
 def init_sqlite_schema(conn: sqlite3.Connection) -> None:
@@ -38,6 +38,19 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             boundary_type TEXT,
             created_at TEXT NOT NULL,
             event_json TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS boundaries (
+            boundary_id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            runtime TEXT NOT NULL,
+            boundary_type TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(workspace_id, name)
         );
         """
     )
@@ -139,9 +152,91 @@ class SQLiteAuditWriter:
             )
 
 
+class SQLiteBoundaryRegistry:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def add(self, boundary: Boundary) -> Boundary:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO boundaries (
+                    boundary_id, workspace_id, name, runtime, boundary_type,
+                    mode, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(boundary_id) DO UPDATE SET
+                    workspace_id = excluded.workspace_id,
+                    name = excluded.name,
+                    runtime = excluded.runtime,
+                    boundary_type = excluded.boundary_type,
+                    mode = excluded.mode,
+                    status = excluded.status,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    boundary.boundary_id,
+                    boundary.workspace_id,
+                    boundary.name,
+                    boundary.runtime,
+                    boundary.boundary_type,
+                    boundary.mode,
+                    boundary.status,
+                    boundary.created_at.isoformat(),
+                    boundary.updated_at.isoformat(),
+                ),
+            )
+        return boundary
+
+    def get(self, boundary_id: str) -> Boundary | None:
+        row = self._conn.execute(
+            """
+            SELECT boundary_id, workspace_id, name, runtime, boundary_type,
+                   mode, status, created_at, updated_at
+            FROM boundaries
+            WHERE boundary_id = ?
+            """,
+            (boundary_id,),
+        ).fetchone()
+        return _boundary_from_row(row)
+
+    def list_for_workspace(self, workspace_id: str) -> list[Boundary]:
+        rows = self._conn.execute(
+            """
+            SELECT boundary_id, workspace_id, name, runtime, boundary_type,
+                   mode, status, created_at, updated_at
+            FROM boundaries
+            WHERE workspace_id = ?
+            ORDER BY created_at, boundary_id
+            """,
+            (workspace_id,),
+        ).fetchall()
+        return [
+            boundary
+            for row in rows
+            if (boundary := _boundary_from_row(row)) is not None
+        ]
+
+
 def _datetime_to_storage(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
 def _datetime_from_storage(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value is not None else None
+
+
+def _boundary_from_row(row: sqlite3.Row | tuple | None) -> Boundary | None:
+    if row is None:
+        return None
+    return Boundary(
+        boundary_id=row[0],
+        workspace_id=row[1],
+        name=row[2],
+        runtime=row[3],
+        boundary_type=row[4],
+        mode=row[5],
+        status=row[6],
+        created_at=datetime.fromisoformat(row[7]),
+        updated_at=datetime.fromisoformat(row[8]),
+    )

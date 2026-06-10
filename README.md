@@ -195,7 +195,9 @@ local demos. It is not a durable service implementation.
 
 `SQLiteGrantRepository` and `SQLiteAuditWriter` provide local SQLite-backed
 implementations of the service-layer grant lookup and audit write boundaries.
-They do not add HTTP routing, hosted behavior, or durable boundary persistence.
+`SQLiteBoundaryRegistry` provides local SQLite-backed boundary registration and
+lookup for the existing boundary-aware enforce path. These helpers do not add
+HTTP routing or hosted behavior.
 
 ## Audit Semantics
 
@@ -236,6 +238,7 @@ Python 3.11 or newer is required.
 .venv/bin/python demo/boundary_registry_core_e2e.py
 .venv/bin/python demo/in_memory_v1_service_demo.py
 .venv/bin/python demo/sqlite_grant_audit_demo.py
+.venv/bin/python demo/sqlite_boundary_registry_demo.py
 .venv/bin/ruff check .
 .venv/bin/python -m build
 git diff --check
