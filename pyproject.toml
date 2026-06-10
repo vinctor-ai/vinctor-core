@@ -29,7 +29,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/vinctor_core"]
+packages = ["src/vinctor_core", "src/vinctor_service"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
