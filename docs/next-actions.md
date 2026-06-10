@@ -26,10 +26,10 @@ Policy evaluation:
 - Added core-only policy evaluation across explicit already-issued grant
   candidates.
 - Added package build verification before publishing.
+- Enforced workspace-local boundary name uniqueness.
 
 ## Next
 
-- Decide whether boundary names should be unique within a workspace.
 - Decide whether disabled boundaries should support reactivation.
 
 ## Open Questions
