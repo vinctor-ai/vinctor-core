@@ -16,6 +16,7 @@ from vinctor_core.policy import evaluate_policy
 from vinctor_core.registry import (
     BoundaryRegistry,
     disable_boundary,
+    enable_boundary,
     get_boundary_for_workspace,
     register_boundary,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "PolicyResult",
     "build_audit_event",
     "disable_boundary",
+    "enable_boundary",
     "evaluate_enforce",
     "evaluate_policy",
     "get_boundary_for_workspace",
