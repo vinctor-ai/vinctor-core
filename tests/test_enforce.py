@@ -83,7 +83,7 @@ def test_scope_wildcard_does_not_match_sibling_prefix() -> None:
     assert result.reason == "action_denied"
 
 
-def test_only_terminal_resource_wildcards_match() -> None:
+def test_non_terminal_resource_wildcard_is_invalid_grant_scope() -> None:
     result = evaluate_enforce(
         EnforceInput(
             grant=active_grant(scopes=("write:repo/*/readme",)),
@@ -94,7 +94,7 @@ def test_only_terminal_resource_wildcards_match() -> None:
     )
 
     assert result.decision == "deny"
-    assert result.reason == "action_denied"
+    assert result.reason == "invalid_grant_scope"
 
 
 def test_enforce_denies_scope_miss() -> None:
@@ -109,6 +109,70 @@ def test_enforce_denies_scope_miss() -> None:
 
     assert result.decision == "deny"
     assert result.reason == "action_denied"
+    assert result.scope_matched is None
+
+
+def test_enforce_denies_invalid_requested_action() -> None:
+    result = evaluate_enforce(
+        EnforceInput(
+            grant=active_grant(),
+            action="wirte",
+            resource="repo/feature/readme",
+            now=NOW,
+        )
+    )
+
+    assert result.decision == "deny"
+    assert result.reason == "invalid_action"
+    assert result.scope_attempted == "wirte:repo/feature/readme"
+    assert result.scope_matched is None
+
+
+def test_enforce_denies_invalid_requested_resource() -> None:
+    result = evaluate_enforce(
+        EnforceInput(
+            grant=active_grant(),
+            action="write",
+            resource="repo/*",
+            now=NOW,
+        )
+    )
+
+    assert result.decision == "deny"
+    assert result.reason == "invalid_resource"
+    assert result.scope_attempted == "write:repo/*"
+    assert result.scope_matched is None
+
+
+def test_enforce_denies_invalid_grant_scope() -> None:
+    result = evaluate_enforce(
+        EnforceInput(
+            grant=active_grant(scopes=("write:repo/*/readme",)),
+            action="write",
+            resource="repo/feature/readme",
+            now=NOW,
+        )
+    )
+
+    assert result.decision == "deny"
+    assert result.reason == "invalid_grant_scope"
+    assert result.scope_matched is None
+
+
+def test_enforce_denies_invalid_grant_scope_even_when_another_scope_matches() -> None:
+    result = evaluate_enforce(
+        EnforceInput(
+            grant=active_grant(
+                scopes=("write:repo/feature/readme", "write:repo/*/readme")
+            ),
+            action="write",
+            resource="repo/feature/readme",
+            now=NOW,
+        )
+    )
+
+    assert result.decision == "deny"
+    assert result.reason == "invalid_grant_scope"
     assert result.scope_matched is None
 
 
@@ -219,8 +283,8 @@ def test_enforce_with_unknown_boundary_denies_and_records_attempted_boundary_id(
     result = evaluate_enforce(
         EnforceInput(
             grant=active_grant(),
-            action="write",
-            resource="repo/feature/readme",
+            action="wirte",
+            resource="repo/*",
             now=NOW,
             boundary_id="bnd_missing",
             boundary_registry=BoundaryRegistry(),

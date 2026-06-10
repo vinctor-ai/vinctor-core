@@ -24,16 +24,11 @@ Repository boundary update:
 - Added workspace-safe boundary lookup and boundary disable helpers.
 - Documented that service-layer packages may live in this repository later if
   they remain layered above the deterministic core.
+- Added scope validation for allowed action verbs, requested resources, grant
+  scope grammar, and terminal resource wildcards.
 
 ## Next
 
-- Add scope validation before starting an HTTP service wrapper.
-- Define allowed action verb validation.
-- Reject malformed grant scopes.
-- Define resource wildcard rules.
-- Add invalid grant scope reason codes.
-- Add invalid requested action/resource handling.
-- Cover validation behavior with tests.
 - Add policy evaluation only after the already-issued grant model and scope
   validation are stable.
 - Add packaging/release automation before publishing.

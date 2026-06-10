@@ -67,3 +67,29 @@ def test_audit_event_to_dict_is_json_safe() -> None:
         "boundary_type": "pretooluse",
         "created_at": "2026-06-10T12:00:00+00:00",
     }
+
+
+def test_validation_denial_serializes_json_safe_audit_event() -> None:
+    decision = evaluate_enforce(
+        EnforceInput(
+            grant=Grant(
+                grant_id="grnt_main",
+                grant_ref="grt_main",
+                workspace_id="ws_main",
+                agent_id="agent_release",
+                scopes=("write:repo/feature/*",),
+                status="active",
+                expires_at=NOW + timedelta(hours=1),
+            ),
+            action="wirte",
+            resource="repo/feature/readme",
+            now=NOW,
+        )
+    )
+    event = build_audit_event(
+        AuditEventInput(decision=decision, event_id="evt_invalid", created_at=NOW)
+    )
+
+    assert event.to_dict()["decision"] == "deny"
+    assert event.to_dict()["reason"] == "invalid_action"
+    assert event.to_dict()["scope_attempted"] == "wirte:repo/feature/readme"

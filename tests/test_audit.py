@@ -172,3 +172,25 @@ def test_audit_event_has_no_raw_tool_or_prompt_fields() -> None:
     assert not hasattr(event, "raw_command")
     assert not hasattr(event, "prompt")
     assert not hasattr(event, "model_reason")
+
+
+def test_audit_event_preserves_scope_validation_reason() -> None:
+    decision = evaluate_enforce(
+        EnforceInput(
+            grant=active_grant(),
+            action="publish",
+            resource="deploy/staging",
+            now=NOW,
+        )
+    )
+
+    event = build_audit_event(
+        AuditEventInput(decision=decision, event_id="evt_invalid_action", created_at=NOW)
+    )
+
+    assert event.decision == "deny"
+    assert event.reason == "invalid_action"
+    assert event.action == "publish"
+    assert event.resource == "deploy/staging"
+    assert event.scope_attempted == "publish:deploy/staging"
+    assert event.scope_matched is None

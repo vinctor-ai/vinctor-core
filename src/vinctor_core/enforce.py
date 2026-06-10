@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from vinctor_core.models import Boundary, DecisionResult, EnforceInput
-from vinctor_core.scope import attempted_scope, match_scope
+from vinctor_core.scope import (
+    attempted_scope,
+    is_valid_grant_scope,
+    is_valid_requested_action,
+    is_valid_requested_resource,
+    match_scope,
+)
 
 
 def evaluate_enforce(enforce_input: EnforceInput) -> DecisionResult:
@@ -13,6 +19,11 @@ def evaluate_enforce(enforce_input: EnforceInput) -> DecisionResult:
         return boundary_result
     boundary = boundary_result
 
+    if not is_valid_requested_action(enforce_input.action):
+        return _deny(enforce_input, "invalid_action", scope_attempted, boundary=boundary)
+    if not is_valid_requested_resource(enforce_input.resource):
+        return _deny(enforce_input, "invalid_resource", scope_attempted, boundary=boundary)
+
     if grant.status == "revoked":
         return _deny(enforce_input, "grant_revoked", scope_attempted, boundary=boundary)
     if grant.status == "expired":
@@ -21,6 +32,8 @@ def evaluate_enforce(enforce_input: EnforceInput) -> DecisionResult:
         return _deny(enforce_input, "grant_not_active", scope_attempted, boundary=boundary)
     if grant.expires_at is not None and grant.expires_at <= enforce_input.now:
         return _deny(enforce_input, "grant_expired", scope_attempted, boundary=boundary)
+    if any(not is_valid_grant_scope(scope) for scope in grant.scopes):
+        return _deny(enforce_input, "invalid_grant_scope", scope_attempted, boundary=boundary)
 
     matched = match_scope(grant.scopes, enforce_input.action, enforce_input.resource)
     if matched is None:

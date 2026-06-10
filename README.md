@@ -66,6 +66,7 @@ At minimum, a decision is based on:
 - grant state
 - requested action
 - target resource
+- request and grant scope validity
 - scope matching
 - revocation or expiration state
 - optional boundary identity and status
@@ -73,6 +74,26 @@ At minimum, a decision is based on:
 The core should not infer intent from prompts or model output. Runtime adapters
 are responsible for translating tool calls into action/resource pairs before
 invoking the core.
+
+## Scope Validation
+
+Scopes use:
+
+```text
+action:resource
+```
+
+Valid action verbs are `read`, `write`, `execute`, `deploy`, `delete`, and
+`send`. Resources are slash-separated segments using letters, numbers, `.`,
+`_`, and `-`.
+
+Grant scopes may use one terminal resource wildcard such as
+`write:repo/feature/*`. Requested action/resource pairs must be concrete and
+cannot contain wildcards.
+
+Malformed requested actions return `invalid_action`. Malformed requested
+resources return `invalid_resource`. Malformed grant scopes return
+`invalid_grant_scope`.
 
 ## Relationship to Runtime Boundaries
 
