@@ -1,5 +1,9 @@
 # Local bootstrap dogfooding - 2026-06-11
 
+Historical note: this report captures the first dogfooding pass before the
+follow-up UX fixes. Some findings below are now addressed; keep them as the
+record of why the follow-up changes were made.
+
 ## Context
 
 This report captures an agent-based dogfooding pass over the local service
