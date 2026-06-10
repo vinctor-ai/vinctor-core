@@ -3,6 +3,7 @@
 from vinctor_service.audit import AuditWriter, InMemoryAuditWriter
 from vinctor_service.authorize import authorize_action
 from vinctor_service.in_memory import InMemoryV1Service
+from vinctor_service.local_http import create_v1_http_handler, create_v1_http_server
 from vinctor_service.models import (
     AuthorizationRequest,
     AuthorizationResponse,
@@ -38,6 +39,8 @@ __all__ = [
     "V1EnforceResponse",
     "V1HttpResponse",
     "authorize_action",
+    "create_v1_http_handler",
+    "create_v1_http_server",
     "enforce_v1_contract",
     "handle_v1_enforce_http",
     "init_sqlite_schema",

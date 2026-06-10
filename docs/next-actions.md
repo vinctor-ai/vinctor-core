@@ -5,9 +5,10 @@
 V1 service contract boundary:
 
 - Keep `vinctor_service` as in-process application helpers.
-- Preserve v1 enforce semantics before any HTTP or durable storage package.
-- Do not add HTTP APIs, auth headers, DB persistence, hosted behavior, or
-  runtime hooks yet.
+- Preserve v1 enforce semantics while adding service-layer storage and HTTP
+  wrappers above the contract boundary.
+- Keep local HTTP helpers thin and explicit. Do not add hosted behavior,
+  production server claims, runtime hooks, or runtime adapter implementations.
 
 ## Done
 
@@ -52,11 +53,13 @@ V1 service contract boundary:
   registration/disable/enable/list operations.
 - Added a v1 HTTP contract adapter for `X-Agent-Key`, strict enforce request
   body validation, optional boundary header mapping, and response shaping.
+- Added a stdlib local HTTP wrapper for `POST /v1/enforce` demos and
+  integration tests that delegates to the v1 HTTP contract adapter.
 
 ## Next
 
-- Add a minimal local HTTP service package that delegates to the v1 HTTP
-  contract adapter.
+- Decide whether boundary admin should get local HTTP contract adapters next,
+  or remain in-process until a fuller service package exists.
 
 ## Open Questions
 
