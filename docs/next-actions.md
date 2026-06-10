@@ -55,11 +55,14 @@ V1 service contract boundary:
   body validation, optional boundary header mapping, and response shaping.
 - Added a stdlib local HTTP wrapper for `POST /v1/enforce` demos and
   integration tests that delegates to the v1 HTTP contract adapter.
+- Added workspace-key-protected boundary registry HTTP contract adapters for
+  `POST /v1/boundaries`, `GET /v1/boundaries`, and
+  `GET /v1/boundaries/{boundary_id}`.
 
 ## Next
 
-- Decide whether boundary admin should get local HTTP contract adapters next,
-  or remain in-process until a fuller service package exists.
+- Decide whether boundary disable/enable should get local HTTP contract
+  adapters next, or remain in-process until a fuller service package exists.
 
 ## Open Questions
 

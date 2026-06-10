@@ -5,7 +5,12 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from vinctor_core import disable_boundary, enable_boundary, register_boundary
+from vinctor_core import (
+    disable_boundary,
+    enable_boundary,
+    get_boundary_for_workspace,
+    register_boundary,
+)
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput, Grant
 from vinctor_service.models import V1EnforceRequest, V1EnforceResponse
 from vinctor_service.v1_enforce import enforce_v1_contract
@@ -312,6 +317,13 @@ class SQLiteV1Service:
 
     def list_boundaries(self, workspace_id: str) -> tuple[Boundary, ...]:
         return tuple(self.boundary_registry.list_for_workspace(workspace_id))
+
+    def get_boundary(self, *, boundary_id: str, workspace_id: str) -> Boundary | None:
+        return get_boundary_for_workspace(
+            self.boundary_registry,
+            boundary_id,
+            workspace_id,
+        )
 
     def enforce(self, request: V1EnforceRequest, *, now: datetime) -> V1EnforceResponse:
         return enforce_v1_contract(

@@ -209,10 +209,15 @@ it validates `X-Agent-Key`, keeps the enforce body strict
 (`grant_ref`/`action`/`resource`), and accepts optional boundary identity from
 the `X-Vinctor-Boundary-Id` header. It is a contract adapter, not a server.
 
+`handle_v1_boundaries_http` maps workspace-key-protected boundary registry
+requests into service-layer boundary helpers. It supports `POST /v1/boundaries`,
+`GET /v1/boundaries`, and `GET /v1/boundaries/{boundary_id}` for local contract
+tests. It does not add update/delete behavior or approval workflows.
+
 `create_v1_http_server` provides a small stdlib local HTTP wrapper for
-`POST /v1/enforce` demos and integration tests. It delegates request handling
-to `handle_v1_enforce_http`; it is not a hosted service or production HTTP
-server.
+`POST /v1/enforce` and boundary registry demos and integration tests. It
+delegates request handling to the HTTP contract adapters; it is not a hosted
+service or production HTTP server.
 
 ## Audit Semantics
 
@@ -257,6 +262,7 @@ Python 3.11 or newer is required.
 .venv/bin/python demo/sqlite_v1_service_demo.py
 .venv/bin/python demo/v1_http_contract_demo.py
 .venv/bin/python demo/local_v1_http_service_demo.py
+.venv/bin/python demo/boundary_admin_http_demo.py
 .venv/bin/ruff check .
 .venv/bin/python -m build
 git diff --check

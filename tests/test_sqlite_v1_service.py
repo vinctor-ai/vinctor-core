@@ -223,6 +223,8 @@ def test_sqlite_v1_service_manages_boundaries(tmp_path: Path) -> None:
     )
 
     assert service.list_boundaries("ws_main") == (boundary,)
+    assert service.get_boundary(boundary_id="bnd_main", workspace_id="ws_main") == boundary
+    assert service.get_boundary(boundary_id="bnd_main", workspace_id="ws_other") is None
     disabled = service.disable_boundary(
         boundary_id="bnd_main",
         workspace_id="ws_main",
