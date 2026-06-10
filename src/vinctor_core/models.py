@@ -87,6 +87,33 @@ class DecisionResult:
 
 
 @dataclass(frozen=True)
+class PolicyInput:
+    workspace_id: str
+    agent_id: str
+    grants: tuple[Grant, ...]
+    action: str
+    resource: str
+    now: datetime
+    boundary_id: str | None = None
+    boundary_registry: BoundaryLookup | None = None
+
+
+@dataclass(frozen=True)
+class PolicyResult:
+    decision: Decision
+    reason: str
+    workspace_id: str
+    agent_id: str
+    action: str
+    resource: str
+    scope_attempted: str
+    scope_matched: str | None
+    grant_id: str | None = None
+    grant_ref: str | None = None
+    enforce_result: DecisionResult | None = None
+
+
+@dataclass(frozen=True)
 class AuditEvent:
     event_id: str
     event_type: str

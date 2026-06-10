@@ -2,13 +2,10 @@
 
 ## Current Focus
 
-Repository boundary update:
+Policy evaluation:
 
-- Document that this repository starts with `vinctor_core`.
-- Allow future `vinctor_service` packages in this repository.
-- Keep `vinctor_service` layered above `vinctor_core`.
-- Do not start service wrapper work before scope validation unless explicitly
-  approved.
+- Add a core-only policy helper for evaluating already-issued grant candidates.
+- Do not add service storage, HTTP APIs, auth, or runtime hooks.
 
 ## Done
 
@@ -26,11 +23,11 @@ Repository boundary update:
   they remain layered above the deterministic core.
 - Added scope validation for allowed action verbs, requested resources, grant
   scope grammar, and terminal resource wildcards.
+- Added core-only policy evaluation across explicit already-issued grant
+  candidates.
 
 ## Next
 
-- Add policy evaluation only after the already-issued grant model and scope
-  validation are stable.
 - Add packaging/release automation before publishing.
 - Decide whether boundary names should be unique within a workspace.
 - Decide whether disabled boundaries should support reactivation.

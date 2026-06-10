@@ -95,6 +95,23 @@ Malformed requested actions return `invalid_action`. Malformed requested
 resources return `invalid_resource`. Malformed grant scopes return
 `invalid_grant_scope`.
 
+## Policy Evaluation
+
+`evaluate_policy` evaluates an explicit tuple of already-issued grants for one
+workspace, agent, action, and resource. It does not load grants, persist
+decisions, or own workspace storage.
+
+Policy evaluation is deterministic:
+
+- grants for other workspaces or agents are ignored
+- grants are evaluated in the input order provided by the caller
+- the first permitting grant returns `permit`
+- if no candidate grant permits the request, the result is `deny` with
+  `no_applicable_grant`
+
+The service layer remains responsible for selecting which grants to pass into
+the core.
+
 ## Relationship to Runtime Boundaries
 
 Runtime boundaries are configured points where a runtime presents a proposed
