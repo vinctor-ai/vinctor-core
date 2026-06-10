@@ -204,6 +204,11 @@ registry, and v1 enforce adapter for local in-process integration tests and
 demos. It exposes small helpers for grant insertion, boundary management, and
 audit event lookup. It is not an HTTP service.
 
+`handle_v1_enforce_http` maps a v1-shaped HTTP request into the service layer:
+it validates `X-Agent-Key`, keeps the enforce body strict
+(`grant_ref`/`action`/`resource`), and accepts optional boundary identity from
+the `X-Vinctor-Boundary-Id` header. It is a contract adapter, not a server.
+
 ## Audit Semantics
 
 The core may construct audit event data, but it does not own durable audit
@@ -245,6 +250,7 @@ Python 3.11 or newer is required.
 .venv/bin/python demo/sqlite_grant_audit_demo.py
 .venv/bin/python demo/sqlite_boundary_registry_demo.py
 .venv/bin/python demo/sqlite_v1_service_demo.py
+.venv/bin/python demo/v1_http_contract_demo.py
 .venv/bin/ruff check .
 .venv/bin/python -m build
 git diff --check

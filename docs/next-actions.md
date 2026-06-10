@@ -50,11 +50,13 @@ V1 service contract boundary:
   boundary registry, and v1 enforce behavior for local in-process use.
 - Added small `SQLiteV1Service` helpers for audit lookup and boundary
   registration/disable/enable/list operations.
+- Added a v1 HTTP contract adapter for `X-Agent-Key`, strict enforce request
+  body validation, optional boundary header mapping, and response shaping.
 
 ## Next
 
-- Decide whether to add a minimal local HTTP service package or keep one more
-  slice in-process.
+- Add a minimal local HTTP service package that delegates to the v1 HTTP
+  contract adapter.
 
 ## Open Questions
 

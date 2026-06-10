@@ -19,8 +19,10 @@ from vinctor_service.sqlite import (
     insert_grant,
 )
 from vinctor_service.v1_enforce import enforce_v1_contract
+from vinctor_service.v1_http import AgentIdentity, V1HttpResponse, handle_v1_enforce_http
 
 __all__ = [
+    "AgentIdentity",
     "AuthorizationRequest",
     "AuthorizationResponse",
     "AuditWriter",
@@ -34,8 +36,10 @@ __all__ = [
     "SQLiteV1Service",
     "V1EnforceRequest",
     "V1EnforceResponse",
+    "V1HttpResponse",
     "authorize_action",
     "enforce_v1_contract",
+    "handle_v1_enforce_http",
     "init_sqlite_schema",
     "insert_grant",
 ]
