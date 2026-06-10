@@ -86,7 +86,7 @@ action:resource
 
 Valid action verbs are `read`, `write`, `execute`, `deploy`, `delete`, and
 `send`. Resources are slash-separated segments using letters, numbers, `.`,
-`_`, and `-`.
+`_`, and `-`, with at least two segments such as `repo/feature`.
 
 Grant scopes may use one terminal resource wildcard such as
 `write:repo/feature/*`. Requested action/resource pairs must be concrete and
