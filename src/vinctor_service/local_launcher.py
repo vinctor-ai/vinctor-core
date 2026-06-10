@@ -12,10 +12,14 @@ from typing import NoReturn
 
 from vinctor_core.models import Boundary, BoundaryRegistrationInput, Grant
 from vinctor_core.scope import is_valid_grant_scope
-from vinctor_service.boundary_http import WorkspaceIdentity
+from vinctor_service.keys import (
+    AGENT_KEY_PREFIX,
+    WORKSPACE_KEY_PREFIX,
+    CreatedLocalKey,
+    SQLiteLocalKeyRepository,
+)
 from vinctor_service.local_http import create_v1_http_server
 from vinctor_service.sqlite import SQLiteV1Service
-from vinctor_service.v1_http import AgentIdentity
 
 DEFAULT_SCOPE = "write:repo/feature/*"
 
@@ -69,20 +73,32 @@ def prepare_local_service(
         service = SQLiteV1Service(conn)
         _ensure_grant(service, config, now=timestamp)
         boundary = _ensure_boundary(service, config, now=timestamp)
-        workspace_key = config.workspace_key or _new_key("wsk")
-        agent_key = config.agent_key or _new_key("agk")
+        key_repository = SQLiteLocalKeyRepository(conn)
+        workspace_key = _ensure_workspace_key(
+            key_repository,
+            config,
+            now=timestamp,
+        )
+        agent_key = _ensure_agent_key(
+            key_repository,
+            config,
+            now=timestamp,
+        )
+        agent_resolver = key_repository.resolve_agent_identity
+        workspace_resolver = key_repository.resolve_workspace_identity
         server = create_v1_http_server(
             (config.host, config.port),
             service=service,
-            agent_identities={
-                agent_key: AgentIdentity(
-                    workspace_id=config.workspace_id,
-                    agent_id=config.agent_id,
-                )
-            },
-            workspace_identities={
-                workspace_key: WorkspaceIdentity(workspace_id=config.workspace_id)
-            },
+            agent_identities={},
+            workspace_identities={},
+            agent_identity_resolver=lambda raw_key, used_at: agent_resolver(
+                raw_key,
+                now=used_at,
+            ),
+            workspace_identity_resolver=lambda raw_key, used_at: workspace_resolver(
+                raw_key,
+                now=used_at,
+            ),
         )
     except Exception:
         conn.close()
@@ -193,7 +209,7 @@ def _ensure_grant(
         return existing
 
     grant = Grant(
-        grant_id=config.grant_id or _new_key("grnt"),
+        grant_id=config.grant_id or _new_id("grnt"),
         grant_ref=config.grant_ref,
         workspace_id=config.workspace_id,
         agent_id=config.agent_id,
@@ -247,6 +263,50 @@ def _ensure_boundary(
     )
 
 
+def _ensure_workspace_key(
+    key_repository: SQLiteLocalKeyRepository,
+    config: LocalLaunchConfig,
+    *,
+    now: datetime,
+) -> str:
+    if config.workspace_key is not None:
+        key_repository.ensure_workspace_key(
+            workspace_id=config.workspace_id,
+            raw_key=config.workspace_key,
+            now=now,
+        )
+        return config.workspace_key
+
+    created = key_repository.create_workspace_key(
+        workspace_id=config.workspace_id,
+        now=now,
+    )
+    return _raw_key(created)
+
+
+def _ensure_agent_key(
+    key_repository: SQLiteLocalKeyRepository,
+    config: LocalLaunchConfig,
+    *,
+    now: datetime,
+) -> str:
+    if config.agent_key is not None:
+        key_repository.ensure_agent_key(
+            workspace_id=config.workspace_id,
+            agent_id=config.agent_id,
+            raw_key=config.agent_key,
+            now=now,
+        )
+        return config.agent_key
+
+    created = key_repository.create_agent_key(
+        workspace_id=config.workspace_id,
+        agent_id=config.agent_id,
+        now=now,
+    )
+    return _raw_key(created)
+
+
 def _validate_config(config: LocalLaunchConfig) -> None:
     if config.port < 0 or config.port > 65535:
         raise ValueError("port must be between 0 and 65535")
@@ -257,9 +317,19 @@ def _validate_config(config: LocalLaunchConfig) -> None:
     invalid_scopes = [scope for scope in config.scopes if not is_valid_grant_scope(scope)]
     if invalid_scopes:
         raise ValueError(f"invalid grant scope: {invalid_scopes[0]}")
+    if config.workspace_key is not None and not config.workspace_key.startswith(
+        WORKSPACE_KEY_PREFIX
+    ):
+        raise ValueError(f"workspace_key must start with {WORKSPACE_KEY_PREFIX}")
+    if config.agent_key is not None and not config.agent_key.startswith(AGENT_KEY_PREFIX):
+        raise ValueError(f"agent_key must start with {AGENT_KEY_PREFIX}")
 
 
-def _new_key(prefix: str) -> str:
+def _raw_key(created: CreatedLocalKey) -> str:
+    return created.raw_key
+
+
+def _new_id(prefix: str) -> str:
     return f"{prefix}_{token_urlsafe(16)}"
 
 

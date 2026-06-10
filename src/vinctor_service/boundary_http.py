@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, cast
@@ -45,17 +45,26 @@ class BoundaryAdminService(Protocol):
     ) -> Boundary | None: ...
 
 
+WorkspaceIdentityResolver = Callable[[str, datetime], WorkspaceIdentity | None]
+
+
 def handle_v1_boundaries_http(
     *,
     method: str,
     path: str,
     headers: Mapping[str, str],
     body: object,
-    workspace_identities: Mapping[str, WorkspaceIdentity],
+    workspace_identities: Mapping[str, WorkspaceIdentity] | None = None,
+    workspace_identity_resolver: WorkspaceIdentityResolver | None = None,
     service: BoundaryAdminService,
     now: datetime,
 ) -> V1HttpResponse:
-    identity = _workspace_identity(headers, workspace_identities)
+    identity = _workspace_identity(
+        headers,
+        workspace_identities=workspace_identities,
+        workspace_identity_resolver=workspace_identity_resolver,
+        now=now,
+    )
     if identity is None:
         return _error(401, "authentication_required", "valid X-Workspace-Key header is required")
 
@@ -116,13 +125,18 @@ def handle_v1_boundaries_http(
 
 def _workspace_identity(
     headers: Mapping[str, str],
-    workspace_identities: Mapping[str, WorkspaceIdentity],
+    *,
+    workspace_identities: Mapping[str, WorkspaceIdentity] | None,
+    workspace_identity_resolver: WorkspaceIdentityResolver | None,
+    now: datetime,
 ) -> WorkspaceIdentity | None:
     normalized_headers = {key.lower(): value for key, value in headers.items()}
     workspace_key = normalized_headers.get("x-workspace-key")
     if workspace_key is None:
         return None
-    return workspace_identities.get(workspace_key)
+    if workspace_identity_resolver is not None:
+        return workspace_identity_resolver(workspace_key, now)
+    return (workspace_identities or {}).get(workspace_key)
 
 
 def _create_boundary(

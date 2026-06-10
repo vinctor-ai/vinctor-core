@@ -4,6 +4,14 @@ from vinctor_service.audit import AuditWriter, InMemoryAuditWriter
 from vinctor_service.authorize import authorize_action
 from vinctor_service.boundary_http import WorkspaceIdentity, handle_v1_boundaries_http
 from vinctor_service.in_memory import InMemoryV1Service
+from vinctor_service.keys import (
+    AGENT_KEY_PREFIX,
+    WORKSPACE_KEY_PREFIX,
+    CreatedLocalKey,
+    LocalKeyRecord,
+    SQLiteLocalKeyRepository,
+    mask_key,
+)
 from vinctor_service.local_http import create_v1_http_handler, create_v1_http_server
 from vinctor_service.models import (
     AuthorizationRequest,
@@ -28,17 +36,22 @@ __all__ = [
     "AuthorizationRequest",
     "AuthorizationResponse",
     "AuditWriter",
+    "AGENT_KEY_PREFIX",
+    "CreatedLocalKey",
     "GrantRepository",
     "InMemoryAuditWriter",
     "InMemoryGrantRepository",
     "InMemoryV1Service",
+    "LocalKeyRecord",
     "SQLiteAuditWriter",
     "SQLiteBoundaryRegistry",
     "SQLiteGrantRepository",
+    "SQLiteLocalKeyRepository",
     "SQLiteV1Service",
     "V1EnforceRequest",
     "V1EnforceResponse",
     "V1HttpResponse",
+    "WORKSPACE_KEY_PREFIX",
     "WorkspaceIdentity",
     "authorize_action",
     "create_v1_http_handler",
@@ -48,4 +61,5 @@ __all__ = [
     "handle_v1_enforce_http",
     "init_sqlite_schema",
     "insert_grant",
+    "mask_key",
 ]

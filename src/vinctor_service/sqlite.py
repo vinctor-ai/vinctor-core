@@ -61,6 +61,25 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL,
             UNIQUE(workspace_id, name)
         );
+
+        CREATE TABLE IF NOT EXISTS local_keys (
+            key_id TEXT PRIMARY KEY,
+            key_type TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            agent_id TEXT,
+            key_hash TEXT NOT NULL UNIQUE,
+            key_prefix TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            last_used_at TEXT,
+            revoked_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_local_keys_hash
+        ON local_keys(key_hash);
+
+        CREATE INDEX IF NOT EXISTS idx_local_keys_workspace
+        ON local_keys(workspace_id);
         """
     )
     conn.commit()

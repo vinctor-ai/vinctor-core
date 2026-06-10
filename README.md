@@ -245,6 +245,12 @@ export VINCTOR_BOUNDARY_ID=...
 `X-Vinctor-Boundary-Id` header when a local runtime boundary wants boundary
 context included in enforce/audit behavior.
 
+Local launcher keys are also written to SQLite as durable key records. The
+service stores only a SHA-256 key digest plus metadata, never the raw key.
+Workspace/admin keys use the `wsk_` prefix. Agent enforce keys use the `aak_`
+prefix. If a raw key is lost, create or provide a new key rather than expecting
+SQLite to recover the original secret.
+
 ## Audit Semantics
 
 The core may construct audit event data, but it does not own durable audit

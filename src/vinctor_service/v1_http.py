@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
@@ -24,24 +24,35 @@ class V1EnforceService(Protocol):
     def enforce(self, request: V1EnforceRequest, *, now: datetime) -> V1EnforceResponse: ...
 
 
+AgentIdentityResolver = Callable[[str, datetime], AgentIdentity | None]
+
+
 def handle_v1_enforce_http(
     *,
     headers: Mapping[str, str],
     body: object,
-    agent_identities: Mapping[str, AgentIdentity],
+    agent_identities: Mapping[str, AgentIdentity] | None = None,
+    agent_identity_resolver: AgentIdentityResolver | None = None,
     service: V1EnforceService,
     now: datetime,
 ) -> V1HttpResponse:
     normalized_headers = {key.lower(): value for key, value in headers.items()}
     agent_key = normalized_headers.get("x-agent-key")
-    if agent_key is None or agent_key not in agent_identities:
+    if agent_key is None:
+        return _error(401, "authentication_required", "valid X-Agent-Key header is required")
+    identity = _resolve_agent_identity(
+        agent_key,
+        agent_identities=agent_identities,
+        agent_identity_resolver=agent_identity_resolver,
+        now=now,
+    )
+    if identity is None:
         return _error(401, "authentication_required", "valid X-Agent-Key header is required")
 
     parsed = _parse_enforce_body(body)
     if isinstance(parsed, V1HttpResponse):
         return parsed
 
-    identity = agent_identities[agent_key]
     request = V1EnforceRequest(
         workspace_id=identity.workspace_id,
         agent_id=identity.agent_id,
@@ -51,6 +62,18 @@ def handle_v1_enforce_http(
         boundary_id=normalized_headers.get("x-vinctor-boundary-id"),
     )
     return _http_response_from_enforce(service.enforce(request, now=now))
+
+
+def _resolve_agent_identity(
+    agent_key: str,
+    *,
+    agent_identities: Mapping[str, AgentIdentity] | None,
+    agent_identity_resolver: AgentIdentityResolver | None,
+    now: datetime,
+) -> AgentIdentity | None:
+    if agent_identity_resolver is not None:
+        return agent_identity_resolver(agent_key, now)
+    return (agent_identities or {}).get(agent_key)
 
 
 def _parse_enforce_body(body: object) -> dict[str, str] | V1HttpResponse:
