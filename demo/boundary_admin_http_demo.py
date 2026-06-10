@@ -94,7 +94,16 @@ def main() -> None:
                 assert other_status == 404
                 assert other["error"] == "boundary_not_found"
 
-                enforce_status, enforced = post_json(
+                disable_status, disabled = post_json(
+                    server,
+                    path=f"/v1/boundaries/{created['boundary_id']}/disable",
+                    payload=None,
+                    headers={"X-Workspace-Key": "workspace_key_demo"},
+                )
+                assert disable_status == 200
+                assert disabled["status"] == "disabled"
+
+                disabled_enforce_status, disabled_enforce = post_json(
                     server,
                     path="/v1/enforce",
                     payload={
@@ -107,14 +116,44 @@ def main() -> None:
                         "X-Vinctor-Boundary-Id": created["boundary_id"],
                     },
                 )
-                assert enforce_status == 200
-                assert enforced["decision"] == "permit"
+                assert disabled_enforce_status == 403
+                assert disabled_enforce["error"] == "boundary_inactive"
+
+                enable_status, enabled = post_json(
+                    server,
+                    path=f"/v1/boundaries/{created['boundary_id']}/enable",
+                    payload=None,
+                    headers={"X-Workspace-Key": "workspace_key_demo"},
+                )
+                assert enable_status == 200
+                assert enabled["status"] == "active"
+
+                permit_status, permit = post_json(
+                    server,
+                    path="/v1/enforce",
+                    payload={
+                        "grant_ref": "grt_demo",
+                        "action": "write",
+                        "resource": "repo/feature/readme",
+                    },
+                    headers={
+                        "X-Agent-Key": "agent_key_demo",
+                        "X-Vinctor-Boundary-Id": created["boundary_id"],
+                    },
+                )
+                assert permit_status == 200
+                assert permit["decision"] == "permit"
 
                 audit_events = service.audit_events
-                assert len(audit_events) == 1
+                assert len(audit_events) == 2
                 assert audit_events[0].boundary_id == created["boundary_id"]
                 assert audit_events[0].runtime == "claude-code"
                 assert audit_events[0].boundary_type == "pretooluse"
+                assert audit_events[0].reason == "boundary_inactive"
+                assert audit_events[1].boundary_id == created["boundary_id"]
+                assert audit_events[1].runtime == "claude-code"
+                assert audit_events[1].boundary_type == "pretooluse"
+                assert audit_events[1].decision == "permit"
             finally:
                 server.shutdown()
                 thread.join(timeout=5)
@@ -129,7 +168,7 @@ def post_json(
     server: ThreadingHTTPServer,
     *,
     path: str,
-    payload: dict[str, str],
+    payload: dict[str, str] | None,
     headers: dict[str, str],
 ) -> tuple[int, dict[str, Any]]:
     return request_json(server, method="POST", path=path, payload=payload, headers=headers)

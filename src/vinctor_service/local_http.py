@@ -122,7 +122,7 @@ def create_v1_http_handler(
         path: str,
     ) -> None:
         body: object = None
-        if method == "POST":
+        if method == "POST" and path == "/v1/boundaries":
             parsed = _read_json_body(handler)
             if isinstance(parsed, V1HttpResponse):
                 _send_json(handler, parsed)

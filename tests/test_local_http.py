@@ -280,6 +280,25 @@ def test_local_http_service_creates_boundary_then_enforces_with_it() -> None:
             path=f"/v1/boundaries/{created['boundary_id']}",
             headers={"X-Workspace-Key": "workspace_key_main"},
         )
+        disable_status, disabled = raw_request(
+            server,
+            method="POST",
+            path=f"/v1/boundaries/{created['boundary_id']}/disable",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+        disabled_enforce_status, disabled_enforce = post_json(
+            server,
+            headers={
+                "X-Agent-Key": "agent_key_main",
+                "X-Vinctor-Boundary-Id": created["boundary_id"],
+            },
+        )
+        enable_status, enabled = raw_request(
+            server,
+            method="POST",
+            path=f"/v1/boundaries/{created['boundary_id']}/enable",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
         enforce_status, enforced = post_json(
             server,
             headers={
@@ -294,8 +313,21 @@ def test_local_http_service_creates_boundary_then_enforces_with_it() -> None:
     assert listed == {"boundaries": [created]}
     assert get_status == 200
     assert loaded == created
+    assert disable_status == 200
+    assert disabled["status"] == "disabled"
+    assert disabled_enforce_status == 403
+    assert disabled_enforce["error"] == "boundary_inactive"
+    assert enable_status == 200
+    assert enabled["status"] == "active"
     assert enforce_status == 200
     assert enforced["decision"] == "permit"
-    assert svc.audit_events[0].boundary_id == created["boundary_id"]
-    assert svc.audit_events[0].runtime == "claude-code"
-    assert svc.audit_events[0].boundary_type == "pretooluse"
+    assert [event.decision for event in svc.audit_events] == ["deny", "permit"]
+    assert [event.boundary_id for event in svc.audit_events] == [
+        created["boundary_id"],
+        created["boundary_id"],
+    ]
+    assert [event.runtime for event in svc.audit_events] == ["claude-code", "claude-code"]
+    assert [event.boundary_type for event in svc.audit_events] == [
+        "pretooluse",
+        "pretooluse",
+    ]

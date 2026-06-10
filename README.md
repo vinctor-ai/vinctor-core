@@ -211,8 +211,10 @@ the `X-Vinctor-Boundary-Id` header. It is a contract adapter, not a server.
 
 `handle_v1_boundaries_http` maps workspace-key-protected boundary registry
 requests into service-layer boundary helpers. It supports `POST /v1/boundaries`,
-`GET /v1/boundaries`, and `GET /v1/boundaries/{boundary_id}` for local contract
-tests. It does not add update/delete behavior or approval workflows.
+`GET /v1/boundaries`, `GET /v1/boundaries/{boundary_id}`,
+`POST /v1/boundaries/{boundary_id}/disable`, and
+`POST /v1/boundaries/{boundary_id}/enable` for local contract tests. It does
+not add delete behavior or approval workflows.
 
 `create_v1_http_server` provides a small stdlib local HTTP wrapper for
 `POST /v1/enforce` and boundary registry demos and integration tests. It

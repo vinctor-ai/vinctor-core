@@ -28,6 +28,22 @@ class BoundaryAdminService(Protocol):
 
     def get_boundary(self, *, boundary_id: str, workspace_id: str) -> Boundary | None: ...
 
+    def disable_boundary(
+        self,
+        *,
+        boundary_id: str,
+        workspace_id: str,
+        now: datetime | None = None,
+    ) -> Boundary | None: ...
+
+    def enable_boundary(
+        self,
+        *,
+        boundary_id: str,
+        workspace_id: str,
+        now: datetime | None = None,
+    ) -> Boundary | None: ...
+
 
 def handle_v1_boundaries_http(
     *,
@@ -60,18 +76,40 @@ def handle_v1_boundaries_http(
 
     prefix = "/v1/boundaries/"
     if path.startswith(prefix):
-        if method != "GET":
-            return _error(405, "method_not_allowed", "GET is required for /v1/boundaries/{id}")
         boundary_id = path.removeprefix(prefix)
+        parts = boundary_id.split("/")
+        if len(parts) == 1 and parts[0] != "":
+            if method != "GET":
+                return _error(
+                    405,
+                    "method_not_allowed",
+                    "GET is required for /v1/boundaries/{id}",
+                )
+            boundary = service.get_boundary(
+                boundary_id=parts[0],
+                workspace_id=identity.workspace_id,
+            )
+            if boundary is None:
+                return _error(404, "boundary_not_found", "boundary was not found")
+            return V1HttpResponse(status_code=200, body=_boundary_body(boundary))
+
+        if len(parts) == 2 and parts[0] != "" and parts[1] in {"disable", "enable"}:
+            if method != "POST":
+                return _error(
+                    405,
+                    "method_not_allowed",
+                    f"POST is required for /v1/boundaries/{{id}}/{parts[1]}",
+                )
+            return _set_boundary_status(
+                service=service,
+                boundary_id=parts[0],
+                workspace_id=identity.workspace_id,
+                action=parts[1],
+                now=now,
+            )
+
         if boundary_id == "" or "/" in boundary_id:
             return _error(404, "not_found", "route not found")
-        boundary = service.get_boundary(
-            boundary_id=boundary_id,
-            workspace_id=identity.workspace_id,
-        )
-        if boundary is None:
-            return _error(404, "boundary_not_found", "boundary was not found")
-        return V1HttpResponse(status_code=200, body=_boundary_body(boundary))
 
     return _error(404, "not_found", "route not found")
 
@@ -113,6 +151,32 @@ def _create_boundary(
         return _error(400, "invalid_request", str(error))
 
     return V1HttpResponse(status_code=201, body=_boundary_body(boundary))
+
+
+def _set_boundary_status(
+    *,
+    service: BoundaryAdminService,
+    boundary_id: str,
+    workspace_id: str,
+    action: str,
+    now: datetime,
+) -> V1HttpResponse:
+    if action == "disable":
+        boundary = service.disable_boundary(
+            boundary_id=boundary_id,
+            workspace_id=workspace_id,
+            now=now,
+        )
+    else:
+        boundary = service.enable_boundary(
+            boundary_id=boundary_id,
+            workspace_id=workspace_id,
+            now=now,
+        )
+
+    if boundary is None:
+        return _error(404, "boundary_not_found", "boundary was not found")
+    return V1HttpResponse(status_code=200, body=_boundary_body(boundary))
 
 
 def _parse_create_body(body: object) -> dict[str, str] | V1HttpResponse:

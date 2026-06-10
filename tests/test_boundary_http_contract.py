@@ -200,3 +200,70 @@ def test_boundary_http_rejects_unsupported_methods() -> None:
 
     assert response.status_code == 405
     assert response.body["error"] == "method_not_allowed"
+
+
+def test_boundary_http_disables_and_enables_boundary() -> None:
+    svc = service()
+    created = call(svc)
+    boundary_id = created.body["boundary_id"]
+
+    disabled = call(
+        svc,
+        method="POST",
+        path=f"/v1/boundaries/{boundary_id}/disable",
+    )
+    enabled = call(
+        svc,
+        method="POST",
+        path=f"/v1/boundaries/{boundary_id}/enable",
+    )
+
+    assert disabled.status_code == 200
+    assert disabled.body["boundary_id"] == boundary_id
+    assert disabled.body["status"] == "disabled"
+    assert enabled.status_code == 200
+    assert enabled.body["boundary_id"] == boundary_id
+    assert enabled.body["status"] == "active"
+
+
+def test_boundary_http_disable_does_not_cross_workspace() -> None:
+    svc = service()
+    created = call(svc)
+
+    response = call(
+        svc,
+        method="POST",
+        path=f"/v1/boundaries/{created.body['boundary_id']}/disable",
+        headers={"X-Workspace-Key": "workspace_key_other"},
+    )
+
+    assert response.status_code == 404
+    assert response.body["error"] == "boundary_not_found"
+    assert svc.list_boundaries("ws_main")[0].status == "active"
+
+
+def test_boundary_http_enable_returns_not_found_for_missing_boundary() -> None:
+    svc = service()
+
+    response = call(
+        svc,
+        method="POST",
+        path="/v1/boundaries/bnd_missing/enable",
+    )
+
+    assert response.status_code == 404
+    assert response.body["error"] == "boundary_not_found"
+
+
+def test_boundary_http_status_routes_require_post() -> None:
+    svc = service()
+    created = call(svc)
+
+    response = call(
+        svc,
+        method="GET",
+        path=f"/v1/boundaries/{created.body['boundary_id']}/disable",
+    )
+
+    assert response.status_code == 405
+    assert response.body["error"] == "method_not_allowed"
