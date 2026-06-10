@@ -201,7 +201,8 @@ HTTP routing or hosted behavior.
 
 `SQLiteV1Service` composes the SQLite grant repository, audit writer, boundary
 registry, and v1 enforce adapter for local in-process integration tests and
-demos. It is not an HTTP service.
+demos. It exposes small helpers for grant insertion, boundary management, and
+audit event lookup. It is not an HTTP service.
 
 ## Audit Semantics
 

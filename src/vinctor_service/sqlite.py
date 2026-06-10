@@ -5,7 +5,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from vinctor_core.models import AuditEvent, Boundary, Grant
+from vinctor_core import disable_boundary, enable_boundary, register_boundary
+from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput, Grant
 from vinctor_service.models import V1EnforceRequest, V1EnforceResponse
 from vinctor_service.v1_enforce import enforce_v1_contract
 
@@ -154,6 +155,27 @@ class SQLiteAuditWriter:
                 ),
             )
 
+    def get(self, event_id: str) -> AuditEvent | None:
+        row = self._conn.execute(
+            """
+            SELECT event_json
+            FROM audit_events
+            WHERE event_id = ?
+            """,
+            (event_id,),
+        ).fetchone()
+        return _audit_event_from_json(row[0]) if row is not None else None
+
+    def list_all(self) -> list[AuditEvent]:
+        rows = self._conn.execute(
+            """
+            SELECT event_json
+            FROM audit_events
+            ORDER BY rowid
+            """
+        ).fetchall()
+        return [_audit_event_from_json(row[0]) for row in rows]
+
 
 class SQLiteBoundaryRegistry:
     def __init__(self, conn: sqlite3.Connection) -> None:
@@ -239,6 +261,58 @@ class SQLiteV1Service:
     def insert_grant(self, grant: Grant) -> None:
         insert_grant(self.conn, grant)
 
+    @property
+    def audit_events(self) -> tuple[AuditEvent, ...]:
+        return tuple(self.audit_writer.list_all())
+
+    def get_audit_event(self, event_id: str) -> AuditEvent | None:
+        return self.audit_writer.get(event_id)
+
+    def register_boundary(
+        self,
+        registration: BoundaryRegistrationInput,
+        *,
+        now: datetime | None = None,
+        boundary_id: str | None = None,
+    ) -> Boundary:
+        return register_boundary(
+            self.boundary_registry,
+            registration,
+            now=now,
+            boundary_id=boundary_id,
+        )
+
+    def disable_boundary(
+        self,
+        *,
+        boundary_id: str,
+        workspace_id: str,
+        now: datetime | None = None,
+    ) -> Boundary | None:
+        return disable_boundary(
+            self.boundary_registry,
+            boundary_id=boundary_id,
+            workspace_id=workspace_id,
+            now=now,
+        )
+
+    def enable_boundary(
+        self,
+        *,
+        boundary_id: str,
+        workspace_id: str,
+        now: datetime | None = None,
+    ) -> Boundary | None:
+        return enable_boundary(
+            self.boundary_registry,
+            boundary_id=boundary_id,
+            workspace_id=workspace_id,
+            now=now,
+        )
+
+    def list_boundaries(self, workspace_id: str) -> tuple[Boundary, ...]:
+        return tuple(self.boundary_registry.list_for_workspace(workspace_id))
+
     def enforce(self, request: V1EnforceRequest, *, now: datetime) -> V1EnforceResponse:
         return enforce_v1_contract(
             request,
@@ -270,4 +344,26 @@ def _boundary_from_row(row: sqlite3.Row | tuple | None) -> Boundary | None:
         status=row[6],
         created_at=datetime.fromisoformat(row[7]),
         updated_at=datetime.fromisoformat(row[8]),
+    )
+
+
+def _audit_event_from_json(value: str) -> AuditEvent:
+    data = json.loads(value)
+    return AuditEvent(
+        event_id=data["event_id"],
+        event_type=data["event_type"],
+        decision=data["decision"],
+        reason=data["reason"],
+        workspace_id=data["workspace_id"],
+        agent_id=data["agent_id"],
+        grant_id=data["grant_id"],
+        grant_ref=data["grant_ref"],
+        action=data["action"],
+        resource=data["resource"],
+        scope_attempted=data["scope_attempted"],
+        scope_matched=data["scope_matched"],
+        boundary_id=data["boundary_id"],
+        runtime=data["runtime"],
+        boundary_type=data["boundary_type"],
+        created_at=datetime.fromisoformat(data["created_at"]),
     )

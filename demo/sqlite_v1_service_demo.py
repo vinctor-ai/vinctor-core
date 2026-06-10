@@ -4,7 +4,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from tempfile import TemporaryDirectory
 
-from vinctor_core import BoundaryRegistrationInput, Grant, disable_boundary, register_boundary
+from vinctor_core import BoundaryRegistrationInput, Grant
 from vinctor_service import SQLiteV1Service, V1EnforceRequest
 
 
@@ -24,8 +24,7 @@ def main() -> None:
                 expires_at=now + timedelta(hours=1),
             )
         )
-        boundary = register_boundary(
-            service.boundary_registry,
+        boundary = service.register_boundary(
             BoundaryRegistrationInput(
                 workspace_id="ws_demo",
                 name="claude-code-local",
@@ -57,8 +56,7 @@ def main() -> None:
         assert missing_grant.decision is None
         assert _audit_count(conn) == 2
 
-        disable_boundary(
-            service.boundary_registry,
+        service.disable_boundary(
             boundary_id=boundary.boundary_id,
             workspace_id="ws_demo",
             now=now + timedelta(seconds=1),
