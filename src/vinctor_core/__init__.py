@@ -9,7 +9,10 @@ from vinctor_core.models import (
     DecisionResult,
     EnforceInput,
     Grant,
+    PolicyInput,
+    PolicyResult,
 )
+from vinctor_core.policy import evaluate_policy
 from vinctor_core.registry import (
     BoundaryRegistry,
     disable_boundary,
@@ -26,9 +29,12 @@ __all__ = [
     "DecisionResult",
     "EnforceInput",
     "Grant",
+    "PolicyInput",
+    "PolicyResult",
     "build_audit_event",
     "disable_boundary",
     "evaluate_enforce",
+    "evaluate_policy",
     "get_boundary_for_workspace",
     "register_boundary",
 ]
