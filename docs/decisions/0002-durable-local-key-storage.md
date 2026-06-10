@@ -97,13 +97,27 @@ Integrate the local launcher with durable key storage:
   create additional active keys. That is acceptable for this slice because
   local config/keychain persistence is intentionally deferred.
 
+Use explicit-key reuse for the current local prototype:
+
+- Operators should pass restart-stable raw keys back through `--workspace-key`
+  and `--agent-key`, or equivalent environment/config wiring that already
+  exists outside this repository.
+- Do not add plaintext raw key storage in SQLite.
+- Do not add a local config file containing raw keys.
+- Do not add OS keychain integration or automatic key recovery in this slice.
+- If a future local config option is considered, it should store references or
+  metadata rather than raw secrets.
+- OS keychain integration remains the preferred future direction for local
+  developer UX, but it needs a separate ADR-backed slice after dogfooding the
+  explicit bootstrap flow.
+
 ## Consequences
 
 - Raw keys cannot be recovered from SQLite. Lost keys must be rotated or
   regenerated.
-- The local launcher remains useful without a config file, but restart-stable
-  raw key reuse requires either explicit `--workspace-key`/`--agent-key` input
-  or a future local config/keychain slice.
+- The local launcher remains useful without repository-managed raw secret
+  storage, but restart-stable raw key reuse requires explicit
+  `--workspace-key`/`--agent-key` input for now.
 - Key revocation can be tested and used by service code before public key
   management endpoints exist.
 - `X-Agent-Key` remains separate from `X-Workspace-Key`; neither key type is

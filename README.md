@@ -251,6 +251,22 @@ Workspace/admin keys use the `wsk_` prefix. Agent enforce keys use the `aak_`
 prefix. If a raw key is lost, create or provide a new key rather than expecting
 SQLite to recover the original secret.
 
+Generated raw keys are explicit operator-managed secrets for now. The launcher
+does not write them to SQLite, a local config file, or an OS keychain. After the
+first run, reuse copied keys by passing them back explicitly:
+
+```bash
+.venv/bin/python -m vinctor_service.local_launcher \
+  --db .vinctor-local.sqlite \
+  --workspace-key "$VINCTOR_WORKSPACE_KEY" \
+  --agent-key "$VINCTOR_AGENT_KEY" \
+  --boundary-name claude-code-local
+```
+
+Re-running without `--workspace-key` and `--agent-key` may create additional
+active local key records. Unknown or revoked keys continue to authenticate as a
+generic `401 authentication_required`.
+
 ## Audit Semantics
 
 The core may construct audit event data, but it does not own durable audit

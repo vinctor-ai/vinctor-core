@@ -70,9 +70,11 @@ V1 service contract boundary:
 
 ## Next
 
-- Decide whether local config/keychain support should preserve generated raw
-  keys across restarts, or whether explicit `--workspace-key`/`--agent-key`
-  input is sufficient for the next prototype stage.
+- Dogfood the explicit local key flow with a real boundary caller: first launch
+  prints raw keys once, later launches pass `--workspace-key` and `--agent-key`
+  explicitly.
+- Keep local config-file auto-reuse and OS keychain integration deferred until
+  the local bootstrap UX is stable enough for a separate ADR-backed slice.
 
 ## Open Questions
 
