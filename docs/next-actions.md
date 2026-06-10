@@ -2,10 +2,11 @@
 
 ## Current Focus
 
-Policy evaluation:
+Service application boundary:
 
-- Add a core-only policy helper for evaluating already-issued grant candidates.
-- Do not add service storage, HTTP APIs, auth, or runtime hooks.
+- Add `vinctor_service` inside this repository.
+- Start with an application service function over already-loaded grants.
+- Do not add service storage, HTTP APIs, auth headers, or runtime hooks yet.
 
 ## Done
 
@@ -28,16 +29,16 @@ Policy evaluation:
 - Added package build verification before publishing.
 - Enforced workspace-local boundary name uniqueness.
 - Added disabled boundary reactivation while preserving boundary identity.
+- Added `vinctor_service.authorize_action` as a thin application service
+  boundary over `vinctor_core.evaluate_policy`.
 
 ## Next
 
-- Decide the next core/service boundary slice.
+- Decide the first service repository interface for grant lookup.
 
 ## Open Questions
 
 - Should `unresolved` remain service-layer only, or become a future core outcome?
-- Should future service code live under `vinctor_service` in this repository, or
-  remain in a separate repository until persistence/API behavior is stable?
 
 ## Validation Status
 

@@ -9,10 +9,11 @@ Deterministic authorization core for mediated AI-agent actions.
 `vinctor-core` starts with the core authorization logic used to decide whether a
 mediated AI-agent action should be permitted under a scoped grant.
 
-This repository starts with the deterministic authorization core. Service-layer
-packages may live here as the implementation matures, but must remain layered
-above the core. The core focuses on deterministic decision behavior that can be
-tested, reviewed, and reused by service layers and runtime boundary adapters.
+This repository starts with the deterministic authorization core and now also
+contains a thin `vinctor_service` application layer. Service-layer packages must
+remain layered above the core. The core focuses on deterministic decision
+behavior that can be tested, reviewed, and reused by service layers and runtime
+boundary adapters.
 
 Vinctor is the current working name and may change later.
 
@@ -140,11 +141,10 @@ the boundary identity and updates `updated_at`.
 
 ## Relationship to the Authorization Service
 
-The authorization service, whether it lives in this repository later as
-`vinctor_service` or in a separate package, composes this core with service
-concerns such as HTTP APIs, caller authentication, workspace and agent identity,
-durable grant storage, durable audit storage, revocation endpoints, and service
-availability.
+The `vinctor_service` package composes this core with service-shaped application
+requests. Future service slices may add concerns such as HTTP APIs, caller
+authentication, workspace and agent identity, durable grant storage, durable
+audit storage, revocation endpoints, and service availability.
 
 Layering rule:
 
@@ -157,6 +157,28 @@ Layering rule:
 This core should remain usable without a running HTTP service. The service
 layer may call this core to evaluate decisions and then persist the resulting
 audit record.
+
+## Service Application Boundary
+
+This repository includes `vinctor_service` as the first service-layer package.
+It is intentionally thin: it maps service-shaped application requests onto
+`vinctor_core` policy evaluation and maps the result back to a service-shaped
+response.
+
+`authorize_action` accepts:
+
+- an `AuthorizationRequest`
+- an explicit tuple of already-loaded `Grant` candidates
+- the current time
+- an optional boundary registry
+
+It does not implement HTTP routing, auth headers, durable grant lookup, durable
+audit persistence, hosted service behavior, or runtime adapter hooks. Those
+remain future service-layer responsibilities.
+
+The current service package exists to make the layering concrete:
+`vinctor_service` imports `vinctor_core`, and `vinctor_core` does not import
+`vinctor_service`.
 
 ## Audit Semantics
 
@@ -207,7 +229,8 @@ git diff --check
 - `.github/workflows/ci.yml` - public CI for tests, demo, lint, and whitespace
 - `docs/next-actions.md` - current work state and next tasks
 - `docs/decisions/` - durable design decisions when needed
-- `src/` - core authorization logic
+- `src/vinctor_core/` - core authorization logic
+- `src/vinctor_service/` - service-layer application helpers
 - `tests/` - behavior-defining tests
 
 ## Status
