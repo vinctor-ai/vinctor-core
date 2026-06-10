@@ -4,15 +4,25 @@ Guidance for AI coding agents working in this repository.
 
 ## Project Shape
 
-`vinctor-core` is the deterministic authorization core for mediated AI-agent
-actions. It evaluates explicit authorization inputs and returns deterministic
-decision/audit data.
+`vinctor-core` starts with the deterministic authorization core for mediated
+AI-agent actions. It evaluates explicit authorization inputs and returns
+deterministic decision/audit data.
 
-Keep this repository focused on core behavior.
+Service-layer packages may live here as the implementation matures, but must
+remain layered above the core. Keep core behavior small, deterministic, and
+runtime-agnostic.
 
 ## Hard Boundaries
 
-Do not add runtime-specific code to the core.
+Do not add runtime-specific code to `vinctor_core`.
+
+Layering rule:
+
+- `vinctor_core` must not import `vinctor_service`.
+- `vinctor_service` may import `vinctor_core`.
+- `vinctor_core` remains DB/HTTP/runtime-agnostic.
+- `vinctor_service` owns HTTP APIs, auth headers, persistence, and
+  workspace/agent/grant/boundary/audit storage.
 
 Do not implement:
 

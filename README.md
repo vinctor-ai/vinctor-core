@@ -6,12 +6,13 @@ Deterministic authorization core for mediated AI-agent actions.
 
 ## Purpose
 
-`vinctor-core` contains the core authorization logic used to decide whether a
+`vinctor-core` starts with the core authorization logic used to decide whether a
 mediated AI-agent action should be permitted under a scoped grant.
 
-This repository is intentionally narrower than the full Vinctor product. It
-focuses on deterministic decision behavior that can be tested, reviewed, and
-reused by service layers and runtime boundary adapters.
+This repository starts with the deterministic authorization core. Service-layer
+packages may live here as the implementation matures, but must remain layered
+above the core. The core focuses on deterministic decision behavior that can be
+tested, reviewed, and reused by service layers and runtime boundary adapters.
 
 Vinctor is the current working name and may change later.
 
@@ -95,9 +96,19 @@ event formats.
 
 ## Relationship to the Authorization Service
 
-The authorization service composes this core with service concerns such as HTTP
-APIs, caller authentication, workspace and agent identity, durable grant
-storage, durable audit storage, revocation endpoints, and service availability.
+The authorization service, whether it lives in this repository later as
+`vinctor_service` or in a separate package, composes this core with service
+concerns such as HTTP APIs, caller authentication, workspace and agent identity,
+durable grant storage, durable audit storage, revocation endpoints, and service
+availability.
+
+Layering rule:
+
+- `vinctor_core` must not import `vinctor_service`.
+- `vinctor_service` may import `vinctor_core`.
+- `vinctor_core` remains DB/HTTP/runtime-agnostic.
+- `vinctor_service` owns HTTP APIs, auth headers, persistence, and
+  workspace/agent/grant/boundary/audit storage.
 
 This core should remain usable without a running HTTP service. The service
 layer may call this core to evaluate decisions and then persist the resulting

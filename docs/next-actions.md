@@ -2,11 +2,13 @@
 
 ## Current Focus
 
-Phase 4 authorization core vertical slice:
+Repository boundary update:
 
-- Boundary Registry
-- boundary-aware enforce decisions
-- boundary-aware audit event construction
+- Document that this repository starts with `vinctor_core`.
+- Allow future `vinctor_service` packages in this repository.
+- Keep `vinctor_service` layered above `vinctor_core`.
+- Do not start service wrapper work before scope validation unless explicitly
+  approved.
 
 ## Done
 
@@ -20,13 +22,20 @@ Phase 4 authorization core vertical slice:
 - Added GitHub Actions CI for tests, demo, Ruff, and whitespace checks.
 - Added JSON-safe audit event serialization.
 - Added workspace-safe boundary lookup and boundary disable helpers.
+- Documented that service-layer packages may live in this repository later if
+  they remain layered above the deterministic core.
 
 ## Next
 
-- Decide whether service-layer persistence/API belongs in this repository as a
-  later package or in a separate repository.
-- Add policy evaluation only after the already-issued grant model is stable.
-- Add stricter scope validation if the next slice needs malformed-scope errors.
+- Add scope validation before starting an HTTP service wrapper.
+- Define allowed action verb validation.
+- Reject malformed grant scopes.
+- Define resource wildcard rules.
+- Add invalid grant scope reason codes.
+- Add invalid requested action/resource handling.
+- Cover validation behavior with tests.
+- Add policy evaluation only after the already-issued grant model and scope
+  validation are stable.
 - Add packaging/release automation before publishing.
 - Decide whether boundary names should be unique within a workspace.
 - Decide whether disabled boundaries should support reactivation.
@@ -34,7 +43,8 @@ Phase 4 authorization core vertical slice:
 ## Open Questions
 
 - Should `unresolved` remain service-layer only, or become a future core outcome?
-- What exact service package boundary should wrap this core later?
+- Should future service code live under `vinctor_service` in this repository, or
+  remain in a separate repository until persistence/API behavior is stable?
 
 ## Validation Status
 
