@@ -199,6 +199,10 @@ implementations of the service-layer grant lookup and audit write boundaries.
 lookup for the existing boundary-aware enforce path. These helpers do not add
 HTTP routing or hosted behavior.
 
+`SQLiteV1Service` composes the SQLite grant repository, audit writer, boundary
+registry, and v1 enforce adapter for local in-process integration tests and
+demos. It is not an HTTP service.
+
 ## Audit Semantics
 
 The core may construct audit event data, but it does not own durable audit
@@ -239,6 +243,7 @@ Python 3.11 or newer is required.
 .venv/bin/python demo/in_memory_v1_service_demo.py
 .venv/bin/python demo/sqlite_grant_audit_demo.py
 .venv/bin/python demo/sqlite_boundary_registry_demo.py
+.venv/bin/python demo/sqlite_v1_service_demo.py
 .venv/bin/ruff check .
 .venv/bin/python -m build
 git diff --check

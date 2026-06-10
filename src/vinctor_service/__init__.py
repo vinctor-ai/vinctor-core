@@ -14,6 +14,7 @@ from vinctor_service.sqlite import (
     SQLiteAuditWriter,
     SQLiteBoundaryRegistry,
     SQLiteGrantRepository,
+    SQLiteV1Service,
     init_sqlite_schema,
     insert_grant,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "SQLiteAuditWriter",
     "SQLiteBoundaryRegistry",
     "SQLiteGrantRepository",
+    "SQLiteV1Service",
     "V1EnforceRequest",
     "V1EnforceResponse",
     "authorize_action",

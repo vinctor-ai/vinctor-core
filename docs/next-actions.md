@@ -46,11 +46,13 @@ V1 service contract boundary:
   service-layer repository/writer abstractions.
 - Added SQLite-backed boundary registry support for durable boundary lookup,
   active/disabled state, and boundary context in audit rows.
+- Added `SQLiteV1Service` to compose SQLite grant lookup, audit writing,
+  boundary registry, and v1 enforce behavior for local in-process use.
 
 ## Next
 
-- Compose the SQLite grant/audit/boundary pieces into a local in-process
-  SQLite service object.
+- Decide whether to add a minimal local HTTP service package or keep one more
+  slice in-process.
 
 ## Open Questions
 

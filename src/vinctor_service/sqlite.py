@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from vinctor_core.models import AuditEvent, Boundary, Grant
+from vinctor_service.models import V1EnforceRequest, V1EnforceResponse
+from vinctor_service.v1_enforce import enforce_v1_contract
 
 
 def init_sqlite_schema(conn: sqlite3.Connection) -> None:
@@ -216,6 +219,34 @@ class SQLiteBoundaryRegistry:
             for row in rows
             if (boundary := _boundary_from_row(row)) is not None
         ]
+
+
+@dataclass
+class SQLiteV1Service:
+    conn: sqlite3.Connection
+    initialize_schema: bool = True
+    grant_repository: SQLiteGrantRepository = field(init=False)
+    audit_writer: SQLiteAuditWriter = field(init=False)
+    boundary_registry: SQLiteBoundaryRegistry = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.initialize_schema:
+            init_sqlite_schema(self.conn)
+        self.grant_repository = SQLiteGrantRepository(self.conn)
+        self.audit_writer = SQLiteAuditWriter(self.conn)
+        self.boundary_registry = SQLiteBoundaryRegistry(self.conn)
+
+    def insert_grant(self, grant: Grant) -> None:
+        insert_grant(self.conn, grant)
+
+    def enforce(self, request: V1EnforceRequest, *, now: datetime) -> V1EnforceResponse:
+        return enforce_v1_contract(
+            request,
+            grant_repository=self.grant_repository,
+            now=now,
+            audit_writer=self.audit_writer,
+            boundary_registry=self.boundary_registry,
+        )
 
 
 def _datetime_to_storage(value: datetime | None) -> str | None:
