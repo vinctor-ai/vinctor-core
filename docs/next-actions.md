@@ -58,11 +58,14 @@ V1 service contract boundary:
 - Added workspace-key-protected boundary registry HTTP contract adapters for
   `POST /v1/boundaries`, `GET /v1/boundaries`, and
   `GET /v1/boundaries/{boundary_id}`.
+- Added boundary status HTTP contract adapters for
+  `POST /v1/boundaries/{boundary_id}/disable` and
+  `POST /v1/boundaries/{boundary_id}/enable`.
 
 ## Next
 
-- Decide whether boundary disable/enable should get local HTTP contract
-  adapters next, or remain in-process until a fuller service package exists.
+- Decide whether to add a small local service launch helper or keep local HTTP
+  server construction explicitly in demos/tests.
 
 ## Open Questions
 
