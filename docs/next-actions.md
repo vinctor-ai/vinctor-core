@@ -2,11 +2,12 @@
 
 ## Current Focus
 
-Service application boundary:
+V1 service contract boundary:
 
-- Add `vinctor_service` inside this repository.
-- Start with an application service function over already-loaded grants.
-- Do not add service storage, HTTP APIs, auth headers, or runtime hooks yet.
+- Keep `vinctor_service` as in-process application helpers.
+- Preserve v1 enforce semantics before any HTTP or durable storage package.
+- Do not add HTTP APIs, auth headers, DB persistence, hosted behavior, or
+  runtime hooks yet.
 
 ## Done
 
@@ -31,10 +32,14 @@ Service application boundary:
 - Added disabled boundary reactivation while preserving boundary identity.
 - Added `vinctor_service.authorize_action` as a thin application service
   boundary over `vinctor_core.evaluate_policy`.
+- Added `vinctor_service.enforce_v1_contract` to preserve v1 enforce
+  pre-audit failures, audit-before-decision behavior, and service-style
+  response mapping without adding HTTP or storage.
 
 ## Next
 
-- Decide the first service repository interface for grant lookup.
+- Decide whether a future repository interface should expose grant lookup by
+  `grant_ref` directly or pass already-loaded grants into the v1 adapter.
 
 ## Open Questions
 

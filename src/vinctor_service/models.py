@@ -27,3 +27,25 @@ class AuthorizationResponse:
     grant_id: str | None = None
     grant_ref: str | None = None
     boundary_id: str | None = None
+
+
+@dataclass(frozen=True)
+class V1EnforceRequest:
+    workspace_id: str
+    agent_id: str
+    grant_ref: str
+    action: str
+    resource: str
+    boundary_id: str | None = None
+
+
+@dataclass(frozen=True)
+class V1EnforceResponse:
+    status_code: int
+    decision: Decision | None = None
+    error: str | None = None
+    reason: str | None = None
+    grant_id: str | None = None
+    agent_id: str | None = None
+    scope_matched: str | None = None
+    audit_event_id: str | None = None

@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+from collections.abc import Callable
+from datetime import datetime
+
+from vinctor_core.audit import AuditEventInput, build_audit_event
+from vinctor_core.enforce import evaluate_enforce
+from vinctor_core.models import AuditEvent, BoundaryLookup, DecisionResult, EnforceInput, Grant
+from vinctor_core.scope import is_valid_requested_action, is_valid_requested_resource
+from vinctor_service.models import V1EnforceRequest, V1EnforceResponse
+
+AuditWriter = Callable[[AuditEvent], None]
+
+
+def enforce_v1_contract(
+    request: V1EnforceRequest,
+    *,
+    grants: tuple[Grant, ...],
+    now: datetime,
+    write_audit: AuditWriter,
+    boundary_registry: BoundaryLookup | None = None,
+) -> V1EnforceResponse:
+    grant = _find_grant_by_ref(grants, request.grant_ref)
+    if grant is None:
+        return _pre_audit_error(
+            404,
+            "grant_not_found",
+            f"grant_ref {request.grant_ref} does not exist",
+        )
+
+    if grant.workspace_id != request.workspace_id or grant.agent_id != request.agent_id:
+        return _pre_audit_error(
+            403,
+            "forbidden",
+            f"grant_ref {request.grant_ref} does not belong to the requesting agent",
+        )
+
+    if not is_valid_requested_action(request.action):
+        return _pre_audit_error(
+            400,
+            "scope_invalid",
+            _invalid_action_reason(request.action),
+        )
+
+    if not is_valid_requested_resource(request.resource):
+        return _pre_audit_error(
+            400,
+            "scope_invalid",
+            f"resource '{request.resource}' is not a valid v1 resource path",
+        )
+
+    decision = evaluate_enforce(
+        EnforceInput(
+            grant=grant,
+            action=request.action,
+            resource=request.resource,
+            now=now,
+            boundary_id=request.boundary_id,
+            boundary_registry=boundary_registry,
+        )
+    )
+    audit_event = build_audit_event(AuditEventInput(decision=decision, created_at=now))
+
+    try:
+        write_audit(audit_event)
+    except Exception:
+        return _pre_audit_error(
+            503,
+            "service_unavailable",
+            "audit write failed; no decision was recorded",
+        )
+
+    return _response_from_decision(decision, audit_event)
+
+
+def _find_grant_by_ref(grants: tuple[Grant, ...], grant_ref: str) -> Grant | None:
+    for grant in grants:
+        if grant.grant_ref == grant_ref:
+            return grant
+    return None
+
+
+def _response_from_decision(
+    decision: DecisionResult,
+    audit_event: AuditEvent,
+) -> V1EnforceResponse:
+    if decision.decision == "permit":
+        return V1EnforceResponse(
+            status_code=200,
+            decision="permit",
+            grant_id=decision.grant_id,
+            agent_id=decision.agent_id,
+            scope_matched=decision.scope_matched,
+            audit_event_id=audit_event.event_id,
+        )
+
+    return V1EnforceResponse(
+        status_code=403,
+        decision="deny",
+        error=decision.reason,
+        reason=_deny_reason(decision),
+        grant_id=decision.grant_id,
+        agent_id=decision.agent_id,
+        audit_event_id=audit_event.event_id,
+    )
+
+
+def _pre_audit_error(status_code: int, error: str, reason: str) -> V1EnforceResponse:
+    return V1EnforceResponse(status_code=status_code, error=error, reason=reason)
+
+
+def _invalid_action_reason(action: str) -> str:
+    if action == "push":
+        return (
+            "action 'push' is not a recognized v1 action verb; "
+            "use 'write' for git push operations"
+        )
+    return f"action '{action}' is not a recognized v1 action verb"
+
+
+def _deny_reason(decision: DecisionResult) -> str:
+    if decision.reason == "action_denied":
+        return f"scope {decision.scope_attempted} is not covered by grant {decision.grant_id}"
+    if decision.reason == "grant_revoked":
+        return f"grant {decision.grant_id} is revoked"
+    if decision.reason == "grant_expired":
+        return f"grant {decision.grant_id} is expired"
+    if decision.reason == "grant_not_active":
+        return f"grant {decision.grant_id} is not active"
+    if decision.reason.startswith("boundary_"):
+        boundary_id = decision.attempted_boundary_id or "unknown"
+        return f"boundary {boundary_id} could not be used for this enforce request"
+    return decision.reason
