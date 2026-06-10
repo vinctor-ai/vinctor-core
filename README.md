@@ -214,12 +214,36 @@ requests into service-layer boundary helpers. It supports `POST /v1/boundaries`,
 `GET /v1/boundaries`, `GET /v1/boundaries/{boundary_id}`,
 `POST /v1/boundaries/{boundary_id}/disable`, and
 `POST /v1/boundaries/{boundary_id}/enable` for local contract tests. It does
-not add delete behavior or approval workflows.
+not add delete behavior or approval workflows. `X-Workspace-Key` carries the
+workspace-scoped local/admin token.
 
 `create_v1_http_server` provides a small stdlib local HTTP wrapper for
 `POST /v1/enforce` and boundary registry demos and integration tests. It
 delegates request handling to the HTTP contract adapters; it is not a hosted
 service or production HTTP server.
+
+`python -m vinctor_service.local_launcher` starts a local SQLite-backed
+prototype service and prints copy-pasteable exports:
+
+```bash
+.venv/bin/python -m vinctor_service.local_launcher \
+  --db .vinctor-local.sqlite \
+  --boundary-name claude-code-local
+```
+
+The launcher prints:
+
+```bash
+export VINCTOR_ENDPOINT=...
+export VINCTOR_AGENT_KEY=...
+export VINCTOR_GRANT_REF=...
+export VINCTOR_WORKSPACE_KEY=...
+export VINCTOR_BOUNDARY_ID=...
+```
+
+`VINCTOR_BOUNDARY_ID` is optional and should be sent as the
+`X-Vinctor-Boundary-Id` header when a local runtime boundary wants boundary
+context included in enforce/audit behavior.
 
 ## Audit Semantics
 
@@ -265,6 +289,7 @@ Python 3.11 or newer is required.
 .venv/bin/python demo/v1_http_contract_demo.py
 .venv/bin/python demo/local_v1_http_service_demo.py
 .venv/bin/python demo/boundary_admin_http_demo.py
+.venv/bin/python demo/local_service_launch_helper_demo.py
 .venv/bin/ruff check .
 .venv/bin/python -m build
 git diff --check
