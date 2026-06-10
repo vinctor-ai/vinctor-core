@@ -7,11 +7,14 @@ from vinctor_service.models import (
     V1EnforceRequest,
     V1EnforceResponse,
 )
+from vinctor_service.repositories import GrantRepository, InMemoryGrantRepository
 from vinctor_service.v1_enforce import enforce_v1_contract
 
 __all__ = [
     "AuthorizationRequest",
     "AuthorizationResponse",
+    "GrantRepository",
+    "InMemoryGrantRepository",
     "V1EnforceRequest",
     "V1EnforceResponse",
     "authorize_action",

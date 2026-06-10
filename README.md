@@ -172,9 +172,18 @@ response.
 - the current time
 - an optional boundary registry
 
-It does not implement HTTP routing, auth headers, durable grant lookup, durable
-audit persistence, hosted service behavior, or runtime adapter hooks. Those
-remain future service-layer responsibilities.
+`enforce_v1_contract` accepts:
+
+- a `V1EnforceRequest`
+- a `GrantRepository` for `grant_ref` lookup
+- the current time
+- an audit writer callback
+- an optional boundary registry
+
+It preserves v1 pre-audit failures and audit-before-decision behavior without
+implementing HTTP routing, auth headers, durable grant storage, durable audit
+persistence, hosted service behavior, or runtime adapter hooks. Those remain
+future service-layer responsibilities.
 
 The current service package exists to make the layering concrete:
 `vinctor_service` imports `vinctor_core`, and `vinctor_core` does not import
