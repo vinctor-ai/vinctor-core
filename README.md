@@ -193,6 +193,10 @@ The current service package exists to make the layering concrete:
 optional boundary registry, and v1 enforce adapter for integration tests and
 local demos. It is not a durable service implementation.
 
+`SQLiteGrantRepository` and `SQLiteAuditWriter` provide local SQLite-backed
+implementations of the service-layer grant lookup and audit write boundaries.
+They do not add HTTP routing, hosted behavior, or durable boundary persistence.
+
 ## Audit Semantics
 
 The core may construct audit event data, but it does not own durable audit
@@ -231,6 +235,7 @@ Python 3.11 or newer is required.
 .venv/bin/python -m pytest -q
 .venv/bin/python demo/boundary_registry_core_e2e.py
 .venv/bin/python demo/in_memory_v1_service_demo.py
+.venv/bin/python demo/sqlite_grant_audit_demo.py
 .venv/bin/ruff check .
 .venv/bin/python -m build
 git diff --check

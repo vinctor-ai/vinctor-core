@@ -42,11 +42,12 @@ V1 service contract boundary:
 - Added `InMemoryV1Service` to compose the in-memory grant repository, audit
   writer, boundary registry, and v1 enforce adapter for integration tests and
   local demos.
+- Added SQLite-backed grant lookup and audit writing for the existing
+  service-layer repository/writer abstractions.
 
 ## Next
 
-- Decide whether the first durable service slice should start with SQLite-backed
-  grant/audit repositories.
+- Add SQLite-backed boundary registry support.
 
 ## Open Questions
 

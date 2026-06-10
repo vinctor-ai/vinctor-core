@@ -31,6 +31,9 @@ jobs:
       - name: Run in-memory service demo
         run: python demo/in_memory_v1_service_demo.py
 
+      - name: Run SQLite grant/audit demo
+        run: python demo/sqlite_grant_audit_demo.py
+
       - name: Run Ruff
         run: ruff check .
 
