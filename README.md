@@ -189,6 +189,10 @@ The current service package exists to make the layering concrete:
 `vinctor_service` imports `vinctor_core`, and `vinctor_core` does not import
 `vinctor_service`.
 
+`InMemoryV1Service` composes the in-memory grant repository, audit writer,
+optional boundary registry, and v1 enforce adapter for integration tests and
+local demos. It is not a durable service implementation.
+
 ## Audit Semantics
 
 The core may construct audit event data, but it does not own durable audit
@@ -226,6 +230,7 @@ Python 3.11 or newer is required.
 .venv/bin/python -m pip install -e ".[dev]"
 .venv/bin/python -m pytest -q
 .venv/bin/python demo/boundary_registry_core_e2e.py
+.venv/bin/python demo/in_memory_v1_service_demo.py
 .venv/bin/ruff check .
 .venv/bin/python -m build
 git diff --check

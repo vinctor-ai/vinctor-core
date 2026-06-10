@@ -39,11 +39,14 @@ V1 service contract boundary:
   so v1 enforce lookup behavior is explicit without adding durable storage.
 - Added a service-layer `AuditWriter` protocol and in-memory implementation so
   v1 audit-before-decision behavior is explicit without adding durable storage.
+- Added `InMemoryV1Service` to compose the in-memory grant repository, audit
+  writer, boundary registry, and v1 enforce adapter for integration tests and
+  local demos.
 
 ## Next
 
 - Decide whether the first durable service slice should start with SQLite-backed
-  grant/audit repositories or remain in-memory for one more integration slice.
+  grant/audit repositories.
 
 ## Open Questions
 

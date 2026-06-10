@@ -2,6 +2,7 @@
 
 from vinctor_service.audit import AuditWriter, InMemoryAuditWriter
 from vinctor_service.authorize import authorize_action
+from vinctor_service.in_memory import InMemoryV1Service
 from vinctor_service.models import (
     AuthorizationRequest,
     AuthorizationResponse,
@@ -18,6 +19,7 @@ __all__ = [
     "GrantRepository",
     "InMemoryAuditWriter",
     "InMemoryGrantRepository",
+    "InMemoryV1Service",
     "V1EnforceRequest",
     "V1EnforceResponse",
     "authorize_action",
