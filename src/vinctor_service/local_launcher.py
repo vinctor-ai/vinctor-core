@@ -125,7 +125,12 @@ def prepare_local_service(
     )
 
 
-def render_env_exports(handle: LocalServiceHandle) -> str:
+def render_env_exports(
+    handle: LocalServiceHandle,
+    *,
+    now: datetime | None = None,
+) -> str:
+    timestamp = now or datetime.now(UTC)
     lines = [
         "# Vinctor local service exports",
         f"export VINCTOR_ENDPOINT={_quote(handle.endpoint)}",
@@ -142,6 +147,11 @@ def render_env_exports(handle: LocalServiceHandle) -> str:
         )
     if handle.grant_expires_at is not None:
         lines.append(f"# Grant expires at {handle.grant_expires_at.isoformat()}.")
+        if handle.grant_expires_at <= timestamp:
+            lines.append(
+                "# WARNING: this grant is expired; /v1/enforce will deny until "
+                "you use a fresh grant or database."
+            )
     if handle.generated_workspace_key or handle.generated_agent_key:
         lines.append("# Store these raw keys outside the repo; SQLite stores hashes only.")
     lines.extend(_restart_command_lines(handle))

@@ -71,7 +71,7 @@ def test_render_env_exports_includes_copy_pasteable_hook_values(
         now=NOW,
     )
     try:
-        exports = render_env_exports(handle)
+        exports = render_env_exports(handle, now=NOW)
     finally:
         handle.close()
 
@@ -88,6 +88,28 @@ def test_render_env_exports_includes_copy_pasteable_hook_values(
     assert '#   --grant-ref "$VINCTOR_GRANT_REF" \\' in exports
     assert '#   --boundary-name "claude-code-local"' in exports
     assert "X-Vinctor-Boundary-Id" in exports
+
+
+def test_render_env_exports_warns_when_grant_is_expired(
+    tmp_path: Path,
+) -> None:
+    handle = prepare_local_service(
+        LocalLaunchConfig(
+            db_path=tmp_path / "vinctor.sqlite",
+            port=0,
+            workspace_key="wsk_demo",
+            agent_key="aak_demo",
+            grant_ref="grt_demo",
+            boundary_name="claude-code-local",
+        ),
+        now=NOW,
+    )
+    try:
+        exports = render_env_exports(handle, now=NOW + timedelta(hours=9))
+    finally:
+        handle.close()
+
+    assert "# WARNING: this grant is expired; /v1/enforce will deny" in exports
 
 
 def test_prepare_local_service_reuses_existing_grant_and_boundary(

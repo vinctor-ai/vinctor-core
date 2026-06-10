@@ -27,6 +27,9 @@ export VINCTOR_BOUNDARY_ID="bnd_..."
 Keep the raw keys outside the repository. SQLite stores only key hashes and
 metadata, not raw workspace or agent keys.
 
+Copy these exports into the shell or process that will call the boundary while
+the launcher keeps running.
+
 Use the exports from a boundary caller:
 
 ```bash
@@ -307,6 +310,7 @@ first run, reuse copied keys by passing them back explicitly:
   --db .vinctor-local.sqlite \
   --workspace-key "$VINCTOR_WORKSPACE_KEY" \
   --agent-key "$VINCTOR_AGENT_KEY" \
+  --grant-ref "$VINCTOR_GRANT_REF" \
   --boundary-name claude-code-local
 ```
 
