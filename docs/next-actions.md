@@ -70,12 +70,15 @@ V1 service contract boundary:
 - Tightened local bootstrap exports to quoted shell assignments and added a
   bootstrap demo covering generated keys, explicit key reuse, enforce, and
   boundary-aware audit.
+- Ran an agent-based local bootstrap dogfooding pass, recorded findings, and
+  improved operator UX with a top-level quickstart, restart guidance, CLI help,
+  and visible grant expiry.
 
 ## Next
 
-- Dogfood the explicit local key flow with a real boundary caller: first launch
-  prints raw keys once, later launches pass `--workspace-key` and `--agent-key`
-  explicitly.
+- Dogfood the explicit local key flow with a real boundary caller outside this
+  repo: first launch prints raw keys once, later launches pass
+  `--workspace-key` and `--agent-key` explicitly.
 - Keep local config-file auto-reuse and OS keychain integration deferred until
   the local bootstrap UX is stable enough for a separate ADR-backed slice.
 

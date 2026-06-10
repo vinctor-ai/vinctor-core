@@ -4,6 +4,53 @@ Deterministic authorization core for mediated AI-agent actions.
 
 > Status: early prototype. APIs and package boundaries may change.
 
+## Local Prototype Quickstart
+
+Start the local SQLite-backed prototype service:
+
+```bash
+.venv/bin/python -m vinctor_service.local_launcher \
+  --db .vinctor-local.sqlite \
+  --boundary-name claude-code-local
+```
+
+The launcher prints copy-pasteable exports:
+
+```bash
+export VINCTOR_ENDPOINT="http://127.0.0.1:<port>"
+export VINCTOR_AGENT_KEY="aak_..."
+export VINCTOR_GRANT_REF="grt_..."
+export VINCTOR_WORKSPACE_KEY="wsk_..."
+export VINCTOR_BOUNDARY_ID="bnd_..."
+```
+
+Keep the raw keys outside the repository. SQLite stores only key hashes and
+metadata, not raw workspace or agent keys.
+
+Use the exports from a boundary caller:
+
+```bash
+curl -sS "$VINCTOR_ENDPOINT/v1/enforce" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-Key: $VINCTOR_AGENT_KEY" \
+  -H "X-Vinctor-Boundary-Id: $VINCTOR_BOUNDARY_ID" \
+  -d "{\"grant_ref\":\"$VINCTOR_GRANT_REF\",\"action\":\"write\",\"resource\":\"repo/feature/readme\"}"
+```
+
+The `/v1/enforce` body is intentionally strict: `grant_ref`, `action`, and
+`resource`. Boundary context belongs in headers.
+
+Restart with explicit keys:
+
+```bash
+.venv/bin/python -m vinctor_service.local_launcher \
+  --db .vinctor-local.sqlite \
+  --workspace-key "$VINCTOR_WORKSPACE_KEY" \
+  --agent-key "$VINCTOR_AGENT_KEY" \
+  --grant-ref "$VINCTOR_GRANT_REF" \
+  --boundary-name claude-code-local
+```
+
 ## Purpose
 
 `vinctor-core` starts with the core authorization logic used to decide whether a
