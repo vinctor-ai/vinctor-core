@@ -190,6 +190,7 @@ Python 3.11 or newer is required.
 .venv/bin/python -m pytest -q
 .venv/bin/python demo/boundary_registry_core_e2e.py
 .venv/bin/ruff check .
+.venv/bin/python -m build
 git diff --check
 ```
 

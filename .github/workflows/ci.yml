@@ -31,5 +31,8 @@ jobs:
       - name: Run Ruff
         run: ruff check .
 
+      - name: Build package
+        run: python -m build
+
       - name: Check whitespace
         run: git diff --check
