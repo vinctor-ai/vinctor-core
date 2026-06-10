@@ -40,6 +40,9 @@ jobs:
       - name: Run SQLite V1 service demo
         run: python demo/sqlite_v1_service_demo.py
 
+      - name: Run V1 HTTP contract demo
+        run: python demo/v1_http_contract_demo.py
+
       - name: Run Ruff
         run: ruff check .
 
