@@ -5,9 +5,10 @@ from datetime import datetime
 
 from vinctor_core.audit import AuditEventInput, build_audit_event
 from vinctor_core.enforce import evaluate_enforce
-from vinctor_core.models import AuditEvent, BoundaryLookup, DecisionResult, EnforceInput, Grant
+from vinctor_core.models import AuditEvent, BoundaryLookup, DecisionResult, EnforceInput
 from vinctor_core.scope import is_valid_requested_action, is_valid_requested_resource
 from vinctor_service.models import V1EnforceRequest, V1EnforceResponse
+from vinctor_service.repositories import GrantRepository
 
 AuditWriter = Callable[[AuditEvent], None]
 
@@ -15,12 +16,20 @@ AuditWriter = Callable[[AuditEvent], None]
 def enforce_v1_contract(
     request: V1EnforceRequest,
     *,
-    grants: tuple[Grant, ...],
+    grant_repository: GrantRepository,
     now: datetime,
     write_audit: AuditWriter,
     boundary_registry: BoundaryLookup | None = None,
 ) -> V1EnforceResponse:
-    grant = _find_grant_by_ref(grants, request.grant_ref)
+    try:
+        grant = grant_repository.get_by_ref(request.grant_ref)
+    except Exception:
+        return _pre_audit_error(
+            503,
+            "service_unavailable",
+            "grant lookup failed; no decision was recorded",
+        )
+
     if grant is None:
         return _pre_audit_error(
             404,
@@ -71,13 +80,6 @@ def enforce_v1_contract(
         )
 
     return _response_from_decision(decision, audit_event)
-
-
-def _find_grant_by_ref(grants: tuple[Grant, ...], grant_ref: str) -> Grant | None:
-    for grant in grants:
-        if grant.grant_ref == grant_ref:
-            return grant
-    return None
 
 
 def _response_from_decision(

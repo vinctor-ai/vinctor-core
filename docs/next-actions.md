@@ -35,11 +35,13 @@ V1 service contract boundary:
 - Added `vinctor_service.enforce_v1_contract` to preserve v1 enforce
   pre-audit failures, audit-before-decision behavior, and service-style
   response mapping without adding HTTP or storage.
+- Added a service-layer `GrantRepository` protocol and in-memory implementation
+  so v1 enforce lookup behavior is explicit without adding durable storage.
 
 ## Next
 
-- Decide whether a future repository interface should expose grant lookup by
-  `grant_ref` directly or pass already-loaded grants into the v1 adapter.
+- Harden the audit writer boundary and decide whether it should become a
+  protocol with an in-memory test implementation.
 
 ## Open Questions
 
