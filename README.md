@@ -234,11 +234,11 @@ prototype service and prints copy-pasteable exports:
 The launcher prints:
 
 ```bash
-export VINCTOR_ENDPOINT=...
-export VINCTOR_AGENT_KEY=...
-export VINCTOR_GRANT_REF=...
-export VINCTOR_WORKSPACE_KEY=...
-export VINCTOR_BOUNDARY_ID=...
+export VINCTOR_ENDPOINT="http://127.0.0.1:<port>"
+export VINCTOR_AGENT_KEY="aak_..."
+export VINCTOR_GRANT_REF="grt_..."
+export VINCTOR_WORKSPACE_KEY="wsk_..."
+export VINCTOR_BOUNDARY_ID="bnd_..."
 ```
 
 `VINCTOR_BOUNDARY_ID` is optional and should be sent as the
@@ -266,6 +266,12 @@ first run, reuse copied keys by passing them back explicitly:
 Re-running without `--workspace-key` and `--agent-key` may create additional
 active local key records. Unknown or revoked keys continue to authenticate as a
 generic `401 authentication_required`.
+
+The bootstrap flow is covered by:
+
+```bash
+.venv/bin/python demo/local_service_bootstrap_demo.py
+```
 
 ## Audit Semantics
 

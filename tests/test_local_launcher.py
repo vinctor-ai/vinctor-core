@@ -72,11 +72,11 @@ def test_render_env_exports_includes_copy_pasteable_hook_values(
     finally:
         handle.close()
 
-    assert f"export VINCTOR_ENDPOINT={handle.endpoint}" in exports
-    assert "export VINCTOR_AGENT_KEY=aak_demo" in exports
-    assert "export VINCTOR_GRANT_REF=grt_demo" in exports
-    assert "export VINCTOR_WORKSPACE_KEY=wsk_demo" in exports
-    assert "export VINCTOR_BOUNDARY_ID=" in exports
+    assert f'export VINCTOR_ENDPOINT="{handle.endpoint}"' in exports
+    assert 'export VINCTOR_AGENT_KEY="aak_demo"' in exports
+    assert 'export VINCTOR_GRANT_REF="grt_demo"' in exports
+    assert 'export VINCTOR_WORKSPACE_KEY="wsk_demo"' in exports
+    assert 'export VINCTOR_BOUNDARY_ID="' in exports
     assert "X-Vinctor-Boundary-Id" in exports
 
 

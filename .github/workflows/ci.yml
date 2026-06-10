@@ -52,6 +52,9 @@ jobs:
       - name: Run local service launch helper demo
         run: python demo/local_service_launch_helper_demo.py
 
+      - name: Run local service bootstrap demo
+        run: python demo/local_service_bootstrap_demo.py
+
       - name: Run Ruff
         run: ruff check .
 

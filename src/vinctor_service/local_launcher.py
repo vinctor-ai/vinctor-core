@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import shlex
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -334,7 +333,14 @@ def _new_id(prefix: str) -> str:
 
 
 def _quote(value: str) -> str:
-    return shlex.quote(value)
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("$", "\\$")
+        .replace("`", "\\`")
+        .replace("\n", "\\n")
+    )
+    return f'"{escaped}"'
 
 
 if __name__ == "__main__":

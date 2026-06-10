@@ -67,6 +67,9 @@ V1 service contract boundary:
 - Added durable SQLite local key records for `X-Workspace-Key` and
   `X-Agent-Key`, storing only key hashes plus metadata and resolving identities
   through the service layer.
+- Tightened local bootstrap exports to quoted shell assignments and added a
+  bootstrap demo covering generated keys, explicit key reuse, enforce, and
+  boundary-aware audit.
 
 ## Next
 
