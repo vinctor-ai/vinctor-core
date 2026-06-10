@@ -61,11 +61,14 @@ V1 service contract boundary:
 - Added boundary status HTTP contract adapters for
   `POST /v1/boundaries/{boundary_id}/disable` and
   `POST /v1/boundaries/{boundary_id}/enable`.
+- Added a local service launch helper that bootstraps SQLite grant/boundary
+  state, starts the stdlib local HTTP server, and prints copy-pasteable
+  `VINCTOR_*` exports for local runtime-hook usage.
 
 ## Next
 
-- Decide whether to add a small local service launch helper or keep local HTTP
-  server construction explicitly in demos/tests.
+- Decide whether durable workspace token storage should be introduced after
+  the local launcher contract settles.
 
 ## Open Questions
 
