@@ -46,10 +46,14 @@ class LocalServiceHandle:
     conn: sqlite3.Connection
     service: SQLiteV1Service
     server: ThreadingHTTPServer
+    db_path: Path
     endpoint: str
     workspace_key: str
     agent_key: str
     grant_ref: str
+    grant_expires_at: datetime | None
+    generated_workspace_key: bool
+    generated_agent_key: bool
     boundary: Boundary | None = None
 
     def close(self) -> None:
@@ -70,7 +74,7 @@ def prepare_local_service(
 
     try:
         service = SQLiteV1Service(conn)
-        _ensure_grant(service, config, now=timestamp)
+        grant = _ensure_grant(service, config, now=timestamp)
         boundary = _ensure_boundary(service, config, now=timestamp)
         key_repository = SQLiteLocalKeyRepository(conn)
         workspace_key = _ensure_workspace_key(
@@ -109,10 +113,14 @@ def prepare_local_service(
         conn=conn,
         service=service,
         server=server,
+        db_path=db_path,
         endpoint=f"http://{host}:{port}",
         workspace_key=workspace_key,
         agent_key=agent_key,
         grant_ref=config.grant_ref,
+        grant_expires_at=grant.expires_at,
+        generated_workspace_key=config.workspace_key is None,
+        generated_agent_key=config.agent_key is None,
         boundary=boundary,
     )
 
@@ -132,6 +140,11 @@ def render_env_exports(handle: LocalServiceHandle) -> str:
                 "# Use VINCTOR_BOUNDARY_ID as the X-Vinctor-Boundary-Id header.",
             ]
         )
+    if handle.grant_expires_at is not None:
+        lines.append(f"# Grant expires at {handle.grant_expires_at.isoformat()}.")
+    if handle.generated_workspace_key or handle.generated_agent_key:
+        lines.append("# Store these raw keys outside the repo; SQLite stores hashes only.")
+    lines.extend(_restart_command_lines(handle))
     return "\n".join(lines)
 
 
@@ -157,19 +170,52 @@ def _parse_args(argv: list[str] | None) -> LocalLaunchConfig:
         description="Run a local prototype Vinctor service.",
     )
     parser.add_argument("--db", required=True, type=Path, help="SQLite database path.")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", default=8765, type=int)
-    parser.add_argument("--workspace-id", default="ws_local")
-    parser.add_argument("--agent-id", default="agent_local")
-    parser.add_argument("--workspace-key")
-    parser.add_argument("--agent-key")
-    parser.add_argument("--grant-id")
-    parser.add_argument("--grant-ref", default="grt_local")
-    parser.add_argument("--scope", action="append", dest="scopes")
-    parser.add_argument("--grant-ttl-hours", default=8, type=int)
-    parser.add_argument("--boundary-name")
-    parser.add_argument("--boundary-runtime", default="claude-code")
-    parser.add_argument("--boundary-type", default="pretooluse")
+    parser.add_argument("--host", default="127.0.0.1", help="Local bind host.")
+    parser.add_argument(
+        "--port",
+        default=8765,
+        type=int,
+        help="Local bind port. Use 0 for any free port.",
+    )
+    parser.add_argument(
+        "--workspace-id",
+        default="ws_local",
+        help="Workspace id for bootstrapped local records.",
+    )
+    parser.add_argument(
+        "--agent-id",
+        default="agent_local",
+        help="Agent id bound to the local enforce key.",
+    )
+    parser.add_argument(
+        "--workspace-key",
+        help="Existing wsk_ key to reuse for workspace/admin routes.",
+    )
+    parser.add_argument("--agent-key", help="Existing aak_ key to reuse for /v1/enforce.")
+    parser.add_argument(
+        "--grant-id",
+        help="Optional grant id to use when creating a new local grant.",
+    )
+    parser.add_argument(
+        "--grant-ref",
+        default="grt_local",
+        help="Grant ref sent in the strict /v1/enforce body.",
+    )
+    parser.add_argument(
+        "--scope",
+        action="append",
+        dest="scopes",
+        help="Grant scope such as write:repo/feature/*. Repeatable.",
+    )
+    parser.add_argument(
+        "--grant-ttl-hours",
+        default=8,
+        type=int,
+        help="TTL in hours for newly created local grants.",
+    )
+    parser.add_argument("--boundary-name", help="Optional local boundary name to create or reuse.")
+    parser.add_argument("--boundary-runtime", default="claude-code", help="Boundary runtime label.")
+    parser.add_argument("--boundary-type", default="pretooluse", help="Boundary type label.")
     args = parser.parse_args(argv)
 
     return LocalLaunchConfig(
@@ -327,6 +373,21 @@ def _validate_config(config: LocalLaunchConfig) -> None:
 
 def _raw_key(created: CreatedLocalKey) -> str:
     return created.raw_key
+
+
+def _restart_command_lines(handle: LocalServiceHandle) -> list[str]:
+    lines = [
+        "# Restart with explicit keys:",
+        "# .venv/bin/python -m vinctor_service.local_launcher \\",
+        f"#   --db {_quote(str(handle.db_path))} \\",
+        '#   --workspace-key "$VINCTOR_WORKSPACE_KEY" \\',
+        '#   --agent-key "$VINCTOR_AGENT_KEY" \\',
+        '#   --grant-ref "$VINCTOR_GRANT_REF"',
+    ]
+    if handle.boundary is not None:
+        lines[-1] += " \\"
+        lines.append(f"#   --boundary-name {_quote(handle.boundary.name)}")
+    return lines
 
 
 def _new_id(prefix: str) -> str:

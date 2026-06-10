@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
@@ -43,6 +43,9 @@ def test_prepare_local_service_bootstraps_sqlite_service(tmp_path: Path) -> None
         assert handle.workspace_key == "wsk_demo"
         assert handle.agent_key == "aak_demo"
         assert handle.grant_ref == "grt_demo"
+        assert handle.grant_expires_at == NOW + timedelta(hours=8)
+        assert not handle.generated_workspace_key
+        assert not handle.generated_agent_key
         assert handle.boundary is not None
         assert handle.boundary.boundary_id.startswith("bnd_")
         assert grant is not None
@@ -77,6 +80,13 @@ def test_render_env_exports_includes_copy_pasteable_hook_values(
     assert 'export VINCTOR_GRANT_REF="grt_demo"' in exports
     assert 'export VINCTOR_WORKSPACE_KEY="wsk_demo"' in exports
     assert 'export VINCTOR_BOUNDARY_ID="' in exports
+    assert "# Grant expires at 2026-06-10T20:00:00+00:00." in exports
+    assert "# Restart with explicit keys:" in exports
+    assert "#   --db " in exports
+    assert '#   --workspace-key "$VINCTOR_WORKSPACE_KEY" \\' in exports
+    assert '#   --agent-key "$VINCTOR_AGENT_KEY" \\' in exports
+    assert '#   --grant-ref "$VINCTOR_GRANT_REF" \\' in exports
+    assert '#   --boundary-name "claude-code-local"' in exports
     assert "X-Vinctor-Boundary-Id" in exports
 
 
