@@ -46,6 +46,9 @@ jobs:
       - name: Run local V1 HTTP service demo
         run: python demo/local_v1_http_service_demo.py
 
+      - name: Run boundary admin HTTP demo
+        run: python demo/boundary_admin_http_demo.py
+
       - name: Run Ruff
         run: ruff check .
 

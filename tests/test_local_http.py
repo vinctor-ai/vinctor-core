@@ -10,7 +10,12 @@ from threading import Thread
 from typing import Any
 
 from vinctor_core import BoundaryRegistrationInput, Grant, register_boundary
-from vinctor_service import AgentIdentity, InMemoryV1Service, create_v1_http_server
+from vinctor_service import (
+    AgentIdentity,
+    InMemoryV1Service,
+    WorkspaceIdentity,
+    create_v1_http_server,
+)
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -40,6 +45,12 @@ def identities() -> dict[str, AgentIdentity]:
     }
 
 
+def workspace_identities() -> dict[str, WorkspaceIdentity]:
+    return {
+        "workspace_key_main": WorkspaceIdentity(workspace_id="ws_main"),
+    }
+
+
 def body(
     *,
     grant_ref: str = "grt_main",
@@ -50,11 +61,16 @@ def body(
 
 
 @contextmanager
-def running_server(service_instance: InMemoryV1Service) -> Iterator[ThreadingHTTPServer]:
+def running_server(
+    service_instance: InMemoryV1Service,
+    *,
+    workspace_keys: dict[str, WorkspaceIdentity] | None = None,
+) -> Iterator[ThreadingHTTPServer]:
     server = create_v1_http_server(
         ("127.0.0.1", 0),
         service=service_instance,
         agent_identities=identities(),
+        workspace_identities=workspace_keys,
         clock=lambda: NOW,
     )
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -235,3 +251,51 @@ def test_local_http_service_requires_post_for_enforce() -> None:
     assert status == 405
     assert response["error"] == "method_not_allowed"
     assert svc.audit_events == ()
+
+
+def test_local_http_service_creates_boundary_then_enforces_with_it() -> None:
+    svc = service()
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        create_status, created = post_json(
+            server,
+            path="/v1/boundaries",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+            payload={
+                "name": "claude-code-local",
+                "runtime": "claude-code",
+                "boundary_type": "pretooluse",
+                "mode": "fail_closed",
+            },
+        )
+        list_status, listed = raw_request(
+            server,
+            method="GET",
+            path="/v1/boundaries",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+        get_status, loaded = raw_request(
+            server,
+            method="GET",
+            path=f"/v1/boundaries/{created['boundary_id']}",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+        enforce_status, enforced = post_json(
+            server,
+            headers={
+                "X-Agent-Key": "agent_key_main",
+                "X-Vinctor-Boundary-Id": created["boundary_id"],
+            },
+        )
+
+    assert create_status == 201
+    assert created["boundary_id"].startswith("bnd_")
+    assert list_status == 200
+    assert listed == {"boundaries": [created]}
+    assert get_status == 200
+    assert loaded == created
+    assert enforce_status == 200
+    assert enforced["decision"] == "permit"
+    assert svc.audit_events[0].boundary_id == created["boundary_id"]
+    assert svc.audit_events[0].runtime == "claude-code"
+    assert svc.audit_events[0].boundary_type == "pretooluse"
