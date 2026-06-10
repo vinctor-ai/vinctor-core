@@ -132,6 +132,9 @@ Those boundaries are responsible for:
 This core does not know Claude Code, Codex, Hermes, LangGraph, or MCP-specific
 event formats.
 
+Boundary names are unique within a workspace. Different workspaces may reuse
+the same boundary name.
+
 ## Relationship to the Authorization Service
 
 The authorization service, whether it lives in this repository later as

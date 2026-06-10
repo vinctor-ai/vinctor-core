@@ -85,6 +85,63 @@ def test_register_boundary_can_generate_boundary_id() -> None:
     assert registry.get(boundary.boundary_id) == boundary
 
 
+def test_register_boundary_rejects_duplicate_name_within_workspace() -> None:
+    registry = BoundaryRegistry()
+    register_boundary(
+        registry,
+        BoundaryRegistrationInput(
+            workspace_id="ws_main",
+            name="claude-code-local",
+            runtime="claude-code",
+            boundary_type="pretooluse",
+        ),
+        boundary_id="bnd_first",
+    )
+
+    try:
+        register_boundary(
+            registry,
+            BoundaryRegistrationInput(
+                workspace_id="ws_main",
+                name="claude-code-local",
+                runtime="claude-code",
+                boundary_type="pretooluse",
+            ),
+            boundary_id="bnd_duplicate",
+        )
+    except ValueError as exc:
+        assert str(exc) == "boundary name must be unique within workspace"
+    else:
+        raise AssertionError("expected duplicate boundary name to fail")
+
+
+def test_register_boundary_allows_same_name_in_different_workspaces() -> None:
+    registry = BoundaryRegistry()
+    register_boundary(
+        registry,
+        BoundaryRegistrationInput(
+            workspace_id="ws_main",
+            name="claude-code-local",
+            runtime="claude-code",
+            boundary_type="pretooluse",
+        ),
+        boundary_id="bnd_main",
+    )
+
+    other = register_boundary(
+        registry,
+        BoundaryRegistrationInput(
+            workspace_id="ws_other",
+            name="claude-code-local",
+            runtime="claude-code",
+            boundary_type="pretooluse",
+        ),
+        boundary_id="bnd_other",
+    )
+
+    assert other.boundary_id == "bnd_other"
+
+
 def test_register_boundary_rejects_non_fail_closed_mode() -> None:
     registry = BoundaryRegistry()
 

@@ -37,6 +37,8 @@ def register_boundary(
         raise ValueError("boundary mode must be fail_closed")
     if registration.status not in {"active", "disabled"}:
         raise ValueError("boundary status must be active or disabled")
+    if _has_boundary_name(registry, registration.workspace_id, registration.name):
+        raise ValueError("boundary name must be unique within workspace")
 
     timestamp = now or datetime.now(UTC)
     boundary = Boundary(
@@ -81,3 +83,14 @@ def disable_boundary(
 
 def _new_boundary_id() -> str:
     return f"bnd_{token_urlsafe(12)}"
+
+
+def _has_boundary_name(
+    registry: BoundaryRegistry,
+    workspace_id: str,
+    name: str,
+) -> bool:
+    return any(
+        boundary.name == name
+        for boundary in registry.list_for_workspace(workspace_id)
+    )
