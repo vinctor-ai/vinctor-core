@@ -5,7 +5,12 @@ from vinctor_core import (
     Grant,
 )
 from vinctor_core.audit import AuditEvent
-from vinctor_service import InMemoryGrantRepository, V1EnforceRequest, enforce_v1_contract
+from vinctor_service import (
+    InMemoryAuditWriter,
+    InMemoryGrantRepository,
+    V1EnforceRequest,
+    enforce_v1_contract,
+)
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -50,17 +55,14 @@ def request(
     )
 
 
-class AuditRecorder:
-    def __init__(self) -> None:
-        self.events: list[AuditEvent] = []
-
-    def write(self, event: AuditEvent) -> None:
-        self.events.append(event)
-
-
 class FailingGrantRepository:
     def get_by_ref(self, grant_ref: str) -> Grant | None:
         raise RuntimeError(f"lookup failed for {grant_ref}")
+
+
+class FailingAuditWriter:
+    def write(self, event: AuditEvent) -> None:
+        raise RuntimeError(f"storage unavailable for {event.event_id}")
 
 
 def repository(*grants: Grant) -> InMemoryGrantRepository:
@@ -68,13 +70,13 @@ def repository(*grants: Grant) -> InMemoryGrantRepository:
 
 
 def test_v1_enforce_permit_writes_audit_before_returning_decision() -> None:
-    audit = AuditRecorder()
+    audit = InMemoryAuditWriter()
 
     response = enforce_v1_contract(
         request(),
         grant_repository=repository(grant()),
         now=NOW,
-        write_audit=audit.write,
+        audit_writer=audit,
     )
 
     assert response.status_code == 200
@@ -85,13 +87,13 @@ def test_v1_enforce_permit_writes_audit_before_returning_decision() -> None:
 
 
 def test_v1_enforce_scope_deny_writes_audit_event() -> None:
-    audit = AuditRecorder()
+    audit = InMemoryAuditWriter()
 
     response = enforce_v1_contract(
         request(action="send", resource="email/external"),
         grant_repository=repository(grant()),
         now=NOW,
-        write_audit=audit.write,
+        audit_writer=audit,
     )
 
     assert response.status_code == 403
@@ -102,13 +104,13 @@ def test_v1_enforce_scope_deny_writes_audit_event() -> None:
 
 
 def test_v1_enforce_grant_not_found_returns_404_without_audit() -> None:
-    audit = AuditRecorder()
+    audit = InMemoryAuditWriter()
 
     response = enforce_v1_contract(
         request(grant_ref="grt_missing"),
         grant_repository=repository(grant()),
         now=NOW,
-        write_audit=audit.write,
+        audit_writer=audit,
     )
 
     assert response.status_code == 404
@@ -118,13 +120,13 @@ def test_v1_enforce_grant_not_found_returns_404_without_audit() -> None:
 
 
 def test_v1_enforce_grant_lookup_failure_returns_503_without_audit() -> None:
-    audit = AuditRecorder()
+    audit = InMemoryAuditWriter()
 
     response = enforce_v1_contract(
         request(),
         grant_repository=FailingGrantRepository(),
         now=NOW,
-        write_audit=audit.write,
+        audit_writer=audit,
     )
 
     assert response.status_code == 503
@@ -134,13 +136,13 @@ def test_v1_enforce_grant_lookup_failure_returns_503_without_audit() -> None:
 
 
 def test_v1_enforce_missing_grant_precedes_invalid_request_validation() -> None:
-    audit = AuditRecorder()
+    audit = InMemoryAuditWriter()
 
     response = enforce_v1_contract(
         request(grant_ref="grt_missing", action="push", resource="repo"),
         grant_repository=repository(),
         now=NOW,
-        write_audit=audit.write,
+        audit_writer=audit,
     )
 
     assert response.status_code == 404
@@ -150,13 +152,13 @@ def test_v1_enforce_missing_grant_precedes_invalid_request_validation() -> None:
 
 
 def test_v1_enforce_cross_agent_misuse_returns_forbidden_without_audit() -> None:
-    audit = AuditRecorder()
+    audit = InMemoryAuditWriter()
 
     response = enforce_v1_contract(
         request(agent_id="agent_other"),
         grant_repository=repository(grant()),
         now=NOW,
-        write_audit=audit.write,
+        audit_writer=audit,
     )
 
     assert response.status_code == 403
@@ -166,13 +168,13 @@ def test_v1_enforce_cross_agent_misuse_returns_forbidden_without_audit() -> None
 
 
 def test_v1_enforce_wrong_workspace_returns_forbidden_without_audit() -> None:
-    audit = AuditRecorder()
+    audit = InMemoryAuditWriter()
 
     response = enforce_v1_contract(
         request(workspace_id="ws_other"),
         grant_repository=repository(grant()),
         now=NOW,
-        write_audit=audit.write,
+        audit_writer=audit,
     )
 
     assert response.status_code == 403
@@ -182,13 +184,13 @@ def test_v1_enforce_wrong_workspace_returns_forbidden_without_audit() -> None:
 
 
 def test_v1_enforce_invalid_action_maps_to_scope_invalid_without_audit() -> None:
-    audit = AuditRecorder()
+    audit = InMemoryAuditWriter()
 
     response = enforce_v1_contract(
         request(action="push", resource="repo/main"),
         grant_repository=repository(grant()),
         now=NOW,
-        write_audit=audit.write,
+        audit_writer=audit,
     )
 
     assert response.status_code == 400
@@ -200,13 +202,13 @@ def test_v1_enforce_invalid_action_maps_to_scope_invalid_without_audit() -> None
 
 
 def test_v1_enforce_invalid_resource_maps_to_scope_invalid_without_audit() -> None:
-    audit = AuditRecorder()
+    audit = InMemoryAuditWriter()
 
     response = enforce_v1_contract(
         request(resource="repo"),
         grant_repository=repository(grant()),
         now=NOW,
-        write_audit=audit.write,
+        audit_writer=audit,
     )
 
     assert response.status_code == 400
@@ -216,13 +218,13 @@ def test_v1_enforce_invalid_resource_maps_to_scope_invalid_without_audit() -> No
 
 
 def test_v1_enforce_revoked_grant_writes_deny_audit() -> None:
-    audit = AuditRecorder()
+    audit = InMemoryAuditWriter()
 
     response = enforce_v1_contract(
         request(),
         grant_repository=repository(grant(status="revoked")),
         now=NOW,
-        write_audit=audit.write,
+        audit_writer=audit,
     )
 
     assert response.status_code == 403
@@ -232,14 +234,11 @@ def test_v1_enforce_revoked_grant_writes_deny_audit() -> None:
 
 
 def test_v1_enforce_audit_failure_returns_503_without_decision() -> None:
-    def fail_audit(_: AuditEvent) -> None:
-        raise RuntimeError("storage unavailable")
-
     response = enforce_v1_contract(
         request(),
         grant_repository=repository(grant()),
         now=NOW,
-        write_audit=fail_audit,
+        audit_writer=FailingAuditWriter(),
     )
 
     assert response.status_code == 503
@@ -249,13 +248,13 @@ def test_v1_enforce_audit_failure_returns_503_without_decision() -> None:
 
 
 def test_v1_enforce_boundary_denial_writes_audit_event() -> None:
-    audit = AuditRecorder()
+    audit = InMemoryAuditWriter()
 
     response = enforce_v1_contract(
         request(boundary_id="bnd_missing"),
         grant_repository=repository(grant()),
         now=NOW,
-        write_audit=audit.write,
+        audit_writer=audit,
         boundary_registry=BoundaryRegistry(),
     )
 
@@ -264,6 +263,28 @@ def test_v1_enforce_boundary_denial_writes_audit_event() -> None:
     assert response.error == "boundary_not_found"
     assert response.audit_event_id == audit.events[0].event_id
     assert audit.events[0].boundary_id == "bnd_missing"
+
+
+def test_in_memory_audit_writer_records_events_in_order() -> None:
+    audit = InMemoryAuditWriter()
+
+    first = enforce_v1_contract(
+        request(),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=audit,
+    )
+    second = enforce_v1_contract(
+        request(action="send", resource="email/external"),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=audit,
+    )
+
+    assert [event.event_id for event in audit.events] == [
+        first.audit_event_id,
+        second.audit_event_id,
+    ]
 
 
 def test_in_memory_grant_repository_rejects_duplicate_grant_refs() -> None:

@@ -37,11 +37,13 @@ V1 service contract boundary:
   response mapping without adding HTTP or storage.
 - Added a service-layer `GrantRepository` protocol and in-memory implementation
   so v1 enforce lookup behavior is explicit without adding durable storage.
+- Added a service-layer `AuditWriter` protocol and in-memory implementation so
+  v1 audit-before-decision behavior is explicit without adding durable storage.
 
 ## Next
 
-- Harden the audit writer boundary and decide whether it should become a
-  protocol with an in-memory test implementation.
+- Decide whether the first durable service slice should start with SQLite-backed
+  grant/audit repositories or remain in-memory for one more integration slice.
 
 ## Open Questions
 
