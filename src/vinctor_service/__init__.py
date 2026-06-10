@@ -1,5 +1,6 @@
 """Vinctor service-layer application helpers."""
 
+from vinctor_service.audit import AuditWriter, InMemoryAuditWriter
 from vinctor_service.authorize import authorize_action
 from vinctor_service.models import (
     AuthorizationRequest,
@@ -13,7 +14,9 @@ from vinctor_service.v1_enforce import enforce_v1_contract
 __all__ = [
     "AuthorizationRequest",
     "AuthorizationResponse",
+    "AuditWriter",
     "GrantRepository",
+    "InMemoryAuditWriter",
     "InMemoryGrantRepository",
     "V1EnforceRequest",
     "V1EnforceResponse",

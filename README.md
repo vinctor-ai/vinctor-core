@@ -177,7 +177,7 @@ response.
 - a `V1EnforceRequest`
 - a `GrantRepository` for `grant_ref` lookup
 - the current time
-- an audit writer callback
+- an `AuditWriter`
 - an optional boundary registry
 
 It preserves v1 pre-audit failures and audit-before-decision behavior without

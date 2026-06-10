@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import datetime
 
 from vinctor_core.audit import AuditEventInput, build_audit_event
 from vinctor_core.enforce import evaluate_enforce
 from vinctor_core.models import AuditEvent, BoundaryLookup, DecisionResult, EnforceInput
 from vinctor_core.scope import is_valid_requested_action, is_valid_requested_resource
+from vinctor_service.audit import AuditWriter
 from vinctor_service.models import V1EnforceRequest, V1EnforceResponse
 from vinctor_service.repositories import GrantRepository
-
-AuditWriter = Callable[[AuditEvent], None]
 
 
 def enforce_v1_contract(
@@ -18,7 +16,7 @@ def enforce_v1_contract(
     *,
     grant_repository: GrantRepository,
     now: datetime,
-    write_audit: AuditWriter,
+    audit_writer: AuditWriter,
     boundary_registry: BoundaryLookup | None = None,
 ) -> V1EnforceResponse:
     try:
@@ -71,7 +69,7 @@ def enforce_v1_contract(
     audit_event = build_audit_event(AuditEventInput(decision=decision, created_at=now))
 
     try:
-        write_audit(audit_event)
+        audit_writer.write(audit_event)
     except Exception:
         return _pre_audit_error(
             503,
