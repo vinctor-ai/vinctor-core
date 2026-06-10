@@ -27,8 +27,8 @@ def test_prepare_local_service_bootstraps_sqlite_service(tmp_path: Path) -> None
             port=0,
             workspace_id="ws_demo",
             agent_id="agent_release",
-            workspace_key="workspace_key_demo",
-            agent_key="agent_key_demo",
+            workspace_key="wsk_demo",
+            agent_key="aak_demo",
             grant_ref="grt_demo",
             scopes=("write:repo/feature/*",),
             boundary_name="claude-code-local",
@@ -40,8 +40,8 @@ def test_prepare_local_service_bootstraps_sqlite_service(tmp_path: Path) -> None
 
         assert db_path.exists()
         assert handle.endpoint.startswith("http://127.0.0.1:")
-        assert handle.workspace_key == "workspace_key_demo"
-        assert handle.agent_key == "agent_key_demo"
+        assert handle.workspace_key == "wsk_demo"
+        assert handle.agent_key == "aak_demo"
         assert handle.grant_ref == "grt_demo"
         assert handle.boundary is not None
         assert handle.boundary.boundary_id.startswith("bnd_")
@@ -60,8 +60,8 @@ def test_render_env_exports_includes_copy_pasteable_hook_values(
         LocalLaunchConfig(
             db_path=tmp_path / "vinctor.sqlite",
             port=0,
-            workspace_key="workspace_key_demo",
-            agent_key="agent_key_demo",
+            workspace_key="wsk_demo",
+            agent_key="aak_demo",
             grant_ref="grt_demo",
             boundary_name="claude-code-local",
         ),
@@ -73,9 +73,9 @@ def test_render_env_exports_includes_copy_pasteable_hook_values(
         handle.close()
 
     assert f"export VINCTOR_ENDPOINT={handle.endpoint}" in exports
-    assert "export VINCTOR_AGENT_KEY=agent_key_demo" in exports
+    assert "export VINCTOR_AGENT_KEY=aak_demo" in exports
     assert "export VINCTOR_GRANT_REF=grt_demo" in exports
-    assert "export VINCTOR_WORKSPACE_KEY=workspace_key_demo" in exports
+    assert "export VINCTOR_WORKSPACE_KEY=wsk_demo" in exports
     assert "export VINCTOR_BOUNDARY_ID=" in exports
     assert "X-Vinctor-Boundary-Id" in exports
 
@@ -114,6 +114,44 @@ def test_prepare_local_service_reuses_existing_grant_and_boundary(
         second.close()
 
 
+def test_prepare_local_service_reuses_explicit_durable_keys(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    config = LocalLaunchConfig(
+        db_path=db_path,
+        port=0,
+        workspace_key="wsk_demo",
+        agent_key="aak_demo",
+        boundary_name="claude-code-local",
+    )
+
+    first = prepare_local_service(config, now=NOW)
+    first.close()
+
+    second = prepare_local_service(config, now=NOW)
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            key_count = conn.execute("SELECT COUNT(*) FROM local_keys").fetchone()[0]
+            raw_key_count = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM local_keys
+                WHERE key_hash IN ('wsk_demo', 'aak_demo')
+                """
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        assert second.workspace_key == "wsk_demo"
+        assert second.agent_key == "aak_demo"
+        assert key_count == 2
+        assert raw_key_count == 0
+    finally:
+        second.close()
+
+
 def test_prepare_local_service_rejects_invalid_scope(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="invalid grant scope"):
         prepare_local_service(
@@ -134,7 +172,7 @@ def test_prepared_service_accepts_hook_shaped_enforce_request(
             port=0,
             workspace_id="ws_demo",
             agent_id="agent_release",
-            agent_key="agent_key_demo",
+            agent_key="aak_demo",
             grant_ref="grt_demo",
             scopes=("write:repo/feature/*",),
             boundary_name="claude-code-local",

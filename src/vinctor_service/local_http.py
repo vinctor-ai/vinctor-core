@@ -10,10 +10,12 @@ from urllib.parse import urlsplit
 from vinctor_service.boundary_http import (
     BoundaryAdminService,
     WorkspaceIdentity,
+    WorkspaceIdentityResolver,
     handle_v1_boundaries_http,
 )
 from vinctor_service.v1_http import (
     AgentIdentity,
+    AgentIdentityResolver,
     V1EnforceService,
     V1HttpResponse,
     handle_v1_enforce_http,
@@ -28,12 +30,16 @@ def create_v1_http_server(
     service: V1EnforceService,
     agent_identities: Mapping[str, AgentIdentity],
     workspace_identities: Mapping[str, WorkspaceIdentity] | None = None,
+    agent_identity_resolver: AgentIdentityResolver | None = None,
+    workspace_identity_resolver: WorkspaceIdentityResolver | None = None,
     clock: Clock | None = None,
 ) -> ThreadingHTTPServer:
     handler = create_v1_http_handler(
         service=service,
         agent_identities=agent_identities,
         workspace_identities=workspace_identities,
+        agent_identity_resolver=agent_identity_resolver,
+        workspace_identity_resolver=workspace_identity_resolver,
         clock=clock,
     )
     return ThreadingHTTPServer(address, handler)
@@ -44,6 +50,8 @@ def create_v1_http_handler(
     service: V1EnforceService,
     agent_identities: Mapping[str, AgentIdentity],
     workspace_identities: Mapping[str, WorkspaceIdentity] | None = None,
+    agent_identity_resolver: AgentIdentityResolver | None = None,
+    workspace_identity_resolver: WorkspaceIdentityResolver | None = None,
     clock: Clock | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     agent_keys = dict(agent_identities)
@@ -111,6 +119,7 @@ def create_v1_http_handler(
             headers=dict(handler.headers.items()),
             body=parsed,
             agent_identities=agent_keys,
+            agent_identity_resolver=agent_identity_resolver,
             service=service,
             now=now(),
         )
@@ -135,6 +144,7 @@ def create_v1_http_handler(
             headers=dict(handler.headers.items()),
             body=body,
             workspace_identities=workspace_keys,
+            workspace_identity_resolver=workspace_identity_resolver,
             service=cast(BoundaryAdminService, service),
             now=now(),
         )

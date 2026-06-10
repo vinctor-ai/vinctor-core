@@ -64,11 +64,15 @@ V1 service contract boundary:
 - Added a local service launch helper that bootstraps SQLite grant/boundary
   state, starts the stdlib local HTTP server, and prints copy-pasteable
   `VINCTOR_*` exports for local runtime-hook usage.
+- Added durable SQLite local key records for `X-Workspace-Key` and
+  `X-Agent-Key`, storing only key hashes plus metadata and resolving identities
+  through the service layer.
 
 ## Next
 
-- Decide whether durable workspace token storage should be introduced after
-  the local launcher contract settles.
+- Decide whether local config/keychain support should preserve generated raw
+  keys across restarts, or whether explicit `--workspace-key`/`--agent-key`
+  input is sufficient for the next prototype stage.
 
 ## Open Questions
 

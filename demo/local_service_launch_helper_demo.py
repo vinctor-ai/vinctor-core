@@ -23,8 +23,8 @@ def main() -> None:
                 port=0,
                 workspace_id="ws_demo",
                 agent_id="agent_release",
-                workspace_key="workspace_key_demo",
-                agent_key="agent_key_demo",
+                workspace_key="wsk_demo",
+                agent_key="aak_demo",
                 grant_ref="grt_demo",
                 scopes=("write:repo/feature/*",),
                 boundary_name="claude-code-local",
@@ -36,9 +36,9 @@ def main() -> None:
         try:
             exports = render_env_exports(handle)
             assert "export VINCTOR_ENDPOINT=" in exports
-            assert "export VINCTOR_AGENT_KEY=agent_key_demo" in exports
+            assert "export VINCTOR_AGENT_KEY=aak_demo" in exports
             assert "export VINCTOR_GRANT_REF=grt_demo" in exports
-            assert "export VINCTOR_WORKSPACE_KEY=workspace_key_demo" in exports
+            assert "export VINCTOR_WORKSPACE_KEY=wsk_demo" in exports
             assert "export VINCTOR_BOUNDARY_ID=" in exports
 
             # This mirrors the HTTP shape a local runtime hook can send after
