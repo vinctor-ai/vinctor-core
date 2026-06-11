@@ -134,7 +134,13 @@ vinctor local start \
   --boundary-name codex-local
 ```
 
-That command may print local test/dev exports:
+`local start` prints these exports and then **keeps running as a foreground
+server** — it does not return on its own. Use it once to mint and copy the keys,
+then press Ctrl+C and run the persistent service with `vinctor service serve`
+against the same `--db`. (For a full host setup, see
+[Operational Runbooks → First-Time Setup](operational-runbooks.md#first-time-setup).)
+
+The exports it prints:
 
 ```bash
 export VINCTOR_ENDPOINT="http://127.0.0.1:8765"
@@ -246,8 +252,9 @@ JSON output (`--json`):
 - `schema_version` is the highest applied schema version (a scalar);
   `schema_versions` is the full list of applied versions. Use `schema_version`
   for a simple "what version is this DB" check.
-- If the database does not exist yet, `schema_version` is `null`,
-  `schema_versions` is `[]`, and **no database is created**.
+- If the database does not exist yet, `schema_version` is `null`
+  (shown as `schema_version=-` in text mode), `schema_versions` is `[]`, and
+  **no database is created**.
 
 ### `operator storage backup`
 

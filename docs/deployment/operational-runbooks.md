@@ -25,6 +25,85 @@ Vinctor keys are **bearer tokens**. Anyone who can reach the service and present
 a valid `X-Workspace-Key` or `X-Agent-Key` is treated as that identity. Protect
 both the network path and the keys accordingly.
 
+## First-Time Setup
+
+Do these steps in order the first time on a fresh host. The later sections (TLS,
+firewall, supervision, backups) build on the install path and the `vinctor`
+service user created here.
+
+> CLI note: `--db`, `--json`, and `--workspace-id` are **global** flags and must
+> come before the role — `vinctor --db <path> operator audit list`, not
+> `vinctor operator audit list --db <path>`.
+
+### 1. Install from source
+
+There is no published package or image yet (see
+[What Is Still Deferred](#what-is-still-deferred)), so install from a git
+checkout into a dedicated virtualenv. Requires Python 3.11+.
+
+```bash
+sudo mkdir -p /opt/vinctor
+sudo git clone https://github.com/pkachuc/vinctor-core.git /opt/vinctor/src
+sudo python3.11 -m venv /opt/vinctor/.venv
+sudo /opt/vinctor/.venv/bin/pip install /opt/vinctor/src
+/opt/vinctor/.venv/bin/vinctor --help   # confirm the console script exists
+```
+
+This produces `/opt/vinctor/.venv/bin/vinctor`, the path the systemd unit and
+cron job below rely on.
+
+### 2. Create the service user and data directory
+
+```bash
+sudo useradd --system --home /var/lib/vinctor --shell /usr/sbin/nologin vinctor
+sudo mkdir -p /var/lib/vinctor
+sudo chown vinctor:vinctor /var/lib/vinctor
+sudo chmod 750 /var/lib/vinctor
+```
+
+The database lives at `/var/lib/vinctor/vinctor.sqlite`. After it is created in
+the next step, restrict it so only the service user can read it:
+
+```bash
+sudo chown vinctor:vinctor /var/lib/vinctor/vinctor.sqlite
+sudo chmod 600 /var/lib/vinctor/vinctor.sqlite
+```
+
+### 3. Bootstrap keys into the database
+
+`vinctor service serve` opens existing state but does **not** mint authority, so
+you must bootstrap once. `vinctor local start` creates the workspace key, agent
+key, a bootstrap grant, and an optional boundary, prints them, and then **keeps
+running as a foreground server** — it does not return on its own.
+
+Run it once against the real database path, copy the printed `VINCTOR_*` values,
+then stop it with Ctrl+C:
+
+```bash
+sudo -u vinctor /opt/vinctor/.venv/bin/vinctor local start \
+  --db /var/lib/vinctor/vinctor.sqlite \
+  --boundary-name codex-local
+# Copy the printed export lines, then press Ctrl+C to stop this process.
+```
+
+Store the raw keys securely now — SQLite keeps only their hashes and they cannot
+be recovered:
+
+- `VINCTOR_WORKSPACE_KEY` — operator/admin routes and the operator audit/storage
+  commands in this guide. Keep it on the operator side.
+- `VINCTOR_AGENT_KEY`, `VINCTOR_GRANT_REF`, `VINCTOR_BOUNDARY_ID` — distribute to
+  the calling runtime/hook that sends `/v1/enforce` requests.
+
+You can replace any of these later with `vinctor operator keys rotate` (see
+[Key Rotation And Compromise](#key-rotation-and-compromise)).
+
+### 4. Serve persistently
+
+The persistent service is `vinctor service serve` against the same database, run
+under systemd ([Process Supervision](#process-supervision-systemd)). After it is
+up, put TLS in front, restrict the firewall, and schedule backups using the
+sections below.
+
 ## Network Exposure And Binding
 
 `vinctor service serve` binds `127.0.0.1:8765` by default, reachable only from
@@ -86,6 +165,11 @@ Notes:
 - Terminate TLS at the proxy; forward to Vinctor over loopback.
 - Do not strip or rewrite the `X-Workspace-Key`, `X-Agent-Key`, or
   `X-Vinctor-Boundary-Id` headers.
+- Certificates are your responsibility. For a public hostname, obtain them with
+  an ACME client (certbot, or Caddy's automatic issuance shown above). For an
+  internal-only name like `vinctor.example.internal`, public ACME cannot
+  validate it — use your internal CA or a self-signed certificate trusted by the
+  callers.
 - This does not make Vinctor a production service; it only protects the
   transport for a single-node prototype.
 
@@ -218,9 +302,72 @@ docker compose exec vinctor \
 docker compose cp vinctor:/data/backup.sqlite ./vinctor-backup.sqlite
 ```
 
-To restore, stop the service, replace the volume's database from a snapshot
-(e.g. `operator storage restore --input ... --yes` against `/data/vinctor.sqlite`
-inside the container), then start it again.
+To restore into the volume, do it with the service stopped (so nothing holds the
+database open), using a one-off container that shares the same volume:
+
+```bash
+# 1. Stop the running service container.
+docker compose stop vinctor
+
+# 2. Copy a host snapshot into the volume (cp works on the stopped container).
+docker compose cp ./vinctor-backup.sqlite vinctor:/data/restore-source.sqlite
+
+# 3. Validate-and-replace the database with a one-off container.
+docker compose run --rm vinctor \
+  vinctor --db /data/vinctor.sqlite operator storage restore \
+  --input /data/restore-source.sqlite --yes
+
+# 4. Start the service again.
+docker compose start vinctor
+```
+
+## Upgrades
+
+This is a from-source install, so upgrades are manual. Always back up first.
+
+```bash
+# 1. Snapshot the current database (see SQLite Backup And Restore).
+sudo -u vinctor /opt/vinctor/.venv/bin/vinctor \
+  --db /var/lib/vinctor/vinctor.sqlite \
+  operator storage backup --output /var/backups/vinctor/pre-upgrade.sqlite
+
+# 2. Stop, pull, reinstall.
+sudo systemctl stop vinctor.service
+sudo git -C /opt/vinctor/src pull
+sudo /opt/vinctor/.venv/bin/pip install --upgrade /opt/vinctor/src
+
+# 3. Confirm the on-disk schema is current (idempotent, data-safe).
+sudo -u vinctor /opt/vinctor/.venv/bin/vinctor \
+  --db /var/lib/vinctor/vinctor.sqlite operator storage migrate
+
+# 4. Start the service.
+sudo systemctl start vinctor.service
+```
+
+## Key Rotation And Compromise
+
+Workspace and agent keys are bearer tokens; rotate them periodically and revoke
+any key you believe is exposed. These commands act on the same database the
+service uses and never print existing raw keys or hashes (full reference:
+[self-hosting.md](self-hosting.md#operator-keys-list)).
+
+```bash
+# List local keys as masked metadata (find the key_id).
+vinctor --db /var/lib/vinctor/vinctor.sqlite --workspace-id ws_local operator keys list
+
+# Revoke a compromised key immediately (it then fails authentication).
+vinctor --db /var/lib/vinctor/vinctor.sqlite operator keys revoke <key_id>
+
+# Rotate the workspace/admin key (prints the new raw key once).
+vinctor --db /var/lib/vinctor/vinctor.sqlite --workspace-id ws_local operator keys rotate workspace
+
+# Rotate a specific agent's key.
+vinctor --db /var/lib/vinctor/vinctor.sqlite --workspace-id ws_local operator keys rotate agent \
+  --agent-id agent_local
+```
+
+After rotating, distribute the new raw key to the affected caller and update its
+`VINCTOR_*` environment. The new key is shown only once at rotation time.
 
 ## What Is Still Deferred
 
