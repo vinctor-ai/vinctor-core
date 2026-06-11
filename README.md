@@ -60,6 +60,15 @@ vinctor agent requests status <request_id>
 For a complete local service flow, see
 `docs/demo-service-runbook.md`.
 
+Hook/plugin repositories can use the deterministic mock `/v1/enforce` fixture
+for integration smoke tests:
+
+```bash
+python tools/mock_vinctor_service.py --port 8765 --config mock-vinctor.json
+```
+
+See `docs/testing/mock-vinctor-service.md`.
+
 Use the exports from a boundary caller:
 
 ```bash

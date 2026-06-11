@@ -175,6 +175,9 @@ V1 service contract boundary:
   reason codes.
 - Added `docs/demo-service-runbook.md` and `docs/examples/local-demo-policy.yaml`
   for repeatable local demo service setup.
+- Added `tools/mock_vinctor_service.py` as a stdlib-only deterministic
+  `/v1/enforce` fixture for Claude/Codex/Hermes hook/plugin smoke tests, plus
+  `docs/testing/mock-vinctor-service.md` and a demo.
 
 ## Next
 
