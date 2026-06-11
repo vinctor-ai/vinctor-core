@@ -29,6 +29,7 @@ from vinctor_service.grant_requests import (
 from vinctor_service.grants import (
     ScopeBoundsListing,
     issue_grant,
+    list_grants,
     lookup_grant,
     revoke_grant,
     validate_issuable_scope_bounds,
@@ -260,16 +261,34 @@ class SQLiteGrantRepository:
         if row is None:
             return None
 
-        scopes = tuple(json.loads(row[4]))
-        return Grant(
-            grant_id=row[0],
-            grant_ref=row[1],
-            workspace_id=row[2],
-            agent_id=row[3],
-            scopes=scopes,
-            status=row[5],
-            expires_at=_datetime_from_storage(row[6]),
-        )
+        return _grant_from_row(row)
+
+    def list_grants_for_workspace(
+        self,
+        workspace_id: str,
+        *,
+        agent_id: str | None = None,
+        status: str | None = None,
+    ) -> tuple[Grant, ...]:
+        clauses = ["workspace_id = ?"]
+        params: list[str] = [workspace_id]
+        if agent_id is not None:
+            clauses.append("agent_id = ?")
+            params.append(agent_id)
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        rows = self._conn.execute(
+            f"""
+            SELECT grant_id, grant_ref, workspace_id, agent_id,
+                   scopes_json, status, expires_at
+            FROM grants
+            WHERE {' AND '.join(clauses)}
+            ORDER BY grant_id
+            """,
+            tuple(params),
+        ).fetchall()
+        return tuple(_grant_from_row(row) for row in rows)
 
     def insert(self, grant: Grant) -> None:
         insert_grant(self._conn, grant)
@@ -733,6 +752,20 @@ class SQLiteV1Service:
             grant_repository=self.grant_repository,
         )
 
+    def list_grants(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str | None = None,
+        status: str | None = None,
+    ) -> tuple[Grant, ...]:
+        return list_grants(
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            status=status,
+            grant_repository=self.grant_repository,
+        )
+
     def revoke_grant(
         self,
         *,
@@ -967,6 +1000,18 @@ def _boundary_from_row(row: sqlite3.Row | tuple | None) -> Boundary | None:
         status=row[6],
         created_at=datetime.fromisoformat(row[7]),
         updated_at=datetime.fromisoformat(row[8]),
+    )
+
+
+def _grant_from_row(row: sqlite3.Row | tuple[object, ...]) -> Grant:
+    return Grant(
+        grant_id=row[0],
+        grant_ref=row[1],
+        workspace_id=row[2],
+        agent_id=row[3],
+        scopes=tuple(json.loads(row[4])),
+        status=row[5],
+        expires_at=_datetime_from_storage(row[6]),
     )
 
 

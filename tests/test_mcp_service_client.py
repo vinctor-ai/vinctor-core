@@ -114,6 +114,7 @@ def test_client_lists_audit_events_with_read_only_filters() -> None:
         limit=5,
         event_type="action_denied",
         request_id="grq_demo",
+        agent_id="agent_release",
     )
 
     assert body == {"audit_events": []}
@@ -123,9 +124,69 @@ def test_client_lists_audit_events_with_read_only_filters() -> None:
     parsed = urlsplit(request["path"])
     assert parsed.path == "/v1/audit-events"
     assert parse_qs(parsed.query) == {
+        "agent_id": ["agent_release"],
         "event_type": ["action_denied"],
         "limit": ["5"],
         "request_id": ["grq_demo"],
+    }
+
+
+def test_client_reads_grant_requests_with_workspace_key() -> None:
+    client, conn = make_client(FakeResponse(200, {"grant_requests": []}))
+
+    body = client.list_grant_requests()
+
+    assert body == {"grant_requests": []}
+    assert conn.requests[0] == {
+        "method": "GET",
+        "path": "/v1/grant-requests",
+        "body": None,
+        "headers": {"X-Workspace-Key": "wsk_demo"},
+    }
+
+
+def test_client_lists_grants_with_read_only_filters() -> None:
+    client, conn = make_client(FakeResponse(200, {"grants": []}))
+
+    body = client.list_grants(agent_id="agent_release", status="active")
+
+    assert body == {"grants": []}
+    request = conn.requests[0]
+    assert request["method"] == "GET"
+    assert request["headers"] == {"X-Workspace-Key": "wsk_demo"}
+    parsed = urlsplit(request["path"])
+    assert parsed.path == "/v1/grants"
+    assert parse_qs(parsed.query) == {
+        "agent_id": ["agent_release"],
+        "status": ["active"],
+    }
+
+
+def test_client_gets_grant_request_with_encoded_path() -> None:
+    client, conn = make_client(FakeResponse(200, {"request_id": "grq_demo"}))
+
+    body = client.get_grant_request("../../../healthz")
+
+    assert body == {"request_id": "grq_demo"}
+    assert conn.requests[0] == {
+        "method": "GET",
+        "path": "/v1/grant-requests/..%2F..%2F..%2Fhealthz",
+        "body": None,
+        "headers": {"X-Workspace-Key": "wsk_demo"},
+    }
+
+
+def test_client_reads_auto_approval_rules_with_workspace_key() -> None:
+    client, conn = make_client(FakeResponse(200, {"auto_approval_rules": []}))
+
+    body = client.list_auto_approval_rules()
+
+    assert body == {"auto_approval_rules": []}
+    assert conn.requests[0] == {
+        "method": "GET",
+        "path": "/v1/auto-approval-rules",
+        "body": None,
+        "headers": {"X-Workspace-Key": "wsk_demo"},
     }
 
 
@@ -151,3 +212,59 @@ def test_client_has_no_enforce_method() -> None:
     client, _ = make_client(FakeResponse(200, {}))
 
     assert not hasattr(client, "enforce")
+
+
+def test_get_grant_url_encodes_path_preventing_traversal() -> None:
+    """Path segments are URL-encoded (quote safe=""), so a traversal-looking
+    grant_ref cannot escape the /v1/grants/ prefix."""
+    client, conn = make_client(FakeResponse(200, {"grant_ref": "x"}))
+
+    client.get_grant("../../../healthz")
+
+    path = conn.requests[0]["path"]
+    assert path == "/v1/grants/..%2F..%2F..%2Fhealthz"
+    assert "../" not in path
+
+
+def test_empty_path_value_is_rejected() -> None:
+    """An empty path value is rejected before any request is issued."""
+    client, _ = make_client(FakeResponse(200, {}))
+
+    with pytest.raises(ValueError, match="non-empty"):
+        client.get_grant("")
+
+
+class RaisingConnection:
+    """A connection that fails on request, simulating a down/unreachable service."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def request(self, *args: Any, **kwargs: Any) -> None:
+        raise ConnectionRefusedError("[Errno 61] Connection refused")
+
+    def getresponse(self) -> Any:  # pragma: no cover - never reached
+        raise AssertionError("getresponse should not be called after a failed request")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_network_failure_fails_closed_without_exposing_credentials() -> None:
+    """When the service is unreachable the error propagates (no result is
+    returned — fail-closed), the connection is still closed, and the workspace
+    key never appears in the surfaced error."""
+    conn = RaisingConnection()
+    client = VinctorServiceClient(
+        endpoint="http://127.0.0.1:8765",
+        workspace_key="wsk_demo",
+        connection_factory=lambda host, port, timeout: conn,
+    )
+
+    with pytest.raises(ConnectionRefusedError) as error:
+        client.get_grant("grt_demo")
+
+    # propagates (no result returned), the connection is closed, and the
+    # workspace key never appears in the surfaced error.
+    assert conn.closed is True
+    assert "wsk_demo" not in str(error.value)

@@ -163,6 +163,33 @@ Auth: `X-Workspace-Key`
 Issues a scoped grant directly through workspace/admin authority. This route is
 not available to `X-Agent-Key`.
 
+`GET /v1/grants`
+
+Auth: `X-Workspace-Key`
+
+Lists grants in the workspace. Supported query parameters:
+
+- `agent_id`
+- `status`
+
+Response:
+
+```json
+{
+  "grants": [
+    {
+      "grant_id": "grnt_...",
+      "grant_ref": "grt_...",
+      "workspace_id": "ws_local",
+      "agent_id": "agent_local",
+      "scopes": ["execute:ci/test"],
+      "status": "active",
+      "expires_at": "2026-06-11T12:00:00+00:00"
+    }
+  ]
+}
+```
+
 `GET /v1/grants/{grant_ref}`
 
 Auth: `X-Workspace-Key`
@@ -186,6 +213,7 @@ query parameters:
 
 - `limit`: positive integer, default `20`, max `100`
 - `event_type`
+- `agent_id`
 - `grant_ref`
 - `boundary_id`
 - `request_id`

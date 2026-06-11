@@ -9,6 +9,14 @@ from vinctor_service.models import AutoApprovalRule, GrantRequest
 class GrantRepository(Protocol):
     def get_by_ref(self, grant_ref: str) -> Grant | None: ...
 
+    def list_grants_for_workspace(
+        self,
+        workspace_id: str,
+        *,
+        agent_id: str | None = None,
+        status: str | None = None,
+    ) -> tuple[Grant, ...]: ...
+
 
 class GrantLifecycleRepository(GrantRepository, Protocol):
     def insert(self, grant: Grant) -> None: ...
@@ -47,6 +55,21 @@ class InMemoryGrantRepository:
 
     def get_by_ref(self, grant_ref: str) -> Grant | None:
         return self._grants_by_ref.get(grant_ref)
+
+    def list_grants_for_workspace(
+        self,
+        workspace_id: str,
+        *,
+        agent_id: str | None = None,
+        status: str | None = None,
+    ) -> tuple[Grant, ...]:
+        return tuple(
+            grant
+            for grant in sorted(self._grants_by_ref.values(), key=lambda grant: grant.grant_id)
+            if grant.workspace_id == workspace_id
+            and (agent_id is None or grant.agent_id == agent_id)
+            and (status is None or grant.status == status)
+        )
 
     def insert(self, grant: Grant) -> None:
         if grant.grant_ref in self._grants_by_ref:

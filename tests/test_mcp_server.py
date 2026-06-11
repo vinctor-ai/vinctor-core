@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from importlib.metadata import version
 
 import pytest
 
@@ -9,8 +10,9 @@ from vinctor_mcp_server.server import create_stdio_server
 
 
 class FakeFastMcp:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, *, version: str) -> None:
         self.name = name
+        self.version = version
         self.tools: dict[str, Callable[..., object]] = {}
 
     def tool(self, *, name: str, description: str) -> Callable[[Callable[..., object]], object]:
@@ -33,6 +35,23 @@ class FakeClient:
 
     def get_grant(self, grant_ref: str) -> dict[str, object]:
         return {"grant_ref": grant_ref}
+
+    def list_grants(
+        self,
+        *,
+        agent_id: str | None = None,
+        status: str | None = None,
+    ) -> dict[str, object]:
+        return {"grants": []}
+
+    def list_grant_requests(self) -> dict[str, object]:
+        return {"grant_requests": []}
+
+    def get_grant_request(self, request_id: str) -> dict[str, object]:
+        return {"request_id": request_id}
+
+    def list_auto_approval_rules(self) -> dict[str, object]:
+        return {"auto_approval_rules": []}
 
 
 def test_load_config_requires_mcp_workspace_key_not_agent_key() -> None:
@@ -72,12 +91,17 @@ def test_create_stdio_server_registers_read_only_tools_with_fastmcp() -> None:
     )
 
     assert server.name == "vinctor-mcp-server"
+    assert server.version == version("vinctor-core")
     assert sorted(server.tools) == [
         "vinctor_explain_denial",
         "vinctor_get_audit_event",
         "vinctor_get_boundary",
         "vinctor_get_grant",
+        "vinctor_get_grant_request",
         "vinctor_list_audit_events",
+        "vinctor_list_auto_approval_rules",
         "vinctor_list_boundaries",
+        "vinctor_list_grant_requests",
+        "vinctor_list_grants",
         "vinctor_status",
     ]

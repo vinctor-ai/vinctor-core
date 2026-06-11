@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
+from urllib.parse import parse_qs
 
 from vinctor_core.models import Grant
 from vinctor_service.boundary_http import WorkspaceIdentity
@@ -20,6 +21,14 @@ class GrantLifecycleService(Protocol):
     ) -> GrantIssueResult: ...
 
     def lookup_grant(self, *, grant_ref: str, workspace_id: str) -> Grant | None: ...
+
+    def list_grants(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str | None = None,
+        status: str | None = None,
+    ) -> tuple[Grant, ...]: ...
 
     def revoke_grant(
         self,
@@ -40,12 +49,19 @@ class ParsedGrantIssueBody:
     ttl_seconds: int
 
 
+@dataclass(frozen=True)
+class ParsedGrantListFilters:
+    agent_id: str | None = None
+    status: str | None = None
+
+
 def handle_v1_grants_http(
     *,
     method: str,
     path: str,
     headers: Mapping[str, str],
     body: object,
+    query_string: str = "",
     workspace_identities: Mapping[str, WorkspaceIdentity] | None = None,
     workspace_identity_resolver: WorkspaceIdentityResolver | None = None,
     service: GrantLifecycleService,
@@ -61,8 +77,25 @@ def handle_v1_grants_http(
         return _error(401, "authentication_required", "valid X-Workspace-Key header is required")
 
     if path == "/v1/grants":
+        if method == "GET":
+            filters = _parse_list_filters(query_string)
+            if isinstance(filters, V1HttpResponse):
+                return filters
+            grants = service.list_grants(
+                workspace_id=identity.workspace_id,
+                agent_id=filters.agent_id,
+                status=filters.status,
+            )
+            return V1HttpResponse(
+                status_code=200,
+                body={"grants": [_grant_body(grant) for grant in grants]},
+            )
         if method != "POST":
-            return _error(405, "method_not_allowed", "POST is required for /v1/grants")
+            return _error(
+                405,
+                "method_not_allowed",
+                "GET or POST is required for /v1/grants",
+            )
         return _issue_grant(body, identity=identity, service=service, now=now)
 
     prefix = "/v1/grants/"
@@ -174,6 +207,25 @@ def _parse_issue_body(body: object) -> ParsedGrantIssueBody | V1HttpResponse:
         scopes=tuple(scopes),
         ttl_seconds=ttl_seconds,
     )
+
+
+def _parse_list_filters(query_string: str) -> ParsedGrantListFilters | V1HttpResponse:
+    params = parse_qs(query_string, keep_blank_values=True)
+    allowed = {"agent_id", "status"}
+    extra = sorted(set(params) - allowed)
+    if extra:
+        return _error(400, "invalid_request", f"unexpected query parameter: {extra[0]}")
+
+    values: dict[str, str | None] = {}
+    for key in allowed:
+        parsed = params.get(key)
+        if parsed is None:
+            values[key] = None
+            continue
+        if len(parsed) != 1 or parsed[0] == "":
+            return _error(400, "invalid_request", f"{key} must be a single non-empty value")
+        values[key] = parsed[0]
+    return ParsedGrantListFilters(agent_id=values["agent_id"], status=values["status"])
 
 
 def _workspace_identity(

@@ -30,6 +30,7 @@ from vinctor_service.grant_requests import (
 from vinctor_service.grants import (
     InMemoryAgentIssuableScopeBoundsRepository,
     issue_grant,
+    list_grants,
     lookup_grant,
     revoke_grant,
 )
@@ -165,6 +166,20 @@ class InMemoryV1Service:
         return lookup_grant(
             grant_ref=grant_ref,
             workspace_id=workspace_id,
+            grant_repository=self.grant_repository,
+        )
+
+    def list_grants(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str | None = None,
+        status: str | None = None,
+    ) -> tuple[Grant, ...]:
+        return list_grants(
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            status=status,
             grant_repository=self.grant_repository,
         )
 

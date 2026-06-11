@@ -124,6 +124,20 @@ def lookup_grant(
     return grant
 
 
+def list_grants(
+    *,
+    workspace_id: str,
+    agent_id: str | None = None,
+    status: str | None = None,
+    grant_repository: GrantLifecycleRepository,
+) -> tuple[Grant, ...]:
+    return grant_repository.list_grants_for_workspace(
+        workspace_id,
+        agent_id=agent_id,
+        status=status,
+    )
+
+
 def revoke_grant(
     *,
     grant_ref: str,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from importlib.metadata import version
+from inspect import signature
 from typing import Any
 
 from vinctor_mcp_server.config import VinctorMcpConfig, load_config
@@ -20,7 +22,7 @@ def create_stdio_server(
         timeout=resolved_config.timeout,
     )
     server_cls = fastmcp_cls or _load_fastmcp()
-    mcp = server_cls("vinctor-mcp-server")
+    mcp = _create_fastmcp(server_cls, "vinctor-mcp-server", version("vinctor-core"))
     register_read_only_tools(mcp, resolved_client)
     return mcp
 
@@ -39,3 +41,13 @@ def _load_fastmcp() -> type[Any]:
             'Install with vinctor-core[mcp].'
         ) from error
     return FastMCP
+
+
+def _create_fastmcp(server_cls: type[Any], name: str, server_version: str) -> Any:
+    if "version" in signature(server_cls).parameters:
+        return server_cls(name, version=server_version)
+    mcp = server_cls(name)
+    low_level_server = getattr(mcp, "_mcp_server", None)
+    if low_level_server is not None and hasattr(low_level_server, "version"):
+        low_level_server.version = server_version
+    return mcp

@@ -23,6 +23,7 @@ WorkspaceIdentityResolver = Callable[[str, datetime], WorkspaceIdentity | None]
 
 @dataclass(frozen=True)
 class AuditEventFilters:
+    agent_id: str | None = None
     event_type: str | None = None
     grant_ref: str | None = None
     boundary_id: str | None = None
@@ -103,7 +104,7 @@ def _workspace_identity(
 
 def _parse_filters(query_string: str) -> AuditEventFilters | V1HttpResponse:
     params = parse_qs(query_string, keep_blank_values=True)
-    allowed = {"event_type", "grant_ref", "boundary_id", "request_id", "limit"}
+    allowed = {"agent_id", "event_type", "grant_ref", "boundary_id", "request_id", "limit"}
     extra = sorted(set(params) - allowed)
     if extra:
         return _error(400, "invalid_request", f"unexpected query parameter: {extra[0]}")
@@ -128,6 +129,7 @@ def _parse_filters(query_string: str) -> AuditEventFilters | V1HttpResponse:
             return _error(400, "invalid_request", "limit must be between 1 and 100")
 
     return AuditEventFilters(
+        agent_id=values["agent_id"],
         event_type=values["event_type"],
         grant_ref=values["grant_ref"],
         boundary_id=values["boundary_id"],
@@ -137,6 +139,8 @@ def _parse_filters(query_string: str) -> AuditEventFilters | V1HttpResponse:
 
 
 def _event_matches(event: AuditEvent, filters: AuditEventFilters) -> bool:
+    if filters.agent_id is not None and event.agent_id != filters.agent_id:
+        return False
     if filters.event_type is not None and event.event_type != filters.event_type:
         return False
     if filters.grant_ref is not None and event.grant_ref != filters.grant_ref:

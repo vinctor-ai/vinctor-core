@@ -192,6 +192,86 @@ paths:
                 $ref: "#/components/schemas/GrantRequestDecision"
         "401":
           $ref: "#/components/responses/AuthRequired"
+  /v1/grants:
+    post:
+      summary: Issue a workspace grant.
+      security:
+        - WorkspaceKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GrantIssueRequest"
+      responses:
+        "201":
+          description: Grant issued.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Grant"
+                  - type: object
+                    properties:
+                      audit_event_id:
+                        type: string
+                        nullable: true
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+    get:
+      summary: List workspace grants.
+      security:
+        - WorkspaceKey: []
+      parameters:
+        - name: agent_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Workspace grants.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - grants
+                properties:
+                  grants:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Grant"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+  /v1/grants/{grant_ref}:
+    get:
+      summary: Get one workspace grant.
+      security:
+        - WorkspaceKey: []
+      parameters:
+        - name: grant_ref
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Grant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Grant"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /v1/audit-events:
     get:
       summary: List workspace audit events.
@@ -208,6 +288,11 @@ paths:
             maximum: 100
             default: 20
         - name: event_type
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: agent_id
           in: query
           required: false
           schema:
@@ -379,6 +464,53 @@ components:
           nullable: true
         audit_event_id:
           type: string
+          nullable: true
+    GrantIssueRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - agent_id
+        - scopes
+        - ttl_seconds
+      properties:
+        agent_id:
+          type: string
+        scopes:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        ttl_seconds:
+          type: integer
+          minimum: 1
+    Grant:
+      type: object
+      additionalProperties: false
+      required:
+        - grant_id
+        - grant_ref
+        - workspace_id
+        - agent_id
+        - scopes
+        - status
+      properties:
+        grant_id:
+          type: string
+        grant_ref:
+          type: string
+        workspace_id:
+          type: string
+        agent_id:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
           nullable: true
     GrantRequestCreate:
       type: object

@@ -59,6 +59,16 @@ class VinctorServiceClient:
     def get_grant(self, grant_ref: str) -> dict[str, Any]:
         return self._request_json("GET", f"/v1/grants/{_path_part(grant_ref)}")
 
+    def list_grants(
+        self,
+        *,
+        agent_id: str | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        query = _query({"agent_id": agent_id, "status": status})
+        suffix = f"?{query}" if query else ""
+        return self._request_json("GET", f"/v1/grants{suffix}")
+
     def list_audit_events(
         self,
         *,
@@ -67,9 +77,11 @@ class VinctorServiceClient:
         grant_ref: str | None = None,
         boundary_id: str | None = None,
         request_id: str | None = None,
+        agent_id: str | None = None,
     ) -> dict[str, Any]:
         query = _query(
             {
+                "agent_id": agent_id,
                 "event_type": event_type,
                 "grant_ref": grant_ref,
                 "boundary_id": boundary_id,
@@ -81,6 +93,15 @@ class VinctorServiceClient:
 
     def get_audit_event(self, event_id: str) -> dict[str, Any]:
         return self._request_json("GET", f"/v1/audit-events/{_path_part(event_id)}")
+
+    def list_grant_requests(self) -> dict[str, Any]:
+        return self._request_json("GET", "/v1/grant-requests")
+
+    def get_grant_request(self, request_id: str) -> dict[str, Any]:
+        return self._request_json("GET", f"/v1/grant-requests/{_path_part(request_id)}")
+
+    def list_auto_approval_rules(self) -> dict[str, Any]:
+        return self._request_json("GET", "/v1/auto-approval-rules")
 
     def _request_json(
         self,

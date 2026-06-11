@@ -10,6 +10,7 @@ from threading import Thread
 from typing import Any
 
 from vinctor_core import BoundaryRegistrationInput, Grant, register_boundary
+from vinctor_core.models import AuditEvent
 from vinctor_service import (
     AgentIdentity,
     GrantRequestCreateRequest,
@@ -394,6 +395,61 @@ def test_local_http_workspace_can_issue_lookup_revoke_and_enforce_grant() -> Non
         "action_permitted",
     ]
     assert svc.audit_events[2].event_type == "grant_revoked"
+
+
+def test_local_http_workspace_lists_grants_with_filters() -> None:
+    svc = InMemoryV1Service(
+        grants=(
+            grant(),
+            Grant(
+                grant_id="grnt_other_agent",
+                grant_ref="grt_other_agent",
+                workspace_id="ws_main",
+                agent_id="agent_other",
+                scopes=("send:email/external",),
+                status="active",
+                expires_at=NOW + timedelta(hours=1),
+            ),
+            Grant(
+                grant_id="grnt_revoked",
+                grant_ref="grt_revoked",
+                workspace_id="ws_main",
+                agent_id="agent_release",
+                scopes=("write:repo/feature/*",),
+                status="revoked",
+                expires_at=NOW + timedelta(hours=1),
+            ),
+            Grant(
+                grant_id="grnt_other_workspace",
+                grant_ref="grt_other_workspace",
+                workspace_id="ws_other",
+                agent_id="agent_release",
+                scopes=("write:repo/feature/*",),
+                status="active",
+                expires_at=NOW + timedelta(hours=1),
+            ),
+        )
+    )
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        list_status, listed = raw_request(
+            server,
+            method="GET",
+            path="/v1/grants?agent_id=agent_release&status=active",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+        agent_status, agent_response = raw_request(
+            server,
+            method="GET",
+            path="/v1/grants",
+            headers={"X-Agent-Key": "agent_key_main"},
+        )
+
+    assert list_status == 200
+    assert [grant["grant_ref"] for grant in listed["grants"]] == ["grt_main"]
+    assert "audit_event_id" not in listed["grants"][0]
+    assert agent_status == 401
+    assert agent_response["error"] == "authentication_required"
 
 
 def test_local_http_agent_key_cannot_issue_grant() -> None:
@@ -837,6 +893,42 @@ def test_local_http_audit_events_filter_by_request_id() -> None:
         "grant_requested"
     ]
     assert response["audit_events"][0]["grant_ref"] == request_id
+
+
+def test_local_http_audit_events_filter_by_agent_id() -> None:
+    svc = service()
+    svc.audit_writer.write(
+        AuditEvent(
+            event_id="evt_other",
+            event_type="action_denied",
+            decision="deny",
+            reason="action_denied",
+            workspace_id="ws_main",
+            agent_id="agent_other",
+            grant_id="grnt_other",
+            grant_ref="grt_other",
+            action="send",
+            resource="email/external",
+            scope_attempted="send:email/external",
+            scope_matched=None,
+            boundary_id=None,
+            runtime=None,
+            boundary_type=None,
+            created_at=NOW,
+        )
+    )
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        post_json(server)
+        status, response = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events?agent_id=agent_release",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert status == 200
+    assert [event["agent_id"] for event in response["audit_events"]] == ["agent_release"]
 
 
 def test_local_http_audit_events_rejects_event_alias() -> None:

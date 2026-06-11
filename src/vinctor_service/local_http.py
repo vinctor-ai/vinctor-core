@@ -113,7 +113,7 @@ def create_v1_http_handler(
             _handle_grant_request_request(handler, method, path)
             return
         if path == "/v1/grants" or path.startswith("/v1/grants/"):
-            _handle_grant_request(handler, method, path)
+            _handle_grant_request(handler, method, path, parsed_path.query)
             return
         if path == "/v1/audit-events" or path.startswith("/v1/audit-events/"):
             _handle_audit_request(handler, method, path, parsed_path.query)
@@ -263,6 +263,7 @@ def create_v1_http_handler(
         handler: BaseHTTPRequestHandler,
         method: str,
         path: str,
+        query_string: str,
     ) -> None:
         body: object = None
         if method == "POST" and path == "/v1/grants":
@@ -277,6 +278,7 @@ def create_v1_http_handler(
             path=path,
             headers=dict(handler.headers.items()),
             body=body,
+            query_string=query_string,
             workspace_identities=workspace_keys,
             workspace_identity_resolver=workspace_identity_resolver,
             service=cast(GrantLifecycleService, service),
