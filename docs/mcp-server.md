@@ -30,6 +30,10 @@ The MVP is stdio-only and exposes these tools:
 The server does not expose approve, reject, revoke, grant issuance, rule
 management, or `/v1/enforce`.
 
+Boundary explanation is intentionally deferred. A future Phase 2 tool such as
+`vinctor_explain_boundary` may summarize boundary status and fail-closed impact,
+but the MVP keeps boundary inspection to list/get tools only.
+
 ## Configuration
 
 Install the optional MCP dependency when you want to run the server:
