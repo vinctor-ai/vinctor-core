@@ -261,6 +261,23 @@ These routes use `X-Workspace-Key`, not `X-Agent-Key`. Hooks remain
 enforce-only and continue to call `POST /v1/enforce` with an already-issued
 `grant_ref`.
 
+Grant requests are separate from grant issuance. Execution agents may create a
+pending request for scoped authority, but that request does not mint authority:
+
+- `POST /v1/grant-requests` uses `X-Agent-Key` and creates a pending request
+  for the authenticated agent.
+- `GET /v1/grant-requests` and `GET /v1/grant-requests/{request_id}` use
+  `X-Workspace-Key` for workspace/admin review.
+- `POST /v1/grant-requests/{request_id}/approve` uses `X-Workspace-Key` and,
+  on success, calls the existing service-issued grant path.
+- `POST /v1/grant-requests/{request_id}/reject` uses `X-Workspace-Key` and
+  closes the request without issuing a grant.
+
+Approval remains mediated by a separate workspace/admin authority. The
+execution agent that requested authority cannot approve its own request through
+the agent-key route. This is an approval boundary, not a full human approval
+workflow or automated policy engine.
+
 The current service package exists to make the layering concrete:
 `vinctor_service` imports `vinctor_core`, and `vinctor_core` does not import
 `vinctor_service`.
@@ -355,6 +372,12 @@ The grant lifecycle flow is covered by:
 
 ```bash
 .venv/bin/python demo/grant_lifecycle_demo.py
+```
+
+The grant request lifecycle flow is covered by:
+
+```bash
+.venv/bin/python demo/grant_request_lifecycle_demo.py
 ```
 
 This slice supports service-issued scoped, time-bounded, revocable grants. It

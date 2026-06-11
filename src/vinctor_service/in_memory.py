@@ -13,6 +13,13 @@ from vinctor_core import (
 )
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput
 from vinctor_service.audit import InMemoryAuditWriter
+from vinctor_service.grant_requests import (
+    approve_grant_request,
+    create_grant_request,
+    list_grant_requests,
+    lookup_grant_request,
+    reject_grant_request,
+)
 from vinctor_service.grants import (
     InMemoryAgentIssuableScopeBoundsRepository,
     issue_grant,
@@ -22,10 +29,14 @@ from vinctor_service.grants import (
 from vinctor_service.models import (
     GrantIssueRequest,
     GrantIssueResult,
+    GrantRequest,
+    GrantRequestCreateRequest,
+    GrantRequestCreateResult,
+    GrantRequestDecisionResult,
     V1EnforceRequest,
     V1EnforceResponse,
 )
-from vinctor_service.repositories import InMemoryGrantRepository
+from vinctor_service.repositories import InMemoryGrantRepository, InMemoryGrantRequestRepository
 from vinctor_service.v1_enforce import enforce_v1_contract
 
 
@@ -40,6 +51,7 @@ class InMemoryV1Service:
 
     def __post_init__(self) -> None:
         self.grant_repository = InMemoryGrantRepository(self.grants)
+        self.grant_request_repository = InMemoryGrantRequestRepository()
         self.scope_bounds_repository = InMemoryAgentIssuableScopeBoundsRepository(
             self.initial_issuable_scope_bounds
         )
@@ -147,6 +159,77 @@ class InMemoryV1Service:
             grant_ref=grant_ref,
             workspace_id=workspace_id,
             grant_repository=self.grant_repository,
+            audit_writer=self.audit_writer,
+            now=now,
+        )
+
+    def create_grant_request(
+        self,
+        request: GrantRequestCreateRequest,
+        *,
+        now: datetime,
+    ) -> GrantRequestCreateResult:
+        return create_grant_request(
+            request,
+            request_repository=self.grant_request_repository,
+            audit_writer=self.audit_writer,
+            now=now,
+        )
+
+    def lookup_grant_request(
+        self,
+        *,
+        request_id: str,
+        workspace_id: str,
+    ) -> GrantRequest | None:
+        return lookup_grant_request(
+            request_id=request_id,
+            workspace_id=workspace_id,
+            request_repository=self.grant_request_repository,
+        )
+
+    def list_grant_requests(self, *, workspace_id: str) -> tuple[GrantRequest, ...]:
+        return list_grant_requests(
+            workspace_id=workspace_id,
+            request_repository=self.grant_request_repository,
+        )
+
+    def approve_grant_request(
+        self,
+        *,
+        request_id: str,
+        workspace_id: str,
+        decided_by: str,
+        decision_reason: str | None,
+        now: datetime,
+    ) -> GrantRequestDecisionResult:
+        return approve_grant_request(
+            request_id=request_id,
+            workspace_id=workspace_id,
+            decided_by=decided_by,
+            decision_reason=decision_reason,
+            request_repository=self.grant_request_repository,
+            grant_repository=self.grant_repository,
+            scope_bounds_repository=self.scope_bounds_repository,
+            audit_writer=self.audit_writer,
+            now=now,
+        )
+
+    def reject_grant_request(
+        self,
+        *,
+        request_id: str,
+        workspace_id: str,
+        decided_by: str,
+        decision_reason: str | None,
+        now: datetime,
+    ) -> GrantRequestDecisionResult:
+        return reject_grant_request(
+            request_id=request_id,
+            workspace_id=workspace_id,
+            decided_by=decided_by,
+            decision_reason=decision_reason,
+            request_repository=self.grant_request_repository,
             audit_writer=self.audit_writer,
             now=now,
         )

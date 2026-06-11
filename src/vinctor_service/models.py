@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
 
 from vinctor_core.models import Decision, Grant
 
 GrantIssueStatus = Literal["issued", "rejected"]
+GrantRequestStatus = Literal["pending", "approved", "rejected", "cancelled", "expired"]
+GrantRequestCreateStatus = Literal["created", "rejected"]
+GrantRequestDecisionStatus = Literal["approved", "rejected", "failed"]
 
 
 @dataclass(frozen=True)
@@ -68,5 +72,50 @@ class GrantIssueRequest:
 class GrantIssueResult:
     status: GrantIssueStatus
     reason: str
+    grant: Grant | None = None
+    audit_event_id: str | None = None
+
+
+@dataclass(frozen=True)
+class GrantRequest:
+    request_id: str
+    workspace_id: str
+    requester_agent_id: str
+    target_agent_id: str
+    requested_scopes: tuple[str, ...]
+    requested_ttl_seconds: int
+    reason: str
+    status: GrantRequestStatus
+    created_at: datetime
+    decided_at: datetime | None = None
+    decided_by: str | None = None
+    decision_reason: str | None = None
+    issued_grant_ref: str | None = None
+
+
+@dataclass(frozen=True)
+class GrantRequestCreateRequest:
+    workspace_id: str
+    requester_agent_id: str
+    requested_scopes: tuple[str, ...]
+    requested_ttl_seconds: int
+    reason: str
+    target_agent_id: str | None = None
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class GrantRequestCreateResult:
+    status: GrantRequestCreateStatus
+    reason: str
+    request: GrantRequest | None = None
+    audit_event_id: str | None = None
+
+
+@dataclass(frozen=True)
+class GrantRequestDecisionResult:
+    status: GrantRequestDecisionStatus
+    reason: str
+    request: GrantRequest | None = None
     grant: Grant | None = None
     audit_event_id: str | None = None

@@ -14,6 +14,10 @@ from vinctor_service.boundary_http import (
     handle_v1_boundaries_http,
 )
 from vinctor_service.grant_http import GrantLifecycleService, handle_v1_grants_http
+from vinctor_service.grant_request_http import (
+    GrantRequestService,
+    handle_v1_grant_requests_http,
+)
 from vinctor_service.v1_http import (
     AgentIdentity,
     AgentIdentityResolver,
@@ -88,6 +92,9 @@ def create_v1_http_handler(
         if path == "/v1/boundaries" or path.startswith("/v1/boundaries/"):
             _handle_boundary_request(handler, method, path)
             return
+        if path == "/v1/grant-requests" or path.startswith("/v1/grant-requests/"):
+            _handle_grant_request_request(handler, method, path)
+            return
         if path == "/v1/grants" or path.startswith("/v1/grants/"):
             _handle_grant_request(handler, method, path)
             return
@@ -154,6 +161,33 @@ def create_v1_http_handler(
         )
         _send_json(handler, response)
 
+    def _handle_grant_request_request(
+        handler: BaseHTTPRequestHandler,
+        method: str,
+        path: str,
+    ) -> None:
+        body: object = None
+        if method == "POST":
+            parsed = _read_optional_json_body(handler)
+            if isinstance(parsed, V1HttpResponse):
+                _send_json(handler, parsed)
+                return
+            body = parsed
+
+        response = handle_v1_grant_requests_http(
+            method=method,
+            path=path,
+            headers=dict(handler.headers.items()),
+            body=body,
+            agent_identities=agent_keys,
+            workspace_identities=workspace_keys,
+            agent_identity_resolver=agent_identity_resolver,
+            workspace_identity_resolver=workspace_identity_resolver,
+            service=cast(GrantRequestService, service),
+            now=now(),
+        )
+        _send_json(handler, response)
+
     def _handle_grant_request(
         handler: BaseHTTPRequestHandler,
         method: str,
@@ -180,6 +214,13 @@ def create_v1_http_handler(
         _send_json(handler, response)
 
     return V1Handler
+
+
+def _read_optional_json_body(handler: BaseHTTPRequestHandler) -> object | V1HttpResponse:
+    length_header = handler.headers.get("Content-Length")
+    if length_header is None or length_header == "0":
+        return None
+    return _read_json_body(handler)
 
 
 def _read_json_body(handler: BaseHTTPRequestHandler) -> object | V1HttpResponse:

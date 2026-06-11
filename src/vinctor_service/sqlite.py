@@ -12,6 +12,13 @@ from vinctor_core import (
     register_boundary,
 )
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput, Grant
+from vinctor_service.grant_requests import (
+    approve_grant_request,
+    create_grant_request,
+    list_grant_requests,
+    lookup_grant_request,
+    reject_grant_request,
+)
 from vinctor_service.grants import (
     issue_grant,
     lookup_grant,
@@ -21,6 +28,10 @@ from vinctor_service.grants import (
 from vinctor_service.models import (
     GrantIssueRequest,
     GrantIssueResult,
+    GrantRequest,
+    GrantRequestCreateRequest,
+    GrantRequestCreateResult,
+    GrantRequestDecisionResult,
     V1EnforceRequest,
     V1EnforceResponse,
 )
@@ -94,11 +105,30 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             PRIMARY KEY(workspace_id, agent_id)
         );
 
+        CREATE TABLE IF NOT EXISTS grant_requests (
+            request_id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            requester_agent_id TEXT NOT NULL,
+            target_agent_id TEXT NOT NULL,
+            requested_scopes_json TEXT NOT NULL,
+            requested_ttl_seconds INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            decided_at TEXT,
+            decided_by TEXT,
+            decision_reason TEXT,
+            issued_grant_ref TEXT
+        );
+
         CREATE INDEX IF NOT EXISTS idx_local_keys_hash
         ON local_keys(key_hash);
 
         CREATE INDEX IF NOT EXISTS idx_local_keys_workspace
         ON local_keys(workspace_id);
+
+        CREATE INDEX IF NOT EXISTS idx_grant_requests_workspace
+        ON grant_requests(workspace_id);
         """
     )
     conn.commit()
@@ -226,6 +256,98 @@ class SQLiteAgentIssuableScopeBoundsRepository:
                     agent_id,
                     json.dumps(list(scopes)),
                     now.isoformat(),
+                ),
+            )
+
+
+class SQLiteGrantRequestRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def insert_request(self, request: GrantRequest) -> None:
+        if self.get_request(request.request_id) is not None:
+            raise ValueError(f"duplicate grant request_id: {request.request_id}")
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO grant_requests (
+                    request_id, workspace_id, requester_agent_id, target_agent_id,
+                    requested_scopes_json, requested_ttl_seconds, reason, status,
+                    created_at, decided_at, decided_by, decision_reason,
+                    issued_grant_ref
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                _grant_request_values(request),
+            )
+
+    def get_request(self, request_id: str) -> GrantRequest | None:
+        row = self._conn.execute(
+            """
+            SELECT request_id, workspace_id, requester_agent_id, target_agent_id,
+                   requested_scopes_json, requested_ttl_seconds, reason, status,
+                   created_at, decided_at, decided_by, decision_reason,
+                   issued_grant_ref
+            FROM grant_requests
+            WHERE request_id = ?
+            """,
+            (request_id,),
+        ).fetchone()
+        return _grant_request_from_row(row)
+
+    def list_requests_for_workspace(self, workspace_id: str) -> tuple[GrantRequest, ...]:
+        rows = self._conn.execute(
+            """
+            SELECT request_id, workspace_id, requester_agent_id, target_agent_id,
+                   requested_scopes_json, requested_ttl_seconds, reason, status,
+                   created_at, decided_at, decided_by, decision_reason,
+                   issued_grant_ref
+            FROM grant_requests
+            WHERE workspace_id = ?
+            ORDER BY created_at, request_id
+            """,
+            (workspace_id,),
+        ).fetchall()
+        return tuple(
+            request
+            for row in rows
+            if (request := _grant_request_from_row(row)) is not None
+        )
+
+    def update_request(self, request: GrantRequest) -> None:
+        if self.get_request(request.request_id) is None:
+            raise ValueError(f"unknown grant request_id: {request.request_id}")
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE grant_requests
+                SET workspace_id = ?,
+                    requester_agent_id = ?,
+                    target_agent_id = ?,
+                    requested_scopes_json = ?,
+                    requested_ttl_seconds = ?,
+                    reason = ?,
+                    status = ?,
+                    created_at = ?,
+                    decided_at = ?,
+                    decided_by = ?,
+                    decision_reason = ?,
+                    issued_grant_ref = ?
+                WHERE request_id = ?
+                """,
+                (
+                    request.workspace_id,
+                    request.requester_agent_id,
+                    request.target_agent_id,
+                    json.dumps(list(request.requested_scopes)),
+                    request.requested_ttl_seconds,
+                    request.reason,
+                    request.status,
+                    request.created_at.isoformat(),
+                    _datetime_to_storage(request.decided_at),
+                    request.decided_by,
+                    request.decision_reason,
+                    request.issued_grant_ref,
+                    request.request_id,
                 ),
             )
 
@@ -363,6 +485,7 @@ class SQLiteV1Service:
     audit_writer: SQLiteAuditWriter = field(init=False)
     boundary_registry: SQLiteBoundaryRegistry = field(init=False)
     scope_bounds_repository: SQLiteAgentIssuableScopeBoundsRepository = field(init=False)
+    grant_request_repository: SQLiteGrantRequestRepository = field(init=False)
 
     def __post_init__(self) -> None:
         if self.initialize_schema:
@@ -371,6 +494,7 @@ class SQLiteV1Service:
         self.audit_writer = SQLiteAuditWriter(self.conn)
         self.boundary_registry = SQLiteBoundaryRegistry(self.conn)
         self.scope_bounds_repository = SQLiteAgentIssuableScopeBoundsRepository(self.conn)
+        self.grant_request_repository = SQLiteGrantRequestRepository(self.conn)
 
     def insert_grant(self, grant: Grant) -> None:
         insert_grant(self.conn, grant)
@@ -422,6 +546,77 @@ class SQLiteV1Service:
             grant_ref=grant_ref,
             workspace_id=workspace_id,
             grant_repository=self.grant_repository,
+            audit_writer=self.audit_writer,
+            now=now,
+        )
+
+    def create_grant_request(
+        self,
+        request: GrantRequestCreateRequest,
+        *,
+        now: datetime,
+    ) -> GrantRequestCreateResult:
+        return create_grant_request(
+            request,
+            request_repository=self.grant_request_repository,
+            audit_writer=self.audit_writer,
+            now=now,
+        )
+
+    def lookup_grant_request(
+        self,
+        *,
+        request_id: str,
+        workspace_id: str,
+    ) -> GrantRequest | None:
+        return lookup_grant_request(
+            request_id=request_id,
+            workspace_id=workspace_id,
+            request_repository=self.grant_request_repository,
+        )
+
+    def list_grant_requests(self, *, workspace_id: str) -> tuple[GrantRequest, ...]:
+        return list_grant_requests(
+            workspace_id=workspace_id,
+            request_repository=self.grant_request_repository,
+        )
+
+    def approve_grant_request(
+        self,
+        *,
+        request_id: str,
+        workspace_id: str,
+        decided_by: str,
+        decision_reason: str | None,
+        now: datetime,
+    ) -> GrantRequestDecisionResult:
+        return approve_grant_request(
+            request_id=request_id,
+            workspace_id=workspace_id,
+            decided_by=decided_by,
+            decision_reason=decision_reason,
+            request_repository=self.grant_request_repository,
+            grant_repository=self.grant_repository,
+            scope_bounds_repository=self.scope_bounds_repository,
+            audit_writer=self.audit_writer,
+            now=now,
+        )
+
+    def reject_grant_request(
+        self,
+        *,
+        request_id: str,
+        workspace_id: str,
+        decided_by: str,
+        decision_reason: str | None,
+        now: datetime,
+    ) -> GrantRequestDecisionResult:
+        return reject_grant_request(
+            request_id=request_id,
+            workspace_id=workspace_id,
+            decided_by=decided_by,
+            decision_reason=decision_reason,
+            request_repository=self.grant_request_repository,
             audit_writer=self.audit_writer,
             now=now,
         )
@@ -516,6 +711,44 @@ def _boundary_from_row(row: sqlite3.Row | tuple | None) -> Boundary | None:
         status=row[6],
         created_at=datetime.fromisoformat(row[7]),
         updated_at=datetime.fromisoformat(row[8]),
+    )
+
+
+def _grant_request_values(request: GrantRequest) -> tuple[object, ...]:
+    return (
+        request.request_id,
+        request.workspace_id,
+        request.requester_agent_id,
+        request.target_agent_id,
+        json.dumps(list(request.requested_scopes)),
+        request.requested_ttl_seconds,
+        request.reason,
+        request.status,
+        request.created_at.isoformat(),
+        _datetime_to_storage(request.decided_at),
+        request.decided_by,
+        request.decision_reason,
+        request.issued_grant_ref,
+    )
+
+
+def _grant_request_from_row(row: sqlite3.Row | tuple | None) -> GrantRequest | None:
+    if row is None:
+        return None
+    return GrantRequest(
+        request_id=row[0],
+        workspace_id=row[1],
+        requester_agent_id=row[2],
+        target_agent_id=row[3],
+        requested_scopes=tuple(json.loads(row[4])),
+        requested_ttl_seconds=row[5],
+        reason=row[6],
+        status=row[7],
+        created_at=datetime.fromisoformat(row[8]),
+        decided_at=_datetime_from_storage(row[9]),
+        decided_by=row[10],
+        decision_reason=row[11],
+        issued_grant_ref=row[12],
     )
 
 

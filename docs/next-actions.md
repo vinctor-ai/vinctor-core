@@ -89,6 +89,14 @@ V1 service contract boundary:
   lifecycle path instead of treating direct SQLite seeding as the primary flow.
 - Added a grant lifecycle demo covering issue, enforce, revoke, and denied
   enforce after revocation.
+- Added the first grant request lifecycle: agents can create pending scoped
+  grant requests with `X-Agent-Key`, workspace/admin authority can list, look
+  up, approve, or reject them with `X-Workspace-Key`, and approval reuses the
+  existing service-issued grant path.
+- Added grant request audit events for `grant_requested`,
+  `grant_request_approved`, and `grant_request_rejected`.
+- Added a grant request lifecycle demo covering request, approval, issued
+  grant consumption, and audit event order.
 
 ## Next
 
@@ -96,10 +104,10 @@ V1 service contract boundary:
   `vinctor-claude-code-hook` currently sends `X-Agent-Key` but does not send
   `X-Vinctor-Boundary-Id`, so service enforcement works while hook-originated
   audit rows do not yet include `boundary_id`.
-- Decide the next grant lifecycle slice, if any. Good candidates are admin
-  listing/filtering contracts or a small ADR for how future orchestrators
-  receive workspace/admin authority. Do not add dynamic multi-grant hooks,
-  approval workflows, or a JIT orchestration engine without an explicit slice.
+- Decide the next approval slice. Good candidates are a small ADR for how future
+  orchestrators receive workspace/admin authority, or a protocol-rule approval
+  evaluator that can approve requests without giving the requesting execution
+  agent self-issuance power.
 - Keep local config-file auto-reuse and OS keychain integration deferred until
   the local bootstrap UX is stable enough for a separate ADR-backed slice.
 

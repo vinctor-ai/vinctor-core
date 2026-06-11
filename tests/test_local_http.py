@@ -419,3 +419,125 @@ def test_local_http_agent_key_cannot_issue_grant() -> None:
     assert status == 401
     assert response["error"] == "authentication_required"
     assert svc.audit_events == ()
+
+
+def test_local_http_agent_requests_and_workspace_approves_grant() -> None:
+    svc = InMemoryV1Service()
+    svc.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        scopes=("write:repo/feature/*",),
+        now=NOW,
+    )
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        create_status, created = post_json(
+            server,
+            path="/v1/grant-requests",
+            headers={"X-Agent-Key": "agent_key_main"},
+            payload={
+                "scopes": ["write:repo/feature/readme"],
+                "ttl_seconds": 3600,
+                "reason": "edit the feature readme",
+            },
+        )
+        list_status, listed = raw_request(
+            server,
+            method="GET",
+            path="/v1/grant-requests",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+        approve_status, approved = raw_request(
+            server,
+            method="POST",
+            path=f"/v1/grant-requests/{created['request_id']}/approve",
+            request_body=json.dumps({"decision_reason": "expected edit"}),
+            headers={
+                "Content-Type": "application/json",
+                "X-Workspace-Key": "workspace_key_main",
+            },
+        )
+        enforce_status, enforced = post_json(
+            server,
+            payload=body(grant_ref=approved["issued_grant_ref"]),
+            headers={"X-Agent-Key": "agent_key_main"},
+        )
+
+    assert create_status == 201
+    assert created["status"] == "pending"
+    assert created["requester_agent_id"] == "agent_release"
+    assert created["target_agent_id"] == "agent_release"
+    assert list_status == 200
+    assert listed["grant_requests"][0]["request_id"] == created["request_id"]
+    assert approve_status == 200
+    assert approved["status"] == "approved"
+    assert approved["grant"]["grant_ref"] == approved["issued_grant_ref"]
+    assert enforce_status == 200
+    assert enforced["decision"] == "permit"
+    assert [event.event_type for event in svc.audit_events] == [
+        "grant_requested",
+        "grant_issued",
+        "grant_request_approved",
+        "action_permitted",
+    ]
+
+
+def test_local_http_agent_key_cannot_approve_grant_request() -> None:
+    svc = InMemoryV1Service()
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        create_status, created = post_json(
+            server,
+            path="/v1/grant-requests",
+            headers={"X-Agent-Key": "agent_key_main"},
+            payload={
+                "scopes": ["write:repo/feature/readme"],
+                "ttl_seconds": 3600,
+                "reason": "edit the feature readme",
+            },
+        )
+        approve_status, response = raw_request(
+            server,
+            method="POST",
+            path=f"/v1/grant-requests/{created['request_id']}/approve",
+            headers={"X-Agent-Key": "agent_key_main"},
+        )
+
+    assert create_status == 201
+    assert approve_status == 401
+    assert response["error"] == "authentication_required"
+    assert [event.event_type for event in svc.audit_events] == ["grant_requested"]
+
+
+def test_local_http_workspace_rejects_grant_request() -> None:
+    svc = InMemoryV1Service()
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        _, created = post_json(
+            server,
+            path="/v1/grant-requests",
+            headers={"X-Agent-Key": "agent_key_main"},
+            payload={
+                "scopes": ["write:repo/feature/readme"],
+                "ttl_seconds": 3600,
+                "reason": "edit the feature readme",
+            },
+        )
+        reject_status, rejected = raw_request(
+            server,
+            method="POST",
+            path=f"/v1/grant-requests/{created['request_id']}/reject",
+            request_body=json.dumps({"decision_reason": "not needed"}),
+            headers={
+                "Content-Type": "application/json",
+                "X-Workspace-Key": "workspace_key_main",
+            },
+        )
+
+    assert reject_status == 200
+    assert rejected["status"] == "rejected"
+    assert rejected["issued_grant_ref"] is None
+    assert [event.event_type for event in svc.audit_events] == [
+        "grant_requested",
+        "grant_request_rejected",
+    ]
