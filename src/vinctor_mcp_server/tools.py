@@ -72,7 +72,7 @@ class VinctorReadOnlyTools:
         request_id: str | None = None,
     ) -> dict[str, Any]:
         body = self._client.list_audit_events(
-            limit=limit,
+            limit=_clamp_audit_limit(limit),
             event_type=event_type,
             grant_ref=grant_ref,
             boundary_id=boundary_id,
@@ -184,3 +184,7 @@ def _denial_explanation(event: dict[str, Any]) -> str:
     if isinstance(reason, str):
         return explanations.get(reason, f"Vinctor denied the request with reason code {reason}.")
     return "Vinctor denied the request."
+
+
+def _clamp_audit_limit(limit: int) -> int:
+    return max(1, min(limit, 100))

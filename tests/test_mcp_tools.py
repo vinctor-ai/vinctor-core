@@ -128,6 +128,29 @@ class FakeMcp:
         return register
 
 
+class RecordingAuditClient(FakeClient):
+    def __init__(self) -> None:
+        self.seen_limits: list[int] = []
+
+    def list_audit_events(
+        self,
+        *,
+        limit: int = 20,
+        event_type: str | None = None,
+        grant_ref: str | None = None,
+        boundary_id: str | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.seen_limits.append(limit)
+        return super().list_audit_events(
+            limit=limit,
+            event_type=event_type,
+            grant_ref=grant_ref,
+            boundary_id=boundary_id,
+            request_id=request_id,
+        )
+
+
 def test_status_tool_redacts_service_internals() -> None:
     tools = VinctorReadOnlyTools(FakeClient())
 
@@ -207,6 +230,16 @@ def test_audit_tools_return_allowlisted_fields() -> None:
     fetched = tools.get_audit_event("evt_deny")
     assert fetched["event_id"] == "evt_deny"
     assert "raw_tool_input" not in fetched
+
+
+def test_list_audit_events_clamps_limit_before_calling_service() -> None:
+    client = RecordingAuditClient()
+    tools = VinctorReadOnlyTools(client)
+
+    tools.list_audit_events(limit=500)
+    tools.list_audit_events(limit=0)
+
+    assert client.seen_limits == [100, 1]
 
 
 def test_explain_denial_uses_reason_code_without_raw_payloads() -> None:

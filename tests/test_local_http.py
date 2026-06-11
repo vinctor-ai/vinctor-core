@@ -839,6 +839,22 @@ def test_local_http_audit_events_filter_by_request_id() -> None:
     assert response["audit_events"][0]["grant_ref"] == request_id
 
 
+def test_local_http_audit_events_rejects_event_alias() -> None:
+    svc = service()
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        status, response = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events?event=action_denied",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert status == 400
+    assert response["error"] == "invalid_request"
+    assert response["reason"] == "unexpected query parameter: event"
+
+
 def test_local_http_workspace_manages_auto_approval_rules() -> None:
     svc = InMemoryV1Service()
     payload = {

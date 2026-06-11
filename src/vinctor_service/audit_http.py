@@ -103,7 +103,7 @@ def _workspace_identity(
 
 def _parse_filters(query_string: str) -> AuditEventFilters | V1HttpResponse:
     params = parse_qs(query_string, keep_blank_values=True)
-    allowed = {"event_type", "event", "grant_ref", "boundary_id", "request_id", "limit"}
+    allowed = {"event_type", "grant_ref", "boundary_id", "request_id", "limit"}
     extra = sorted(set(params) - allowed)
     if extra:
         return _error(400, "invalid_request", f"unexpected query parameter: {extra[0]}")
@@ -127,9 +127,8 @@ def _parse_filters(query_string: str) -> AuditEventFilters | V1HttpResponse:
         if limit <= 0 or limit > 100:
             return _error(400, "invalid_request", "limit must be between 1 and 100")
 
-    event_type = values["event_type"] or values["event"]
     return AuditEventFilters(
-        event_type=event_type,
+        event_type=values["event_type"],
         grant_ref=values["grant_ref"],
         boundary_id=values["boundary_id"],
         request_id=values["request_id"],
