@@ -42,6 +42,16 @@ def audit_events(conn: sqlite3.Connection) -> list[str]:
     ]
 
 
+def audit_event_decisions(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    return conn.execute(
+        """
+        SELECT event_type, decision
+        FROM audit_events
+        ORDER BY rowid
+        """
+    ).fetchall()
+
+
 def test_agent_can_create_pending_grant_request(tmp_path: Path) -> None:
     conn = connect_db(tmp_path)
     service = SQLiteV1Service(conn)
@@ -130,6 +140,10 @@ def test_workspace_rejection_keeps_request_without_grant(tmp_path: Path) -> None
     assert rejected.request.issued_grant_ref is None
     assert service.list_grant_requests(workspace_id="ws_main") == (rejected.request,)
     assert audit_events(conn) == ["grant_requested", "grant_request_rejected"]
+    assert audit_event_decisions(conn) == [
+        ("grant_requested", "permit"),
+        ("grant_request_rejected", "deny"),
+    ]
     conn.close()
 
 

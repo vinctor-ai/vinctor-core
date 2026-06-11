@@ -20,6 +20,7 @@ from vinctor_core.registry import (
     get_boundary_for_workspace,
     register_boundary,
 )
+from vinctor_core.scope import scope_subsumes
 
 __all__ = [
     "AuditEvent",
@@ -39,4 +40,5 @@ __all__ = [
     "evaluate_policy",
     "get_boundary_for_workspace",
     "register_boundary",
+    "scope_subsumes",
 ]

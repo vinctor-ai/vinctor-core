@@ -40,6 +40,21 @@ def match_scope(scopes: tuple[str, ...], action: str, resource: str) -> str | No
     return None
 
 
+def scope_subsumes(broad_scope: str, narrow_scope: str) -> bool:
+    if broad_scope == narrow_scope:
+        return True
+    if not is_valid_grant_scope(broad_scope) or not is_valid_grant_scope(narrow_scope):
+        return False
+
+    broad_action, _, broad_resource = broad_scope.partition(":")
+    narrow_action, _, narrow_resource = narrow_scope.partition(":")
+    if broad_action != narrow_action or not broad_resource.endswith("/*"):
+        return False
+
+    prefix = broad_resource.removesuffix("*")
+    return narrow_resource.startswith(prefix)
+
+
 def _matches_terminal_resource_wildcard(scope: str, action: str, resource: str) -> bool:
     scope_action, separator, scope_resource = scope.partition(":")
     if separator != ":" or scope_action != action:

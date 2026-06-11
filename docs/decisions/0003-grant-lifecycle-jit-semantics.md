@@ -76,11 +76,24 @@ Avoid for now:
 - human approval workflow
 - credential shielding
 
+## Grant Request Metadata
+
+Grant request fields such as `task_id`, `session_id`, `repo`, `worktree`, and
+`requester_runtime` are currently audit and queue context only. They do not
+grant authority, widen scopes, or influence the deterministic decision logic.
+They are kept to support future task-oriented grant review and dogfooding
+correlation. If no concrete consumer depends on them, they should be pruned
+before this surface becomes durable product contract.
+
 ## Consequences
 
 - `ttl_seconds` and persisted `expires_at` remain central to grant issuance.
 - Hooks remain enforce-only and continue to consume already-issued
   `grant_ref` values.
+- Lifecycle audit events currently reuse the `permit`/`deny` decision vocabulary.
+  Rejected grant requests and revoked grants must be exported as `deny`, not
+  `permit`, so operator audit exports do not read rejected or withdrawn
+  authority as allowed access.
 - Single-use grants are not implemented unless explicitly planned later.
 - The repository may describe this slice as supporting service-issued scoped,
   time-bounded, revocable grants.

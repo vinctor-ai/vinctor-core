@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 
-from vinctor_core.scope import is_valid_grant_scope
+from vinctor_core.scope import is_valid_grant_scope, scope_subsumes
 from vinctor_service.audit import AuditWriter
 from vinctor_service.grant_requests import approve_grant_request, lookup_grant_request
 from vinctor_service.grants import AgentIssuableScopeBoundsRepository
@@ -203,18 +203,6 @@ def _scopes_within_rule(
     allowed_scopes: tuple[str, ...],
 ) -> bool:
     return all(
-        any(_scope_within_allowed_scope(requested, allowed) for allowed in allowed_scopes)
+        any(scope_subsumes(allowed, requested) for allowed in allowed_scopes)
         for requested in requested_scopes
     )
-
-
-def _scope_within_allowed_scope(requested_scope: str, allowed_scope: str) -> bool:
-    if requested_scope == allowed_scope:
-        return True
-
-    requested_action, _, requested_resource = requested_scope.partition(":")
-    allowed_action, _, allowed_resource = allowed_scope.partition(":")
-    if requested_action != allowed_action or not allowed_resource.endswith("/*"):
-        return False
-
-    return requested_resource.startswith(allowed_resource.removesuffix("*"))

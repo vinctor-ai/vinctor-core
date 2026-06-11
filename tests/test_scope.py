@@ -3,6 +3,7 @@ from vinctor_core.scope import (
     is_valid_grant_scope,
     is_valid_requested_action,
     is_valid_requested_resource,
+    scope_subsumes,
 )
 
 
@@ -58,6 +59,16 @@ def test_validates_exact_and_terminal_wildcard_grant_scopes() -> None:
         "write:repo/feature/*",
     ):
         assert is_valid_grant_scope(scope)
+
+
+def test_scope_subsumes_exact_and_terminal_wildcards() -> None:
+    assert scope_subsumes("write:repo/feature/readme", "write:repo/feature/readme")
+    assert scope_subsumes("write:repo/*", "write:repo/a/b")
+    assert scope_subsumes("write:repo/*", "write:repo/feature/*")
+    assert scope_subsumes("write:repo/feature/*", "write:repo/feature/readme")
+    assert not scope_subsumes("write:repo/feature/*", "write:repo/*")
+    assert not scope_subsumes("read:repo/*", "write:repo/a/b")
+    assert not scope_subsumes("write:repo/feature/readme", "write:repo/feature/other")
 
 
 def test_rejects_malformed_grant_scopes() -> None:

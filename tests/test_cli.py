@@ -9,8 +9,9 @@ from threading import Thread
 
 import yaml
 
-from vinctor_service import SQLiteV1Service
+from vinctor_service import GrantRequestCreateRequest, SQLiteV1Service
 from vinctor_service.cli import run_vinctor
+from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.local_launcher import LocalLaunchConfig, prepare_local_service
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
@@ -197,6 +198,65 @@ def test_vinctor_cli_manual_review_flow_and_audit_filter(tmp_path: Path) -> None
         _stop_service(handle)
 
 
+def test_vinctor_cli_audit_export_writes_workspace_jsonl(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    export_path = tmp_path / "audit.jsonl"
+    _seed_rejected_request_audit(db_path)
+
+    output = _run_text(
+        [
+            "--db",
+            str(db_path),
+            "--workspace-key",
+            "wsk_demo",
+            "operator",
+            "audit",
+            "export",
+            "--format",
+            "jsonl",
+            "--file",
+            str(export_path),
+        ]
+    )
+
+    lines = export_path.read_text(encoding="utf-8").splitlines()
+    events = [json.loads(line) for line in lines]
+    forbidden = {"raw_tool_input", "raw_command", "prompt", "model_facing_reason"}
+    assert "exported audit events count=2" in output
+    assert [(event["event_type"], event["decision"]) for event in events] == [
+        ("grant_requested", "permit"),
+        ("grant_request_rejected", "deny"),
+    ]
+    assert all(event.keys().isdisjoint(forbidden) for event in events)
+
+
+def test_vinctor_cli_audit_export_requires_valid_workspace_key(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_rejected_request_audit(db_path)
+
+    stdout = StringIO()
+    stderr = StringIO()
+    status = run_vinctor(
+        [
+            "--db",
+            str(db_path),
+            "--workspace-key",
+            "wsk_missing",
+            "operator",
+            "audit",
+            "export",
+            "--format",
+            "jsonl",
+        ],
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert status == 4
+    assert "valid workspace key is required" in stderr.getvalue()
+    assert stdout.getvalue() == ""
+
+
 def test_vinctor_demo_check_runs_smoke_flow() -> None:
     result = _run(["--json", "demo", "check"])
 
@@ -344,6 +404,37 @@ def _start_service(tmp_path: Path, *, scopes: tuple[str, ...]):
     return handle
 
 
+def _seed_rejected_request_audit(db_path: Path) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        service = SQLiteV1Service(conn)
+        SQLiteLocalKeyRepository(conn).create_workspace_key(
+            workspace_id="ws_demo",
+            raw_key="wsk_demo",
+            now=NOW,
+        )
+        service.create_grant_request(
+            GrantRequestCreateRequest(
+                workspace_id="ws_demo",
+                requester_agent_id="agent_runner",
+                requested_scopes=("write:repo/vinctor-core/README.md",),
+                requested_ttl_seconds=1800,
+                reason="edit core README",
+                request_id="grq_demo",
+            ),
+            now=NOW,
+        )
+        service.reject_grant_request(
+            request_id="grq_demo",
+            workspace_id="ws_demo",
+            decided_by="workspace:ws_demo",
+            decision_reason="not needed",
+            now=NOW,
+        )
+    finally:
+        conn.close()
+
+
 def _stop_service(handle) -> None:
     handle.server.shutdown()
     handle._test_thread.join(timeout=5)
@@ -376,3 +467,11 @@ def _run(argv: list[str]) -> dict[str, object]:
     status = run_vinctor(argv, stdout=stdout, stderr=stderr)
     assert status == 0, stderr.getvalue()
     return json.loads(stdout.getvalue())
+
+
+def _run_text(argv: list[str]) -> str:
+    stdout = StringIO()
+    stderr = StringIO()
+    status = run_vinctor(argv, stdout=stdout, stderr=stderr)
+    assert status == 0, stderr.getvalue()
+    return stdout.getvalue()

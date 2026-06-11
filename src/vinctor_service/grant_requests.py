@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import datetime
 from secrets import token_urlsafe
 
-from vinctor_core.models import AuditEvent, Grant
+from vinctor_core.models import AuditEvent, Decision, Grant
 from vinctor_core.scope import is_valid_grant_scope
 from vinctor_service.audit import AuditWriter
 from vinctor_service.grants import AgentIssuableScopeBoundsRepository, issue_grant
@@ -166,6 +166,7 @@ def reject_grant_request(
     request_repository.update_request(updated)
     audit_event = _request_lifecycle_event(
         event_type="grant_request_rejected",
+        decision="deny",
         reason="grant_request_rejected",
         request=updated,
         action="reject_grant_request",
@@ -238,6 +239,7 @@ def _get_pending_workspace_request(
 def _request_lifecycle_event(
     *,
     event_type: str,
+    decision: Decision = "permit",
     reason: str,
     request: GrantRequest,
     action: str,
@@ -247,7 +249,7 @@ def _request_lifecycle_event(
     return AuditEvent(
         event_id=_new_id("evt"),
         event_type=event_type,
-        decision="permit",
+        decision=decision,
         reason=reason,
         workspace_id=request.workspace_id,
         agent_id=request.requester_agent_id,

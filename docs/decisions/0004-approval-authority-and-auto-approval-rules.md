@@ -55,6 +55,17 @@ The next explicit slice connects matching rules to automatic approval:
 This path must still be invoked with workspace/admin authority or future
 orchestrator authority, not by the requesting execution agent.
 
+## Why Keep This Surface Now
+
+Keep the auto-approval rule layer in the local prototype because it supports a
+specific dogfood scenario: low-risk, repeatable tasks such as CI checks or
+bounded documentation edits can obtain service-issued scoped grants without
+adding runtime-specific hook code or a separate operator UI. The layer remains
+optional policy data controlled by workspace/admin authority. The core runtime
+authorization path still works with only issuable bounds plus manual request
+approval, so this surface should be deferred or narrowed if dogfooding stops
+using it.
+
 ## HTTP/Admin Contract
 
 Auto-approval rule management is exposed only through workspace/admin authority:

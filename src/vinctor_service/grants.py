@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 from secrets import token_urlsafe
 from typing import Protocol
 
-from vinctor_core.models import AuditEvent, Grant
-from vinctor_core.scope import is_valid_grant_scope
+from vinctor_core.models import AuditEvent, Decision, Grant
+from vinctor_core.scope import is_valid_grant_scope, scope_subsumes
 from vinctor_service.audit import AuditWriter
 from vinctor_service.models import GrantIssueRequest, GrantIssueResult
 from vinctor_service.repositories import GrantLifecycleRepository
@@ -138,6 +138,7 @@ def revoke_grant(
 
     audit_event = _grant_lifecycle_event(
         event_type="grant_revoked",
+        decision="deny",
         reason="grant_revoked",
         grant=grant,
         action="revoke_grant",
@@ -176,26 +177,15 @@ def _scopes_within_bounds(
     bounds: tuple[str, ...],
 ) -> bool:
     return all(
-        any(_scope_within_bound(requested, bound) for bound in bounds)
+        any(scope_subsumes(bound, requested) for bound in bounds)
         for requested in requested_scopes
     )
-
-
-def _scope_within_bound(requested_scope: str, bound: str) -> bool:
-    if requested_scope == bound:
-        return True
-
-    requested_action, _, requested_resource = requested_scope.partition(":")
-    bound_action, _, bound_resource = bound.partition(":")
-    if requested_action != bound_action or not bound_resource.endswith("/*"):
-        return False
-
-    return requested_resource.startswith(bound_resource.removesuffix("*"))
 
 
 def _grant_lifecycle_event(
     *,
     event_type: str,
+    decision: Decision = "permit",
     reason: str,
     grant: Grant,
     action: str,
@@ -206,7 +196,7 @@ def _grant_lifecycle_event(
     return AuditEvent(
         event_id=_new_id("evt"),
         event_type=event_type,
-        decision="permit",
+        decision=decision,
         reason=reason,
         workspace_id=grant.workspace_id,
         agent_id=grant.agent_id,

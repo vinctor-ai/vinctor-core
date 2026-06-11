@@ -15,6 +15,7 @@ from typing import NoReturn, TextIO
 from urllib.parse import urlsplit
 
 from vinctor_core.models import Grant
+from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.local_launcher import (
     DEFAULT_SCOPE,
     LocalLaunchConfig,
@@ -216,6 +217,9 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
     audit_list.add_argument("--grant-ref")
     audit_list.add_argument("--boundary-id")
     audit_list.add_argument("--request-id")
+    audit_export = audit_commands.add_parser("export")
+    audit_export.add_argument("--format", choices=("jsonl",), default="jsonl")
+    audit_export.add_argument("--file", type=Path)
 
     policy = resources.add_parser("policy")
     policy_commands = policy.add_subparsers(dest="policy_command", required=True)
@@ -579,6 +583,11 @@ def _operator_bounds(args: argparse.Namespace, *, stdout: TextIO) -> None:
 
 
 def _operator_audit(args: argparse.Namespace, *, stdout: TextIO) -> None:
+    if args.audit_command == "export":
+        _operator_audit_export(args, stdout=stdout)
+        return
+    if args.audit_command != "list":
+        raise CliError(f"unknown audit command: {args.audit_command}")
     if args.limit <= 0:
         raise CliError("audit --limit must be positive")
     events = [
@@ -588,6 +597,36 @@ def _operator_audit(args: argparse.Namespace, *, stdout: TextIO) -> None:
     ][-args.limit :]
     body = {"audit_events": [_audit_body(event) for event in events]}
     _emit(args, body, _audit_list_text(events), stdout=stdout)
+
+
+def _operator_audit_export(args: argparse.Namespace, *, stdout: TextIO) -> None:
+    service = _sqlite_service(args.db)
+    workspace_key = _required(args.workspace_key, "workspace key")
+    identity = SQLiteLocalKeyRepository(service.conn).resolve_workspace_identity(
+        workspace_key,
+        now=datetime.now(UTC),
+    )
+    if identity is None:
+        raise CliError("valid workspace key is required for audit export", code=EXIT_AUTH)
+
+    events = [
+        event
+        for event in service.audit_events
+        if event.workspace_id == identity.workspace_id
+    ]
+    payload = "\n".join(json.dumps(_audit_body(event), sort_keys=True) for event in events)
+    if args.file is not None:
+        args.file.parent.mkdir(parents=True, exist_ok=True)
+        args.file.write_text(f"{payload}\n" if payload else "", encoding="utf-8")
+        print(
+            f"exported audit events count={len(events)} format=jsonl file={args.file}",
+            file=stdout,
+        )
+        return
+
+    if payload:
+        stdout.write(payload)
+        stdout.write("\n")
 
 
 def _operator_policy(args: argparse.Namespace, *, stdout: TextIO) -> None:

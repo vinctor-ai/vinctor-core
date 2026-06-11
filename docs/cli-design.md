@@ -122,6 +122,7 @@ vinctor operator audit list --limit 20
 vinctor operator audit list --event grant_request_auto_approved
 vinctor operator audit list --request-id grq_...
 vinctor operator audit list --boundary-id bnd_...
+vinctor operator audit export --format jsonl --file audit.jsonl
 vinctor operator storage info
 
 vinctor demo check
@@ -139,6 +140,10 @@ It must not imply that raw keys can be recovered from SQLite.
 `operator requests evaluate` maps to the current auto-approval service path. The
 name is intentionally broader than `auto-approve`: policy evaluation may approve
 the request, or it may leave it pending for manual review.
+
+`operator audit export --format jsonl` writes newline-delimited JSON audit
+events for the workspace resolved from `X-Workspace-Key`/`VINCTOR_WORKSPACE_KEY`.
+It is an operator export path, not a model-facing context feed.
 
 ## Output
 

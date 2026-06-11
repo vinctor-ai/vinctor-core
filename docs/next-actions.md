@@ -194,6 +194,13 @@ V1 service contract boundary:
   small runtime config model, `/healthz`, a separated serve-only runtime path,
   minimal Docker/Compose files, `docs/deployment/self-hosting.md`, and
   `demo/self_hostable_service_demo.py`.
+- Corrected lifecycle audit semantics so rejected grant requests and revoked
+  grants no longer appear as `permit` decisions in audit records.
+- Centralized scope containment checks in `vinctor_core.scope.scope_subsumes` so
+  grant issuance bounds and auto-approval rules share the same deterministic
+  predicate.
+- Added workspace-key-gated `vinctor operator audit export --format jsonl` for
+  full local audit export without adding model-facing raw inputs.
 
 ## Next
 

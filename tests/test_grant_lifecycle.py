@@ -55,6 +55,16 @@ def audit_rows(conn: sqlite3.Connection) -> list[tuple[str, str, str, str]]:
     ).fetchall()
 
 
+def audit_event_decisions(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    return conn.execute(
+        """
+        SELECT event_type, decision
+        FROM audit_events
+        ORDER BY rowid
+        """
+    ).fetchall()
+
+
 def test_workspace_can_issue_lookup_and_enforce_service_issued_grant(
     tmp_path: Path,
 ) -> None:
@@ -155,6 +165,10 @@ def test_revoke_marks_grant_revoked_and_writes_audit(tmp_path: Path) -> None:
     assert audit_rows(conn)[:2] == [
         ("grant_issued", "grant_issued", "grt_issued", "issue_grant"),
         ("grant_revoked", "grant_revoked", "grt_issued", "revoke_grant"),
+    ]
+    assert audit_event_decisions(conn)[:2] == [
+        ("grant_issued", "permit"),
+        ("grant_revoked", "deny"),
     ]
     conn.close()
 
