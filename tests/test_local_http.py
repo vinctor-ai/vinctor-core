@@ -467,6 +467,8 @@ def test_local_http_agent_requests_and_workspace_approves_grant() -> None:
     assert created["status"] == "pending"
     assert created["requester_agent_id"] == "agent_release"
     assert created["target_agent_id"] == "agent_release"
+    assert created["routing_hint"] == "manual_review_required"
+    assert created["routing_reason"] == "no_matching_rule"
     assert list_status == 200
     assert listed["grant_requests"][0]["request_id"] == created["request_id"]
     assert approve_status == 200
@@ -527,6 +529,8 @@ def test_local_http_workspace_auto_approves_matching_grant_request() -> None:
 
     assert rule_status == 201
     assert create_status == 201
+    assert created["routing_hint"] == "auto_approval_available"
+    assert created["routing_reason"] == "auto_approval_match"
     assert auto_status == 200
     assert auto_approved["status"] == "approved"
     assert auto_approved["decision_reason"] == f"auto_approval_rule:{rule['rule_id']}"

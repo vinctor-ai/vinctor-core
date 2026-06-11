@@ -10,6 +10,11 @@ GrantIssueStatus = Literal["issued", "rejected"]
 GrantRequestStatus = Literal["pending", "approved", "rejected", "cancelled", "expired"]
 GrantRequestCreateStatus = Literal["created", "rejected"]
 GrantRequestDecisionStatus = Literal["approved", "rejected", "failed"]
+GrantRequestRoutingHint = Literal[
+    "pending_review",
+    "auto_approval_available",
+    "manual_review_required",
+]
 ApprovalRuleStatus = Literal["active", "disabled"]
 AutoApprovalEvaluationDecision = Literal["would_approve", "would_not_approve"]
 

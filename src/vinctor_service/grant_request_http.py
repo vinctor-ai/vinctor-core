@@ -8,10 +8,12 @@ from typing import Protocol
 from vinctor_core.models import Grant
 from vinctor_service.boundary_http import WorkspaceIdentity
 from vinctor_service.models import (
+    AutoApprovalEvaluationResult,
     GrantRequest,
     GrantRequestCreateRequest,
     GrantRequestCreateResult,
     GrantRequestDecisionResult,
+    GrantRequestRoutingHint,
 )
 from vinctor_service.v1_http import AgentIdentity, V1HttpResponse
 
@@ -61,6 +63,12 @@ class GrantRequestService(Protocol):
         decided_by: str,
         now: datetime,
     ) -> GrantRequestDecisionResult: ...
+
+    def evaluate_auto_approval(
+        self,
+        *,
+        request: GrantRequest,
+    ) -> AutoApprovalEvaluationResult: ...
 
 
 AgentIdentityResolver = Callable[[str, datetime], AgentIdentity | None]
@@ -245,6 +253,7 @@ def _create_grant_request(
         status_code=201,
         body={
             **_grant_request_body(result.request),
+            **_routing_hint_body(service, result.request),
             "audit_event_id": result.audit_event_id,
         },
     )
@@ -449,6 +458,30 @@ def _grant_request_body(request: GrantRequest) -> dict[str, object]:
         "decision_reason": request.decision_reason,
         "issued_grant_ref": request.issued_grant_ref,
     }
+
+
+def _routing_hint_body(
+    service: GrantRequestService,
+    request: GrantRequest,
+) -> dict[str, object]:
+    hint, reason = _routing_hint(service, request)
+    return {
+        "routing_hint": hint,
+        "routing_reason": reason,
+    }
+
+
+def _routing_hint(
+    service: GrantRequestService,
+    request: GrantRequest,
+) -> tuple[GrantRequestRoutingHint, str]:
+    if request.status != "pending":
+        return "pending_review", "grant_request_not_pending"
+
+    evaluation = service.evaluate_auto_approval(request=request)
+    if evaluation.decision == "would_approve":
+        return "auto_approval_available", evaluation.reason
+    return "manual_review_required", evaluation.reason
 
 
 def _grant_body(grant: Grant) -> dict[str, object]:

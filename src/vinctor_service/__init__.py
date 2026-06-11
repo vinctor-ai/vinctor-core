@@ -49,6 +49,7 @@ from vinctor_service.models import (
     GrantRequestCreateRequest,
     GrantRequestCreateResult,
     GrantRequestDecisionResult,
+    GrantRequestRoutingHint,
     V1EnforceRequest,
     V1EnforceResponse,
 )
@@ -93,6 +94,7 @@ __all__ = [
     "GrantRequestCreateRequest",
     "GrantRequestCreateResult",
     "GrantRequestDecisionResult",
+    "GrantRequestRoutingHint",
     "GrantRequestRepository",
     "GrantRepository",
     "InMemoryAgentIssuableScopeBoundsRepository",

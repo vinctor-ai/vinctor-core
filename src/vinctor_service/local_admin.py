@@ -180,7 +180,8 @@ def _grant_requests(args: argparse.Namespace, *, stdout: TextIO) -> None:
         _raise_for_status(status, body)
         print(
             "created grant_request "
-            f"{body['request_id']} status={body['status']} scopes={_scopes(body)}",
+            f"{body['request_id']} status={body['status']} "
+            f"routing={body.get('routing_hint', '-')} scopes={_scopes(body)}",
             file=stdout,
         )
         return

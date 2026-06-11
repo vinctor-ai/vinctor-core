@@ -143,15 +143,32 @@ V1 service contract boundary:
 - Updated `vinctor-hermes-plugin` so it forwards optional
   `VINCTOR_BOUNDARY_ID` as `X-Vinctor-Boundary-Id`, allowing Hermes-originated
   local audit rows to include boundary context.
+- Recorded the local prototype CLI design in `docs/cli-design.md`, including
+  role-separated `vinctor local`, `vinctor agent`, `vinctor operator`, and
+  `vinctor demo` command surfaces.
+- Added the `vinctor` console entrypoint as a thin local prototype CLI over the
+  existing service contracts and SQLite helpers.
+- Added non-authoritative grant request routing hints to creation responses:
+  `auto_approval_available` or `manual_review_required`.
+- Added a manual-review-required demo showing a non-matching auto-approval
+  attempt that leaves a request pending until operator approval.
+- Added a local hook integration runbook that documents service startup,
+  `VINCTOR_*` runtime exports, and boundary-aware audit inspection without
+  editing sibling hook repositories.
+- Added a git repo boundary demo scenario showing that a grant scoped to
+  `write:repo/vinctor-core/*` does not authorize writes in sibling repos.
+- Added `vinctor operator audit list` filters for event type, grant ref,
+  boundary id, and request id.
+- Added `vinctor demo check` as a single local smoke check covering rule
+  creation, request creation, auto-approval, enforce, and audit count.
 
 ## Next
 
-- Decide whether grant request creation responses should include a
-  non-authoritative routing hint, such as `pending_review` or
-  `auto_approval_available`, without letting the requesting execution agent
-  choose its own approval path.
 - Keep local config-file auto-reuse and OS keychain integration deferred until
   the local bootstrap UX is stable enough for a separate ADR-backed slice.
+- Add rule/bounds import and export once the CLI command shape has stabilized.
+- Consider an agent-safe request status route that only exposes the requesting
+  agent's own request, rather than the workspace queue.
 
 ## Open Questions
 

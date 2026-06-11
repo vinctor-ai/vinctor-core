@@ -6,10 +6,16 @@ Deterministic authorization core for mediated AI-agent actions.
 
 ## Local Prototype Quickstart
 
-Start the local SQLite-backed prototype service:
+Install the package in editable mode:
 
 ```bash
-.venv/bin/python -m vinctor_service.local_launcher \
+.venv/bin/python -m pip install -e ".[dev]"
+```
+
+Then start the local SQLite-backed prototype service:
+
+```bash
+vinctor local start \
   --db .vinctor-local.sqlite \
   --boundary-name claude-code-local
 ```
@@ -46,7 +52,7 @@ The `/v1/enforce` body is intentionally strict: `grant_ref`, `action`, and
 Restart with explicit keys:
 
 ```bash
-.venv/bin/python -m vinctor_service.local_launcher \
+vinctor local start \
   --db .vinctor-local.sqlite \
   --workspace-key "$VINCTOR_WORKSPACE_KEY" \
   --agent-key "$VINCTOR_AGENT_KEY" \
@@ -356,11 +362,11 @@ registry routes, grant request routes, and auto-approval rule management routes
 for demos and integration tests. It delegates request handling to the HTTP
 contract adapters; it is not a hosted service or production HTTP server.
 
-`python -m vinctor_service.local_launcher` starts a local SQLite-backed
-prototype service and prints copy-pasteable exports:
+`vinctor local start` starts a local SQLite-backed prototype service and prints
+copy-pasteable exports:
 
 ```bash
-.venv/bin/python -m vinctor_service.local_launcher \
+vinctor local start \
   --db .vinctor-local.sqlite \
   --boundary-name claude-code-local
 ```
@@ -390,7 +396,7 @@ does not write them to SQLite, a local config file, or an OS keychain. After the
 first run, reuse copied keys by passing them back explicitly:
 
 ```bash
-.venv/bin/python -m vinctor_service.local_launcher \
+vinctor local start \
   --db .vinctor-local.sqlite \
   --workspace-key "$VINCTOR_WORKSPACE_KEY" \
   --agent-key "$VINCTOR_AGENT_KEY" \
@@ -402,37 +408,53 @@ Re-running without `--workspace-key` and `--agent-key` may create additional
 active local key records. Unknown or revoked keys continue to authenticate as a
 generic `401 authentication_required`.
 
-For local demos, `vinctor_service.local_admin` provides a thin operator helper
-around the local HTTP service and SQLite database. It is intended for prototype
-operation, not as a hosted admin console:
+For repeat demos, `vinctor local env` formats the values you already have as a
+copy-pasteable export block. It does not recover lost raw keys from SQLite:
 
 ```bash
-.venv/bin/python -m vinctor_service.local_admin \
+vinctor \
   --endpoint "$VINCTOR_ENDPOINT" \
   --workspace-key "$VINCTOR_WORKSPACE_KEY" \
-  grant-requests list
-
-.venv/bin/python -m vinctor_service.local_admin \
-  --endpoint "$VINCTOR_ENDPOINT" \
   --agent-key "$VINCTOR_AGENT_KEY" \
-  grant-requests create \
-  --scope write:repo/feature/readme \
-  --ttl-seconds 1800 \
-  --reason "edit the feature readme"
-
-.venv/bin/python -m vinctor_service.local_admin \
-  --endpoint "$VINCTOR_ENDPOINT" \
-  --workspace-key "$VINCTOR_WORKSPACE_KEY" \
-  grant-requests auto-approve grq_...
-
-.venv/bin/python -m vinctor_service.local_admin \
-  --db .vinctor-local.sqlite \
-  audit --limit 10
+  --grant-ref "$VINCTOR_GRANT_REF" \
+  --boundary-id "$VINCTOR_BOUNDARY_ID" \
+  local env
 ```
 
-Use `auto-approval-rules create/list/disable` for rule management, `bounds
-set/show` for local agent issuable scope bounds, and `enforce` to send a local
-permit/deny check without hand-writing curl.
+For local demos, `vinctor` provides a thin operator/agent helper around the local
+HTTP service and SQLite database. It is intended for prototype operation, not as
+a hosted admin console:
+
+```bash
+vinctor \
+  --endpoint "$VINCTOR_ENDPOINT" \
+  --workspace-key "$VINCTOR_WORKSPACE_KEY" \
+  operator requests list
+
+vinctor \
+  --endpoint "$VINCTOR_ENDPOINT" \
+  --agent-key "$VINCTOR_AGENT_KEY" \
+  agent requests create \
+  --scope write:repo/feature/readme \
+  --ttl 30m \
+  --reason "edit the feature readme"
+
+vinctor \
+  --endpoint "$VINCTOR_ENDPOINT" \
+  --workspace-key "$VINCTOR_WORKSPACE_KEY" \
+  operator requests evaluate grq_...
+
+vinctor \
+  --db .vinctor-local.sqlite \
+  operator audit list --limit 10
+```
+
+Use `operator rules create/list/disable` for rule management, `operator bounds
+set/show` for local agent issuable scope bounds, and `agent enforce` to send a
+local permit/deny check without hand-writing curl. The older
+`python -m vinctor_service.local_admin` and
+`python -m vinctor_service.local_launcher` module calls remain developer
+fallbacks.
 
 The bootstrap flow is covered by:
 
@@ -474,6 +496,24 @@ The local operator flow is covered by:
 
 ```bash
 .venv/bin/python demo/local_operator_flow_demo.py
+```
+
+The manual-review-required flow is covered by:
+
+```bash
+.venv/bin/python demo/manual_review_required_demo.py
+```
+
+The git repo boundary scenario is covered by:
+
+```bash
+.venv/bin/python demo/git_repo_boundary_demo.py
+```
+
+A single local smoke check is available as:
+
+```bash
+vinctor --json demo check
 ```
 
 This slice supports service-issued scoped, time-bounded, revocable grants. It
@@ -541,6 +581,9 @@ git diff --check
 - `AGENTS.md` - instructions for AI coding agents
 - `.github/workflows/ci.yml` - public CI for tests, demo, lint, and whitespace
 - `docs/next-actions.md` - current work state and next tasks
+- `docs/cli-design.md` - local prototype CLI design and migration plan
+- `docs/local-hook-runbook.md` - local service to runtime hook walkthrough
+- `docs/git-boundary-demo-scenario.md` - repo-scope boundary demo scenario
 - `docs/decisions/` - durable design decisions when needed
 - `docs/operator-policy-authoring/` - operator mapping and approval mode examples
 - `src/vinctor_core/` - core authorization logic
