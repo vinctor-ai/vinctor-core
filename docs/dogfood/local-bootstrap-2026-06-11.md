@@ -112,6 +112,39 @@ Readiness by caller:
 
 This repo should not implement those runtime hooks yet.
 
+## External boundary-caller follow-up
+
+Follow-up dogfooding used the sibling `vinctor-claude-code-hook` repository as
+a real caller outside this repo:
+
+```text
+../vinctor-claude-code-hook
+```
+
+The explicit local key flow works end-to-end:
+
+- First launch printed `VINCTOR_ENDPOINT`, `VINCTOR_AGENT_KEY`,
+  `VINCTOR_GRANT_REF`, `VINCTOR_WORKSPACE_KEY`, and `VINCTOR_BOUNDARY_ID`.
+- The hook CLI called the local `/v1/enforce` endpoint with
+  `VINCTOR_ENDPOINT`, `VINCTOR_AGENT_KEY`, and `VINCTOR_GRANT_REF`.
+- A hook rule mapped `echo vinctor-dogfood ...` to
+  `write:repo/feature/readme`, which was permitted by the default local grant
+  scope `write:repo/feature/*`.
+- A default `npm publish ...` hook mapping to `deploy:npm/package` was denied
+  with `action_denied`, confirming the service was making the authorization
+  decision rather than merely accepting reachable requests.
+- Restarting the local service with explicit `--workspace-key`,
+  `--agent-key`, `--grant-ref`, and `--boundary-name` preserved the same raw
+  keys and boundary id. The same hook caller was permitted after restart.
+- SQLite audit rows recorded the expected permit, deny, permit sequence.
+
+Observed caller gap:
+
+- `vinctor-claude-code-hook` currently sends `X-Agent-Key` but does not send
+  `X-Vinctor-Boundary-Id`. As a result, the service can enforce requests from
+  the hook, but audit rows from that caller do not yet include
+  `boundary_id`.
+
 ## Findings
 
 1. The local prototype quickstart is too buried.

@@ -73,12 +73,18 @@ V1 service contract boundary:
 - Ran an agent-based local bootstrap dogfooding pass, recorded findings, and
   improved operator UX with a top-level quickstart, restart guidance, CLI help,
   and visible grant expiry.
+- Dogfooded the explicit local key flow with the sibling
+  `vinctor-claude-code-hook` repository as a real caller outside this repo:
+  first launch printed raw keys, hook CLI enforcement worked, restart with
+  explicit `--workspace-key` and `--agent-key` worked, and SQLite audit rows
+  recorded the expected permit/deny/permit sequence.
 
 ## Next
 
-- Dogfood the explicit local key flow with a real boundary caller outside this
-  repo: first launch prints raw keys once, later launches pass
-  `--workspace-key` and `--agent-key` explicitly.
+- Decide whether boundary-aware hook audit belongs in the hook repository next:
+  `vinctor-claude-code-hook` currently sends `X-Agent-Key` but does not send
+  `X-Vinctor-Boundary-Id`, so service enforcement works while hook-originated
+  audit rows do not yet include `boundary_id`.
 - Keep local config-file auto-reuse and OS keychain integration deferred until
   the local bootstrap UX is stable enough for a separate ADR-backed slice.
 
