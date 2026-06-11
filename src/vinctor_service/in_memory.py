@@ -74,6 +74,12 @@ class InMemoryV1Service:
     def audit_events(self) -> tuple[AuditEvent, ...]:
         return tuple(self.audit_writer.events)
 
+    def get_audit_event(self, event_id: str) -> AuditEvent | None:
+        return next(
+            (event for event in self.audit_writer.events if event.event_id == event_id),
+            None,
+        )
+
     def register_boundary(
         self,
         registration: BoundaryRegistrationInput,

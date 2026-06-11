@@ -192,6 +192,81 @@ paths:
                 $ref: "#/components/schemas/GrantRequestDecision"
         "401":
           $ref: "#/components/responses/AuthRequired"
+  /v1/audit-events:
+    get:
+      summary: List workspace audit events.
+      description: Returns allowlisted audit fields only; raw payloads, prompts, commands, keys, hashes, and service internals are omitted.
+      security:
+        - WorkspaceKey: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: event_type
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: grant_ref
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: boundary_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: request_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Workspace audit events.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - audit_events
+                properties:
+                  audit_events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditEvent"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+  /v1/audit-events/{event_id}:
+    get:
+      summary: Get one workspace audit event.
+      description: Returns the same allowlisted audit fields as the list endpoint.
+      security:
+        - WorkspaceKey: []
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Audit event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditEvent"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
 components:
   securitySchemes:
     AgentKey:
@@ -426,6 +501,63 @@ components:
       properties:
         decision_reason:
           type: string
+    AuditEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - event_id
+        - event_type
+        - decision
+        - reason
+        - workspace_id
+        - agent_id
+        - grant_id
+        - grant_ref
+        - action
+        - resource
+        - scope_attempted
+        - created_at
+      properties:
+        event_id:
+          type: string
+        event_type:
+          type: string
+        decision:
+          type: string
+          enum:
+            - permit
+            - deny
+        reason:
+          type: string
+        workspace_id:
+          type: string
+        agent_id:
+          type: string
+        grant_id:
+          type: string
+        grant_ref:
+          type: string
+        action:
+          type: string
+        resource:
+          type: string
+        scope_attempted:
+          type: string
+        scope_matched:
+          type: string
+          nullable: true
+        boundary_id:
+          type: string
+          nullable: true
+        runtime:
+          type: string
+          nullable: true
+        boundary_type:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
     ErrorResponse:
       type: object
       required:

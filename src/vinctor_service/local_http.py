@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
 from urllib.parse import urlsplit
 
+from vinctor_service.audit_http import AuditReadService, handle_v1_audit_events_http
 from vinctor_service.auto_approval_http import (
     AutoApprovalAdminService,
     handle_v1_auto_approval_rules_http,
@@ -92,7 +93,8 @@ def create_v1_http_handler(
             return
 
     def _handle_request(handler: BaseHTTPRequestHandler, method: str) -> None:
-        path = urlsplit(handler.path).path
+        parsed_path = urlsplit(handler.path)
+        path = parsed_path.path
         if path == "/healthz":
             _handle_health_request(handler, method)
             return
@@ -112,6 +114,9 @@ def create_v1_http_handler(
             return
         if path == "/v1/grants" or path.startswith("/v1/grants/"):
             _handle_grant_request(handler, method, path)
+            return
+        if path == "/v1/audit-events" or path.startswith("/v1/audit-events/"):
+            _handle_audit_request(handler, method, path, parsed_path.query)
             return
 
         _send_json(
@@ -275,6 +280,24 @@ def create_v1_http_handler(
             workspace_identities=workspace_keys,
             workspace_identity_resolver=workspace_identity_resolver,
             service=cast(GrantLifecycleService, service),
+            now=now(),
+        )
+        _send_json(handler, response)
+
+    def _handle_audit_request(
+        handler: BaseHTTPRequestHandler,
+        method: str,
+        path: str,
+        query_string: str,
+    ) -> None:
+        response = handle_v1_audit_events_http(
+            method=method,
+            path=path,
+            query_string=query_string,
+            headers=dict(handler.headers.items()),
+            workspace_identities=workspace_keys,
+            workspace_identity_resolver=workspace_identity_resolver,
+            service=cast(AuditReadService, service),
             now=now(),
         )
         _send_json(handler, response)
