@@ -98,6 +98,12 @@ class GrantRequest:
     decided_by: str | None = None
     decision_reason: str | None = None
     issued_grant_ref: str | None = None
+    task_id: str | None = None
+    session_id: str | None = None
+    boundary_id: str | None = None
+    requester_runtime: str | None = None
+    repo: str | None = None
+    worktree: str | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +115,12 @@ class GrantRequestCreateRequest:
     reason: str
     target_agent_id: str | None = None
     request_id: str | None = None
+    task_id: str | None = None
+    session_id: str | None = None
+    boundary_id: str | None = None
+    requester_runtime: str | None = None
+    repo: str | None = None
+    worktree: str | None = None
 
 
 @dataclass(frozen=True)

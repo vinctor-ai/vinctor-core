@@ -12,6 +12,18 @@ Install the package in editable mode:
 .venv/bin/python -m pip install -e ".[dev]"
 ```
 
+Run a complete service-style demo:
+
+```bash
+vinctor demo service
+```
+
+Or, through the packaged make target:
+
+```bash
+make demo
+```
+
 Then start the local SQLite-backed prototype service:
 
 ```bash
@@ -60,6 +72,10 @@ vinctor agent requests status <request_id>
 For a complete local service flow, see
 `docs/demo-service-runbook.md`.
 
+For repeatable demo policy templates, see `docs/examples/policies/`.
+
+For the machine-readable local API contract, see `docs/openapi/v1.yaml`.
+
 Hook/plugin repositories can use the deterministic mock `/v1/enforce` fixture
 for integration smoke tests:
 
@@ -92,6 +108,20 @@ vinctor local start \
   --grant-ref "$VINCTOR_GRANT_REF" \
   --boundary-name claude-code-local
 ```
+
+Write an explicit local env file when you choose to persist test/dev values:
+
+```bash
+vinctor \
+  --endpoint "$VINCTOR_ENDPOINT" \
+  --workspace-key "$VINCTOR_WORKSPACE_KEY" \
+  --agent-key "$VINCTOR_AGENT_KEY" \
+  --grant-ref "$VINCTOR_GRANT_REF" \
+  --boundary-id "$VINCTOR_BOUNDARY_ID" \
+  local env --write-file .vinctor.env
+```
+
+`.vinctor.env` is ignored by git. Keep raw keys out of committed files.
 
 ## Purpose
 

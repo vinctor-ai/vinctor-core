@@ -93,3 +93,5 @@ different workspace is rejected.
 Policy import/export currently targets the local SQLite-backed prototype. It is
 intended for local demos and repeatable operator setup, not hosted policy
 distribution.
+
+Additional demo templates live in `docs/examples/policies/`.

@@ -133,7 +133,13 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             decided_at TEXT,
             decided_by TEXT,
             decision_reason TEXT,
-            issued_grant_ref TEXT
+            issued_grant_ref TEXT,
+            task_id TEXT,
+            session_id TEXT,
+            boundary_id TEXT,
+            requester_runtime TEXT,
+            repo TEXT,
+            worktree TEXT
         );
 
         CREATE TABLE IF NOT EXISTS auto_approval_rules (
@@ -163,12 +169,20 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         ON auto_approval_rules(workspace_id);
         """
     )
+    _ensure_grant_request_metadata_columns(conn)
     conn.execute(
         """
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
         VALUES (?, ?)
         """,
         (1, datetime.now(UTC).isoformat()),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (2, datetime.now(UTC).isoformat()),
     )
     conn.commit()
 
@@ -199,6 +213,23 @@ def insert_grant(conn: sqlite3.Connection, grant: Grant) -> None:
                 _datetime_to_storage(grant.expires_at),
             ),
         )
+
+
+def _ensure_grant_request_metadata_columns(conn: sqlite3.Connection) -> None:
+    existing_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(grant_requests)").fetchall()
+    }
+    columns = {
+        "task_id": "TEXT",
+        "session_id": "TEXT",
+        "boundary_id": "TEXT",
+        "requester_runtime": "TEXT",
+        "repo": "TEXT",
+        "worktree": "TEXT",
+    }
+    for name, column_type in columns.items():
+        if name not in existing_columns:
+            conn.execute(f"ALTER TABLE grant_requests ADD COLUMN {name} {column_type}")
 
 
 def get_sqlite_schema_versions(conn: sqlite3.Connection) -> tuple[int, ...]:
@@ -336,8 +367,9 @@ class SQLiteGrantRequestRepository:
                     request_id, workspace_id, requester_agent_id, target_agent_id,
                     requested_scopes_json, requested_ttl_seconds, reason, status,
                     created_at, decided_at, decided_by, decision_reason,
-                    issued_grant_ref
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    issued_grant_ref, task_id, session_id, boundary_id,
+                    requester_runtime, repo, worktree
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 _grant_request_values(request),
             )
@@ -348,7 +380,8 @@ class SQLiteGrantRequestRepository:
             SELECT request_id, workspace_id, requester_agent_id, target_agent_id,
                    requested_scopes_json, requested_ttl_seconds, reason, status,
                    created_at, decided_at, decided_by, decision_reason,
-                   issued_grant_ref
+                   issued_grant_ref, task_id, session_id, boundary_id,
+                   requester_runtime, repo, worktree
             FROM grant_requests
             WHERE request_id = ?
             """,
@@ -362,7 +395,8 @@ class SQLiteGrantRequestRepository:
             SELECT request_id, workspace_id, requester_agent_id, target_agent_id,
                    requested_scopes_json, requested_ttl_seconds, reason, status,
                    created_at, decided_at, decided_by, decision_reason,
-                   issued_grant_ref
+                   issued_grant_ref, task_id, session_id, boundary_id,
+                   requester_runtime, repo, worktree
             FROM grant_requests
             WHERE workspace_id = ?
             ORDER BY created_at, request_id
@@ -393,7 +427,13 @@ class SQLiteGrantRequestRepository:
                     decided_at = ?,
                     decided_by = ?,
                     decision_reason = ?,
-                    issued_grant_ref = ?
+                    issued_grant_ref = ?,
+                    task_id = ?,
+                    session_id = ?,
+                    boundary_id = ?,
+                    requester_runtime = ?,
+                    repo = ?,
+                    worktree = ?
                 WHERE request_id = ?
                 """,
                 (
@@ -409,6 +449,12 @@ class SQLiteGrantRequestRepository:
                     request.decided_by,
                     request.decision_reason,
                     request.issued_grant_ref,
+                    request.task_id,
+                    request.session_id,
+                    request.boundary_id,
+                    request.requester_runtime,
+                    request.repo,
+                    request.worktree,
                     request.request_id,
                 ),
             )
@@ -939,6 +985,12 @@ def _grant_request_values(request: GrantRequest) -> tuple[object, ...]:
         request.decided_by,
         request.decision_reason,
         request.issued_grant_ref,
+        request.task_id,
+        request.session_id,
+        request.boundary_id,
+        request.requester_runtime,
+        request.repo,
+        request.worktree,
     )
 
 
@@ -959,6 +1011,12 @@ def _grant_request_from_row(row: sqlite3.Row | tuple | None) -> GrantRequest | N
         decided_by=row[10],
         decision_reason=row[11],
         issued_grant_ref=row[12],
+        task_id=row[13],
+        session_id=row[14],
+        boundary_id=row[15],
+        requester_runtime=row[16],
+        repo=row[17],
+        worktree=row[18],
     )
 
 

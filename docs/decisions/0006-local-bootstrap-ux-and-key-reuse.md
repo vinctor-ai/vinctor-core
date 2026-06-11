@@ -29,6 +29,8 @@ For now, Vinctor keeps raw key handling explicit:
 
 - `vinctor local start` prints raw keys only to the operator's terminal.
 - `vinctor local env` formats already-provided or already-exported values.
+- `vinctor local env --write-file .vinctor.env` may explicitly write a
+  test/dev env file when the operator asks for it.
 - SQLite stores key hashes, not raw keys.
 - `vinctor operator storage info` exposes local storage metadata without
   exposing raw secrets.
@@ -37,19 +39,21 @@ For now, Vinctor keeps raw key handling explicit:
 Vinctor will not silently persist raw workspace or agent keys to repository
 files.
 
+`.vinctor.env` and `.vinctor-*.env` are ignored by git. Operators remain
+responsible for keeping raw keys out of committed files.
+
 ## Future Options
 
 Future local UX can consider:
 
 - OS keychain-backed raw key reuse
 - an explicit config file containing only non-secret metadata
-- an explicit `--write-env-file` flow with warnings and `.gitignore` guidance
 - per-demo ephemeral key regeneration
 
 Those options should be implemented only after a separate design slice.
 
 ## Consequences
 
-Repeated demos still require either exported environment variables or explicit
-key arguments. This is acceptable for the prototype because it preserves the
-security posture while the service contract is still changing.
+Repeated demos can use exported environment variables, explicit key arguments,
+or an explicitly written local env file. This preserves the no-silent-secret
+storage posture while the service contract is still changing.

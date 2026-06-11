@@ -40,6 +40,12 @@ def create_grant_request(
         reason=request.reason,
         status="pending",
         created_at=now,
+        task_id=request.task_id,
+        session_id=request.session_id,
+        boundary_id=request.boundary_id,
+        requester_runtime=request.requester_runtime,
+        repo=request.repo,
+        worktree=request.worktree,
     )
     try:
         request_repository.insert_request(grant_request)
@@ -251,8 +257,8 @@ def _request_lifecycle_event(
         resource=resource,
         scope_attempted=",".join(request.requested_scopes),
         scope_matched=None,
-        boundary_id=None,
-        runtime=None,
+        boundary_id=request.boundary_id,
+        runtime=request.requester_runtime,
         boundary_type=None,
         created_at=now,
     )
@@ -280,8 +286,8 @@ def _request_decision_event(
         resource=f"grant_request/{request.request_id}",
         scope_attempted=",".join(request.requested_scopes),
         scope_matched=None,
-        boundary_id=None,
-        runtime=None,
+        boundary_id=request.boundary_id,
+        runtime=request.requester_runtime,
         boundary_type=None,
         created_at=now,
     )

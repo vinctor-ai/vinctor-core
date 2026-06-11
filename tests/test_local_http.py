@@ -440,6 +440,12 @@ def test_local_http_agent_requests_and_workspace_approves_grant() -> None:
                 "scopes": ["write:repo/feature/readme"],
                 "ttl_seconds": 3600,
                 "reason": "edit the feature readme",
+                "task_id": "task_docs",
+                "session_id": "session_demo",
+                "boundary_id": "bnd_request",
+                "requester_runtime": "codex",
+                "repo": "vinctor-core",
+                "worktree": "feature/docs",
             },
         )
         list_status, listed = raw_request(
@@ -468,6 +474,12 @@ def test_local_http_agent_requests_and_workspace_approves_grant() -> None:
     assert created["status"] == "pending"
     assert created["requester_agent_id"] == "agent_release"
     assert created["target_agent_id"] == "agent_release"
+    assert created["task_id"] == "task_docs"
+    assert created["session_id"] == "session_demo"
+    assert created["boundary_id"] == "bnd_request"
+    assert created["requester_runtime"] == "codex"
+    assert created["repo"] == "vinctor-core"
+    assert created["worktree"] == "feature/docs"
     assert created["routing_hint"] == "manual_review_required"
     assert created["routing_reason"] == "no_matching_rule"
     assert list_status == 200
@@ -483,6 +495,8 @@ def test_local_http_agent_requests_and_workspace_approves_grant() -> None:
         "grant_request_approved",
         "action_permitted",
     ]
+    assert svc.audit_events[0].boundary_id == "bnd_request"
+    assert svc.audit_events[0].runtime == "codex"
 
 
 def test_local_http_agent_can_only_view_own_grant_request_status() -> None:

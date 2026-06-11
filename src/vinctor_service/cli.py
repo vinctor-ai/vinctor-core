@@ -99,7 +99,12 @@ def _add_local_commands(roles: argparse._SubParsersAction) -> None:
     start = commands.add_parser("start", help="Start a local SQLite-backed service.")
     _add_local_start_args(start)
 
-    commands.add_parser("env", help="Print shell exports from provided or existing env values.")
+    env = commands.add_parser(
+        "env",
+        help="Print shell exports from provided or existing env values.",
+    )
+    env.add_argument("--write-file", type=Path)
+    env.add_argument("--force", action="store_true")
 
 
 def _add_local_start_args(parser: argparse.ArgumentParser) -> None:
@@ -129,6 +134,12 @@ def _add_agent_commands(roles: argparse._SubParsersAction) -> None:
     create.add_argument("--scope", action="append", dest="scopes", required=True)
     create.add_argument("--ttl", required=True)
     create.add_argument("--reason", required=True)
+    create.add_argument("--task-id")
+    create.add_argument("--session-id")
+    create.add_argument("--boundary-id", dest="request_boundary_id")
+    create.add_argument("--runtime", dest="requester_runtime")
+    create.add_argument("--repo")
+    create.add_argument("--worktree")
     status = request_commands.add_parser("status")
     status.add_argument("request_id")
 
@@ -149,6 +160,9 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
         "--status",
         choices=("pending", "approved", "rejected", "cancelled", "expired"),
     )
+    request_commands.add_parser("inbox")
+    timeline = request_commands.add_parser("timeline")
+    timeline.add_argument("request_id")
     view = request_commands.add_parser("view")
     view.add_argument("request_id")
     approve = request_commands.add_parser("approve")
@@ -204,6 +218,8 @@ def _add_demo_commands(roles: argparse._SubParsersAction) -> None:
     parser = roles.add_parser("demo", help="Run local demonstration checks.")
     commands = parser.add_subparsers(dest="demo_command", required=True)
     commands.add_parser("check")
+    service = commands.add_parser("service")
+    service.add_argument("--scenario", default="ci")
 
 
 def _dispatch(args: argparse.Namespace, *, stdout: TextIO) -> None:
@@ -228,7 +244,13 @@ def _local(args: argparse.Namespace, *, stdout: TextIO) -> None:
         serve_local_service(config)
     if args.local_command == "env":
         body = _local_env_body(args)
-        _emit(args, body, _local_env_exports(body), stdout=stdout)
+        exports = _local_env_exports(body)
+        if args.write_file is not None:
+            _write_env_file(args.write_file, exports, force=args.force)
+            body = {**body, "env_file": str(args.write_file)}
+            _emit(args, body, f"wrote Vinctor env file {args.write_file}", stdout=stdout)
+            return
+        _emit(args, body, exports, stdout=stdout)
         return
     raise CliError(f"unknown local command: {args.local_command}")
 
@@ -240,11 +262,7 @@ def _agent(args: argparse.Namespace, *, stdout: TextIO) -> None:
             "POST",
             "/v1/grant-requests",
             headers={"X-Agent-Key": _required(args.agent_key, "agent key")},
-            body={
-                "scopes": args.scopes,
-                "ttl_seconds": _parse_duration_seconds(args.ttl),
-                "reason": args.reason,
-            },
+            body=_request_create_body(args),
         )
         _raise_for_status(status, body)
         summary = (
@@ -342,6 +360,41 @@ def _operator_requests(args: argparse.Namespace, *, stdout: TextIO) -> None:
             ]
             body = {"grant_requests": requests}
         _emit(args, body, _request_list_text(requests), stdout=stdout)
+        return
+    if command == "inbox":
+        status, body = _request_json(
+            args.endpoint,
+            "GET",
+            "/v1/grant-requests",
+            headers={"X-Workspace-Key": _required(args.workspace_key, "workspace key")},
+        )
+        _raise_for_status(status, body)
+        requests = [
+            {**request, **_request_recommendation(request)}
+            for request in body.get("grant_requests", [])
+            if isinstance(request, dict) and request.get("status") == "pending"
+        ]
+        inbox_body = {"grant_requests": requests}
+        _emit(args, inbox_body, _inbox_text(requests), stdout=stdout)
+        return
+    if command == "timeline":
+        status, body = _request_json(
+            args.endpoint,
+            "GET",
+            f"/v1/grant-requests/{args.request_id}",
+            headers={"X-Workspace-Key": _required(args.workspace_key, "workspace key")},
+        )
+        _raise_for_status(status, body)
+        events = [
+            event
+            for event in _sqlite_service(args.db).audit_events
+            if _event_matches_request(event, args.request_id, body)
+        ]
+        timeline_body = {
+            "request": body,
+            "timeline": [_audit_body(event) for event in events],
+        }
+        _emit(args, timeline_body, _timeline_text(body, events), stdout=stdout)
         return
     if command == "view":
         status, body = _request_json(
@@ -555,6 +608,9 @@ def _operator_storage(args: argparse.Namespace, *, stdout: TextIO) -> None:
 
 
 def _demo(args: argparse.Namespace, *, stdout: TextIO) -> None:
+    if args.demo_command == "service":
+        _demo_service(args, stdout=stdout)
+        return
     if args.demo_command != "check":
         raise CliError(f"unknown demo command: {args.demo_command}")
     with TemporaryDirectory() as temp_dir:
@@ -640,6 +696,258 @@ def _demo(args: argparse.Namespace, *, stdout: TextIO) -> None:
             handle.server.shutdown()
             thread.join(timeout=5)
             handle.close()
+
+
+def _demo_service(args: argparse.Namespace, *, stdout: TextIO) -> None:
+    if args.scenario != "ci":
+        raise CliError("only the ci demo service scenario is currently available")
+    with TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        handle = prepare_local_service(
+            LocalLaunchConfig(
+                db_path=temp_path / "vinctor.sqlite",
+                port=0,
+                workspace_id="ws_demo",
+                agent_id="agent_runner",
+                workspace_key="wsk_demo",
+                agent_key="aak_demo",
+                grant_ref="grt_bootstrap",
+                scopes=("execute:ci/test",),
+                boundary_name="codex-local",
+            ),
+            now=datetime.now(UTC),
+        )
+        policy_path = temp_path / "policy.yaml"
+        write_policy_file(
+            policy_path,
+            {
+                "version": 1,
+                "workspace_id": "ws_demo",
+                "agent_bounds": [
+                    {
+                        "agent_id": "agent_runner",
+                        "scopes": [
+                            "execute:ci/test",
+                            "deploy:npm/package",
+                            "write:repo/vinctor-core/*",
+                        ],
+                    }
+                ],
+                "auto_approval_rules": [
+                    {
+                        "rule_id": "apr_ci",
+                        "name": "CI auto approval",
+                        "target_agent_id": "agent_runner",
+                        "allowed_scopes": ["execute:ci/test"],
+                        "max_ttl_seconds": 1800,
+                        "status": "active",
+                    }
+                ],
+            },
+        )
+        policy_result = apply_policy_file(
+            policy_path,
+            service=handle.service,
+            workspace_id="ws_demo",
+            applied_by="workspace:ws_demo",
+            now=datetime.now(UTC),
+        )
+        thread = Thread(target=handle.server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            boundary_id = handle.boundary.boundary_id if handle.boundary else None
+            ci_created = _create_demo_request(
+                handle,
+                scopes=["execute:ci/test"],
+                ttl_seconds=900,
+                reason="run CI validation",
+                task_id="task-ci",
+                session_id="session-demo",
+                boundary_id=boundary_id,
+            )
+            _, ci_approved = _request_json(
+                handle.endpoint,
+                "POST",
+                f"/v1/grant-requests/{ci_created['request_id']}/auto-approve",
+                headers={"X-Workspace-Key": handle.workspace_key},
+            )
+            _, ci_enforced = _request_json(
+                handle.endpoint,
+                "POST",
+                "/v1/enforce",
+                headers=_agent_headers(handle, boundary_id),
+                body={
+                    "grant_ref": ci_approved["issued_grant_ref"],
+                    "action": "execute",
+                    "resource": "ci/test",
+                },
+            )
+
+            deploy_created = _create_demo_request(
+                handle,
+                scopes=["deploy:npm/package"],
+                ttl_seconds=1800,
+                reason="publish demo package",
+                task_id="task-deploy",
+                session_id="session-demo",
+                boundary_id=boundary_id,
+            )
+            _, deploy_evaluated = _request_json(
+                handle.endpoint,
+                "POST",
+                f"/v1/grant-requests/{deploy_created['request_id']}/auto-approve",
+                headers={"X-Workspace-Key": handle.workspace_key},
+            )
+            _, deploy_approved = _request_json(
+                handle.endpoint,
+                "POST",
+                f"/v1/grant-requests/{deploy_created['request_id']}/approve",
+                headers={"X-Workspace-Key": handle.workspace_key},
+                body={"decision_reason": "manual operator review"},
+            )
+            _, deploy_enforced = _request_json(
+                handle.endpoint,
+                "POST",
+                "/v1/enforce",
+                headers=_agent_headers(handle, boundary_id),
+                body={
+                    "grant_ref": deploy_approved["issued_grant_ref"],
+                    "action": "deploy",
+                    "resource": "npm/package",
+                },
+            )
+
+            repo_created = _create_demo_request(
+                handle,
+                scopes=["write:repo/vinctor-core/*"],
+                ttl_seconds=1800,
+                reason="edit core repo docs",
+                task_id="task-repo-boundary",
+                session_id="session-demo",
+                boundary_id=boundary_id,
+            )
+            _, repo_approved = _request_json(
+                handle.endpoint,
+                "POST",
+                f"/v1/grant-requests/{repo_created['request_id']}/approve",
+                headers={"X-Workspace-Key": handle.workspace_key},
+                body={"decision_reason": "manual repo-boundary review"},
+            )
+            _, repo_permit = _request_json(
+                handle.endpoint,
+                "POST",
+                "/v1/enforce",
+                headers=_agent_headers(handle, boundary_id),
+                body={
+                    "grant_ref": repo_approved["issued_grant_ref"],
+                    "action": "write",
+                    "resource": "repo/vinctor-core/README.md",
+                },
+            )
+            sibling_status, sibling_deny = _request_json(
+                handle.endpoint,
+                "POST",
+                "/v1/enforce",
+                headers=_agent_headers(handle, boundary_id),
+                body={
+                    "grant_ref": repo_approved["issued_grant_ref"],
+                    "action": "write",
+                    "resource": "repo/vinctor-codex-hook/README.md",
+                },
+            )
+            body = {
+                "ok": True,
+                "endpoint": handle.endpoint,
+                "policy": asdict(policy_result),
+                "auto_approved_request_id": ci_created["request_id"],
+                "manual_review_request_id": deploy_created["request_id"],
+                "repo_boundary_request_id": repo_created["request_id"],
+                "ci_decision": ci_enforced["decision"],
+                "deploy_auto_approval_reason": deploy_evaluated["auto_approval"]["reason"],
+                "deploy_decision": deploy_enforced["decision"],
+                "repo_core_decision": repo_permit["decision"],
+                "sibling_repo_status": sibling_status,
+                "sibling_repo_decision": sibling_deny["decision"],
+                "audit_event_count": len(handle.service.audit_events),
+                "timeline": [
+                    event.event_type
+                    for event in handle.service.audit_events
+                    if event.grant_ref
+                    in {
+                        ci_created["request_id"],
+                        ci_approved["issued_grant_ref"],
+                        deploy_created["request_id"],
+                        deploy_approved["issued_grant_ref"],
+                        repo_created["request_id"],
+                        repo_approved["issued_grant_ref"],
+                    }
+                ],
+            }
+            _emit(args, body, _demo_service_text(body), stdout=stdout)
+        finally:
+            handle.server.shutdown()
+            thread.join(timeout=5)
+            handle.close()
+
+
+def _create_demo_request(
+    handle: object,
+    *,
+    scopes: list[str],
+    ttl_seconds: int,
+    reason: str,
+    task_id: str,
+    session_id: str,
+    boundary_id: str | None,
+) -> dict[str, object]:
+    _, created = _request_json(
+        handle.endpoint,
+        "POST",
+        "/v1/grant-requests",
+        headers={"X-Agent-Key": handle.agent_key},
+        body={
+            "scopes": scopes,
+            "ttl_seconds": ttl_seconds,
+            "reason": reason,
+            "task_id": task_id,
+            "session_id": session_id,
+            "boundary_id": boundary_id,
+            "requester_runtime": "codex",
+            "repo": "vinctor-core",
+            "worktree": "demo",
+        },
+    )
+    return created
+
+
+def _agent_headers(handle: object, boundary_id: str | None) -> dict[str, str]:
+    headers = {"X-Agent-Key": handle.agent_key}
+    if boundary_id is not None:
+        headers["X-Vinctor-Boundary-Id"] = boundary_id
+    return headers
+
+
+def _demo_service_text(body: dict[str, object]) -> str:
+    return "\n".join(
+        [
+            "demo service passed",
+            f"endpoint={body['endpoint']}",
+            (
+                f"auto_approved_request={body['auto_approved_request_id']} "
+                f"decision={body['ci_decision']}"
+            ),
+            (
+                f"manual_review_request={body['manual_review_request_id']} "
+                f"auto_reason={body['deploy_auto_approval_reason']} "
+                f"decision={body['deploy_decision']}"
+            ),
+            (
+                f"repo_boundary_request={body['repo_boundary_request_id']} "
+                f"core={body['repo_core_decision']} sibling={body['sibling_repo_decision']}"
+            ),
+            f"audit_events={body['audit_event_count']}",
+        ]
+    )
 
 
 def _local_config(args: argparse.Namespace) -> LocalLaunchConfig:
@@ -739,6 +1047,24 @@ def _parse_duration_seconds(raw: str) -> int:
     return value
 
 
+def _request_create_body(args: argparse.Namespace) -> dict[str, object]:
+    body: dict[str, object] = {
+        "scopes": args.scopes,
+        "ttl_seconds": _parse_duration_seconds(args.ttl),
+        "reason": args.reason,
+    }
+    metadata = {
+        "task_id": args.task_id,
+        "session_id": args.session_id,
+        "boundary_id": args.request_boundary_id or args.boundary_id,
+        "requester_runtime": args.requester_runtime,
+        "repo": args.repo,
+        "worktree": args.worktree,
+    }
+    body.update({key: value for key, value in metadata.items() if value is not None})
+    return body
+
+
 def _emit(
     args: argparse.Namespace,
     body: dict[str, object],
@@ -769,11 +1095,12 @@ def _scopes(body: dict[str, object], key: str = "requested_scopes") -> str:
 def _request_text(body: dict[str, object]) -> str:
     routing = body.get("routing_hint") or "-"
     queue_reason = body.get("queue_reason") or body.get("routing_reason") or "-"
+    metadata = _metadata_text(body)
     return (
         f"{body['request_id']} status={body['status']} requester={body['requester_agent_id']} "
         f"target={body['target_agent_id']} ttl={body['requested_ttl_seconds']} "
         f"scopes={_scopes(body)} issued={body.get('issued_grant_ref') or '-'} "
-        f"routing={routing} queue_reason={queue_reason} reason={body['reason']}"
+        f"routing={routing} queue_reason={queue_reason} {metadata} reason={body['reason']}"
     )
 
 
@@ -796,6 +1123,69 @@ def _rule_list_text(rules: object) -> str:
             f"name={rule['name']}"
         )
     return "\n".join(lines)
+
+
+def _request_recommendation(request: dict[str, object]) -> dict[str, object]:
+    scopes = [str(scope) for scope in request.get("requested_scopes", [])]
+    ttl = int(request.get("requested_ttl_seconds", 0))
+    routing = str(request.get("routing_hint") or "")
+    reason = str(request.get("queue_reason") or request.get("routing_reason") or "")
+    high_risk_terms = ("deploy:", "delete:", "production", "refund", "migration")
+    medium_risk_terms = ("write:", "secret", "credential")
+    if any(any(term in scope for term in high_risk_terms) for scope in scopes):
+        risk = "high"
+        action = "manual_review"
+    elif ttl > 3600:
+        risk = "medium"
+        action = "manual_review"
+    elif routing == "auto_approval_available":
+        risk = "low"
+        action = "evaluate"
+    elif any(any(term in scope for term in medium_risk_terms) for scope in scopes):
+        risk = "medium"
+        action = "manual_review"
+    else:
+        risk = "medium"
+        action = "manual_review" if reason == "no_matching_rule" else "evaluate"
+    return {"risk": risk, "recommended_action": action}
+
+
+def _inbox_text(requests: list[dict[str, object]]) -> str:
+    if not requests:
+        return "no pending grant requests"
+    lines = []
+    for request in requests:
+        lines.append(
+            f"{request['request_id']} risk={request['risk']} "
+            f"recommended={request['recommended_action']} ttl={request['requested_ttl_seconds']} "
+            f"reason={request.get('queue_reason') or request.get('routing_reason') or '-'} "
+            f"scopes={_scopes(request)} metadata={_metadata_text(request)}"
+        )
+    return "\n".join(lines)
+
+
+def _timeline_text(request: dict[str, object], events: list[object]) -> str:
+    if not events:
+        return f"{request['request_id']} has no matching audit events"
+    return " -> ".join(event.event_type for event in events)
+
+
+def _event_matches_request(event: object, request_id: str, request: dict[str, object]) -> bool:
+    issued_grant_ref = request.get("issued_grant_ref")
+    resource = f"grant_request/{request_id}"
+    refs = {request_id}
+    if isinstance(issued_grant_ref, str) and issued_grant_ref:
+        refs.add(issued_grant_ref)
+    return event.grant_ref in refs or event.grant_id in refs or event.resource == resource
+
+
+def _metadata_text(body: dict[str, object]) -> str:
+    parts = []
+    for key in ("task_id", "session_id", "boundary_id", "requester_runtime", "repo", "worktree"):
+        value = body.get(key)
+        if value:
+            parts.append(f"{key}={value}")
+    return "metadata=-" if not parts else "metadata=" + ",".join(parts)
 
 
 def _audit_event_matches(event: object, args: argparse.Namespace) -> bool:
@@ -870,6 +1260,21 @@ def _local_env_exports(body: dict[str, object]) -> str:
     if body.get("boundary_id"):
         lines.append(f'export VINCTOR_BOUNDARY_ID="{body["boundary_id"]}"')
     return "\n".join(lines)
+
+
+def _write_env_file(path: Path, exports: str, *, force: bool) -> None:
+    if path.exists() and not force:
+        raise CliError(f"env file already exists: {path}; pass --force to overwrite")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = "\n".join(
+        [
+            "# Vinctor local env file.",
+            "# Test/dev only. Keep raw keys out of git.",
+            exports,
+            "",
+        ]
+    )
+    path.write_text(content, encoding="utf-8")
 
 
 if __name__ == "__main__":

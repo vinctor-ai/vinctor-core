@@ -11,6 +11,16 @@ This runbook shows the local prototype as a small service-like flow:
 
 It does not require changing sibling hook repositories.
 
+## One-Command Demo
+
+```bash
+vinctor demo service
+```
+
+This starts a temporary local service, applies demo policy, creates an
+auto-approved CI request, creates a manual-review deploy request, enforces both,
+checks a repo boundary deny, and verifies audit events.
+
 ## Start The Local Service
 
 ```bash
@@ -23,6 +33,20 @@ vinctor local start \
 
 Copy the printed `VINCTOR_*` exports into the shell that will run CLI or hook
 calls.
+
+Optionally write an explicit test/dev env file:
+
+```bash
+vinctor \
+  --endpoint "$VINCTOR_ENDPOINT" \
+  --workspace-key "$VINCTOR_WORKSPACE_KEY" \
+  --agent-key "$VINCTOR_AGENT_KEY" \
+  --grant-ref "$VINCTOR_GRANT_REF" \
+  --boundary-id "$VINCTOR_BOUNDARY_ID" \
+  local env --write-file .vinctor.env
+```
+
+`.vinctor.env` is ignored by git. Do not commit raw keys.
 
 ## Apply Policy
 
@@ -59,7 +83,12 @@ vinctor --db .vinctor-local.sqlite \
 vinctor agent requests create \
   --scope execute:ci/test \
   --ttl 15m \
-  --reason "run CI validation"
+  --reason "run CI validation" \
+  --task-id task-ci \
+  --session-id session-demo \
+  --runtime codex \
+  --repo vinctor-core \
+  --worktree feature/demo
 ```
 
 The response should show `routing=auto_approval_available`.
@@ -124,6 +153,8 @@ Show pending requests:
 
 ```bash
 vinctor operator requests list --status pending
+vinctor operator requests inbox
+vinctor operator requests timeline <request_id>
 ```
 
 Show request audit:

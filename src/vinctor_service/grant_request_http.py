@@ -80,6 +80,12 @@ class ParsedCreateRequestBody:
     scopes: tuple[str, ...]
     ttl_seconds: int
     reason: str
+    task_id: str | None = None
+    session_id: str | None = None
+    boundary_id: str | None = None
+    requester_runtime: str | None = None
+    repo: str | None = None
+    worktree: str | None = None
 
 
 def handle_v1_grant_requests_http(
@@ -272,6 +278,12 @@ def _create_grant_request(
             requested_scopes=parsed.scopes,
             requested_ttl_seconds=parsed.ttl_seconds,
             reason=parsed.reason,
+            task_id=parsed.task_id,
+            session_id=parsed.session_id,
+            boundary_id=parsed.boundary_id,
+            requester_runtime=parsed.requester_runtime,
+            repo=parsed.repo,
+            worktree=parsed.worktree,
         ),
         now=now,
     )
@@ -390,9 +402,17 @@ def _parse_create_body(body: object) -> ParsedCreateRequestBody | V1HttpResponse
         return _error(400, "invalid_request", "request body must be a JSON object")
 
     required_fields = {"scopes", "ttl_seconds", "reason"}
+    optional_fields = {
+        "task_id",
+        "session_id",
+        "boundary_id",
+        "requester_runtime",
+        "repo",
+        "worktree",
+    }
     body_fields = set(body)
     missing = sorted(required_fields - body_fields)
-    extra = sorted(body_fields - required_fields)
+    extra = sorted(body_fields - required_fields - optional_fields)
     if missing:
         return _error(400, "invalid_request", f"missing required field: {missing[0]}")
     if extra:
@@ -412,10 +432,23 @@ def _parse_create_body(body: object) -> ParsedCreateRequestBody | V1HttpResponse
     if not isinstance(reason, str) or reason == "":
         return _error(400, "invalid_request", "reason must be a non-empty string")
 
+    metadata: dict[str, str | None] = {}
+    for field_name in optional_fields:
+        value = _optional_body_string(body, field_name)
+        if isinstance(value, V1HttpResponse):
+            return value
+        metadata[field_name] = value
+
     return ParsedCreateRequestBody(
         scopes=tuple(scopes),
         ttl_seconds=ttl_seconds,
         reason=reason,
+        task_id=metadata["task_id"],
+        session_id=metadata["session_id"],
+        boundary_id=metadata["boundary_id"],
+        requester_runtime=metadata["requester_runtime"],
+        repo=metadata["repo"],
+        worktree=metadata["worktree"],
     )
 
 
@@ -435,6 +468,22 @@ def _decision_reason(body: object) -> str | None | V1HttpResponse:
             400,
             "invalid_request",
             "decision_reason must be a non-empty string when provided",
+        )
+    return value
+
+
+def _optional_body_string(
+    body: dict[str, object],
+    field_name: str,
+) -> str | None | V1HttpResponse:
+    value = body.get(field_name)
+    if value is None:
+        return None
+    if not isinstance(value, str) or value == "":
+        return _error(
+            400,
+            "invalid_request",
+            f"{field_name} must be a non-empty string when provided",
         )
     return value
 
@@ -488,6 +537,12 @@ def _grant_request_body(request: GrantRequest) -> dict[str, object]:
         "decided_by": request.decided_by,
         "decision_reason": request.decision_reason,
         "issued_grant_ref": request.issued_grant_ref,
+        "task_id": request.task_id,
+        "session_id": request.session_id,
+        "boundary_id": request.boundary_id,
+        "requester_runtime": request.requester_runtime,
+        "repo": request.repo,
+        "worktree": request.worktree,
     }
 
 
@@ -518,6 +573,12 @@ def _agent_grant_request_body(request: GrantRequest) -> dict[str, object]:
         else None,
         "decision_reason": request.decision_reason,
         "issued_grant_ref": request.issued_grant_ref,
+        "task_id": request.task_id,
+        "session_id": request.session_id,
+        "boundary_id": request.boundary_id,
+        "requester_runtime": request.requester_runtime,
+        "repo": request.repo,
+        "worktree": request.worktree,
     }
 
 

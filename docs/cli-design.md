@@ -87,12 +87,16 @@ Initial commands:
 ```bash
 vinctor local start --db .vinctor-local.sqlite --boundary-name claude-code-local
 vinctor local env
+vinctor local env --write-file .vinctor.env
 
-vinctor agent requests create --scope execute:ci/test --ttl 30m --reason "run tests"
+vinctor agent requests create --scope execute:ci/test --ttl 30m --reason "run tests" \
+  --task-id task-ci --session-id session-demo --runtime codex --repo vinctor-core
 vinctor agent requests status grq_...
 vinctor agent enforce --action execute --resource ci/test
 
 vinctor operator requests list --status pending
+vinctor operator requests inbox
+vinctor operator requests timeline grq_...
 vinctor operator requests view grq_...
 vinctor operator requests approve grq_... --reason "reviewed"
 vinctor operator requests reject grq_... --reason "too broad"
@@ -115,6 +119,7 @@ vinctor operator audit list --boundary-id bnd_...
 vinctor operator storage info
 
 vinctor demo check
+vinctor demo service
 ```
 
 `vinctor local env` is only a formatter for already-known endpoint/key values.

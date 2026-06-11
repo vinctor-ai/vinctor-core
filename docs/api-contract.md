@@ -3,6 +3,8 @@
 This document records the current local prototype HTTP contract. It does not
 claim hosted service behavior or production readiness.
 
+Machine-readable schema: `docs/openapi/v1.yaml`.
+
 ## Authentication Headers
 
 | Header | Used by | Meaning |
@@ -49,9 +51,19 @@ Body:
 {
   "scopes": ["execute:ci/test"],
   "ttl_seconds": 1800,
-  "reason": "run CI validation"
+  "reason": "run CI validation",
+  "task_id": "task-ci",
+  "session_id": "session-demo",
+  "boundary_id": "bnd_...",
+  "requester_runtime": "codex",
+  "repo": "vinctor-core",
+  "worktree": "feature/demo"
 }
 ```
+
+`task_id`, `session_id`, `boundary_id`, `requester_runtime`, `repo`, and
+`worktree` are optional metadata fields for demo UX, approval queue context, and
+audit correlation. They are not authority by themselves.
 
 The create response includes non-authoritative routing hints:
 

@@ -99,6 +99,16 @@ def test_vinctor_cli_manual_review_flow_and_audit_filter(tmp_path: Path) -> None
                 "30m",
                 "--reason",
                 "edit core README",
+                "--task-id",
+                "task-docs",
+                "--session-id",
+                "session-123",
+                "--runtime",
+                "codex",
+                "--repo",
+                "vinctor-core",
+                "--worktree",
+                "feature/docs",
             ]
         )
         evaluated = _run(
@@ -129,6 +139,7 @@ def test_vinctor_cli_manual_review_flow_and_audit_filter(tmp_path: Path) -> None
                 "pending",
             ]
         )
+        inbox = _run([*common, "operator", "requests", "inbox"])
         approved = _run(
             [
                 *common,
@@ -150,15 +161,34 @@ def test_vinctor_cli_manual_review_flow_and_audit_filter(tmp_path: Path) -> None
                 created["request_id"],
             ]
         )
+        timeline = _run(
+            [
+                *common,
+                "operator",
+                "requests",
+                "timeline",
+                created["request_id"],
+            ]
+        )
 
         assert created["routing_hint"] == "manual_review_required"
         assert created["routing_reason"] == "no_matching_rule"
+        assert created["task_id"] == "task-docs"
+        assert created["repo"] == "vinctor-core"
         assert evaluated["status"] == "pending"
         assert evaluated["auto_approval"]["reason"] == "no_matching_rule"
         assert status["status"] == "pending"
         assert "decided_by" not in status
+        assert status["task_id"] == "task-docs"
         assert queue["grant_requests"][0]["queue_reason"] == "no_matching_rule"
+        assert inbox["grant_requests"][0]["risk"] == "medium"
+        assert inbox["grant_requests"][0]["recommended_action"] == "manual_review"
         assert approved["status"] == "approved"
+        assert [event["event_type"] for event in timeline["timeline"]] == [
+            "grant_requested",
+            "grant_issued",
+            "grant_request_approved",
+        ]
         assert [event["event_type"] for event in audit["audit_events"]] == [
             "grant_requested",
             "grant_request_approved",
@@ -173,6 +203,18 @@ def test_vinctor_demo_check_runs_smoke_flow() -> None:
     assert result["ok"] is True
     assert result["decision"] == "permit"
     assert result["audit_event_count"] == 5
+
+
+def test_vinctor_demo_service_runs_user_facing_flow() -> None:
+    result = _run(["--json", "demo", "service"])
+
+    assert result["ok"] is True
+    assert result["ci_decision"] == "permit"
+    assert result["deploy_auto_approval_reason"] == "scope_outside_rule"
+    assert result["deploy_decision"] == "permit"
+    assert result["repo_core_decision"] == "permit"
+    assert result["sibling_repo_status"] == 403
+    assert result["sibling_repo_decision"] == "deny"
 
 
 def test_vinctor_local_env_formats_existing_values() -> None:
@@ -201,6 +243,30 @@ def test_vinctor_local_env_formats_existing_values() -> None:
     assert status == 0, stderr.getvalue()
     assert 'export VINCTOR_ENDPOINT="http://127.0.0.1:8765"' in stdout.getvalue()
     assert 'export VINCTOR_BOUNDARY_ID="bnd_demo"' in stdout.getvalue()
+
+
+def test_vinctor_local_env_writes_explicit_env_file(tmp_path: Path) -> None:
+    env_path = tmp_path / ".vinctor.env"
+    result = _run(
+        [
+            "--json",
+            "--endpoint",
+            "http://127.0.0.1:8765",
+            "--workspace-key",
+            "wsk_demo",
+            "--agent-key",
+            "aak_demo",
+            "--grant-ref",
+            "grt_demo",
+            "local",
+            "env",
+            "--write-file",
+            str(env_path),
+        ]
+    )
+
+    assert result["env_file"] == str(env_path)
+    assert 'export VINCTOR_AGENT_KEY="aak_demo"' in env_path.read_text(encoding="utf-8")
 
 
 def test_vinctor_cli_policy_apply_export_and_storage_info(tmp_path: Path) -> None:
@@ -247,7 +313,7 @@ auto_approval_rules:
         "rules_updated": 0,
         "workspace_id": "ws_demo",
     }
-    assert storage["schema_versions"] == [1]
+    assert storage["schema_versions"] == [1, 2]
     assert exported["agent_bounds"] == 1
     assert exported["auto_approval_rules"] == 1
     assert bounds == ("execute:ci/test", "write:repo/vinctor-core/*")

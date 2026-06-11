@@ -178,6 +178,17 @@ V1 service contract boundary:
 - Added `tools/mock_vinctor_service.py` as a stdlib-only deterministic
   `/v1/enforce` fixture for Claude/Codex/Hermes hook/plugin smoke tests, plus
   `docs/testing/mock-vinctor-service.md` and a demo.
+- Added `vinctor demo service` as a one-command service-style demo covering
+  policy apply, auto approval, manual approval, enforce, repo-boundary deny, and
+  audit verification.
+- Added explicit `vinctor local env --write-file` support for test/dev env
+  files, with `.vinctor.env` ignored by git.
+- Added optional grant request metadata fields for task, session, boundary,
+  runtime, repo, and worktree context.
+- Added `vinctor operator requests inbox` and `vinctor operator requests
+  timeline` for pending request review and audit timeline viewing.
+- Added local demo policy templates under `docs/examples/policies/`.
+- Added `docs/openapi/v1.yaml` and `make demo` as a simple demo entrypoint.
 
 ## Next
 
@@ -188,8 +199,10 @@ V1 service contract boundary:
   SQLite-backed.
 - Add explicit SQLite backup/reset/upgrade commands after schema migration needs
   exceed the current version marker.
-- Add richer approval queue fields only when new request metadata exists, such
-  as task id, session id, boundary id at request time, or human reviewer id.
+- Add richer reviewer identity and operator inbox assignment only after a
+  concrete human/operator workflow exists.
+- Add stronger local secret storage such as OS keychain integration only after
+  a separate design slice. Current env-file support is explicit test/dev UX.
 
 ## Open Questions
 

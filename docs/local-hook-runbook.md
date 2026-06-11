@@ -33,6 +33,9 @@ vinctor \
 `vinctor local env` formats known values. It does not recover raw keys from the
 SQLite database.
 
+To explicitly persist local test/dev exports, add `--write-file .vinctor.env`.
+The repo ignores `.vinctor.env`, but raw keys should still stay out of commits.
+
 For repeatable rule and bounds setup, apply a non-secret policy file:
 
 ```bash
