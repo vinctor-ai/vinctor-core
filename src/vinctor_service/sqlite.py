@@ -12,7 +12,18 @@ from vinctor_core import (
     register_boundary,
 )
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput, Grant
-from vinctor_service.models import V1EnforceRequest, V1EnforceResponse
+from vinctor_service.grants import (
+    issue_grant,
+    lookup_grant,
+    revoke_grant,
+    validate_issuable_scope_bounds,
+)
+from vinctor_service.models import (
+    GrantIssueRequest,
+    GrantIssueResult,
+    V1EnforceRequest,
+    V1EnforceResponse,
+)
 from vinctor_service.v1_enforce import enforce_v1_contract
 
 
@@ -73,6 +84,14 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL,
             last_used_at TEXT,
             revoked_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_issuable_scope_bounds (
+            workspace_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            scopes_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(workspace_id, agent_id)
         );
 
         CREATE INDEX IF NOT EXISTS idx_local_keys_hash
@@ -140,6 +159,75 @@ class SQLiteGrantRepository:
             status=row[5],
             expires_at=_datetime_from_storage(row[6]),
         )
+
+    def insert(self, grant: Grant) -> None:
+        insert_grant(self._conn, grant)
+
+    def revoke(self, *, grant_ref: str, workspace_id: str) -> Grant | None:
+        grant = self.get_by_ref(grant_ref)
+        if grant is None or grant.workspace_id != workspace_id:
+            return None
+        if grant.status == "revoked":
+            return grant
+
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE grants
+                SET status = 'revoked'
+                WHERE grant_ref = ? AND workspace_id = ?
+                """,
+                (grant_ref, workspace_id),
+            )
+        revoked = self.get_by_ref(grant_ref)
+        if revoked is None:
+            raise RuntimeError(f"grant disappeared during revocation: {grant_ref}")
+        return revoked
+
+
+class SQLiteAgentIssuableScopeBoundsRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def get_bounds(self, *, workspace_id: str, agent_id: str) -> tuple[str, ...] | None:
+        row = self._conn.execute(
+            """
+            SELECT scopes_json
+            FROM agent_issuable_scope_bounds
+            WHERE workspace_id = ? AND agent_id = ?
+            """,
+            (workspace_id, agent_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return tuple(json.loads(row[0]))
+
+    def set_bounds(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        scopes: tuple[str, ...],
+        now: datetime,
+    ) -> None:
+        validate_issuable_scope_bounds(scopes)
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO agent_issuable_scope_bounds (
+                    workspace_id, agent_id, scopes_json, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
+                    scopes_json = excluded.scopes_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    workspace_id,
+                    agent_id,
+                    json.dumps(list(scopes)),
+                    now.isoformat(),
+                ),
+            )
 
 
 class SQLiteAuditWriter:
@@ -274,6 +362,7 @@ class SQLiteV1Service:
     grant_repository: SQLiteGrantRepository = field(init=False)
     audit_writer: SQLiteAuditWriter = field(init=False)
     boundary_registry: SQLiteBoundaryRegistry = field(init=False)
+    scope_bounds_repository: SQLiteAgentIssuableScopeBoundsRepository = field(init=False)
 
     def __post_init__(self) -> None:
         if self.initialize_schema:
@@ -281,9 +370,61 @@ class SQLiteV1Service:
         self.grant_repository = SQLiteGrantRepository(self.conn)
         self.audit_writer = SQLiteAuditWriter(self.conn)
         self.boundary_registry = SQLiteBoundaryRegistry(self.conn)
+        self.scope_bounds_repository = SQLiteAgentIssuableScopeBoundsRepository(self.conn)
 
     def insert_grant(self, grant: Grant) -> None:
         insert_grant(self.conn, grant)
+
+    def set_agent_issuable_scope_bounds(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        scopes: tuple[str, ...],
+        now: datetime,
+    ) -> None:
+        self.scope_bounds_repository.set_bounds(
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            scopes=scopes,
+            now=now,
+        )
+
+    def issue_grant(
+        self,
+        request: GrantIssueRequest,
+        *,
+        now: datetime,
+    ) -> GrantIssueResult:
+        return issue_grant(
+            request,
+            grant_repository=self.grant_repository,
+            scope_bounds_repository=self.scope_bounds_repository,
+            audit_writer=self.audit_writer,
+            now=now,
+        )
+
+    def lookup_grant(self, *, grant_ref: str, workspace_id: str) -> Grant | None:
+        return lookup_grant(
+            grant_ref=grant_ref,
+            workspace_id=workspace_id,
+            grant_repository=self.grant_repository,
+        )
+
+    def revoke_grant(
+        self,
+        *,
+        grant_ref: str,
+        workspace_id: str,
+        now: datetime,
+    ) -> tuple[Grant, str] | None:
+        return revoke_grant(
+            grant_ref=grant_ref,
+            workspace_id=workspace_id,
+            grant_repository=self.grant_repository,
+            audit_writer=self.audit_writer,
+            now=now,
+        )
 
     @property
     def audit_events(self) -> tuple[AuditEvent, ...]:

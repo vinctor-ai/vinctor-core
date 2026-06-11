@@ -78,6 +78,17 @@ V1 service contract boundary:
   first launch printed raw keys, hook CLI enforcement worked, restart with
   explicit `--workspace-key` and `--agent-key` worked, and SQLite audit rows
   recorded the expected permit/deny/permit sequence.
+- Added the first grant issuance lifecycle: workspace-key-protected
+  service-issued scoped grants, agent issuable scope bounds, grant lookup,
+  grant revocation, TTL enforcement through the existing enforce path, and
+  `grant_issued` / `grant_revoked` audit events.
+- Recorded grant lifecycle JIT semantics in
+  `docs/decisions/0003-grant-lifecycle-jit-semantics.md`: JIT means issuance
+  timing plus scoped, time-bounded, revocable authority, not a single-use token.
+- Updated the local launcher so new local grants are issued through the service
+  lifecycle path instead of treating direct SQLite seeding as the primary flow.
+- Added a grant lifecycle demo covering issue, enforce, revoke, and denied
+  enforce after revocation.
 
 ## Next
 
@@ -85,6 +96,10 @@ V1 service contract boundary:
   `vinctor-claude-code-hook` currently sends `X-Agent-Key` but does not send
   `X-Vinctor-Boundary-Id`, so service enforcement works while hook-originated
   audit rows do not yet include `boundary_id`.
+- Decide the next grant lifecycle slice, if any. Good candidates are admin
+  listing/filtering contracts or a small ADR for how future orchestrators
+  receive workspace/admin authority. Do not add dynamic multi-grant hooks,
+  approval workflows, or a JIT orchestration engine without an explicit slice.
 - Keep local config-file auto-reuse and OS keychain integration deferred until
   the local bootstrap UX is stable enough for a separate ADR-backed slice.
 

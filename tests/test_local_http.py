@@ -331,3 +331,91 @@ def test_local_http_service_creates_boundary_then_enforces_with_it() -> None:
         "pretooluse",
         "pretooluse",
     ]
+
+
+def test_local_http_workspace_can_issue_lookup_revoke_and_enforce_grant() -> None:
+    svc = InMemoryV1Service()
+    svc.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        scopes=("write:repo/feature/*",),
+        now=NOW,
+    )
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        issue_status, issued = post_json(
+            server,
+            path="/v1/grants",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+            payload={
+                "agent_id": "agent_release",
+                "scopes": ["write:repo/feature/readme"],
+                "ttl_seconds": 3600,
+            },
+        )
+        lookup_status, looked_up = raw_request(
+            server,
+            method="GET",
+            path=f"/v1/grants/{issued['grant_ref']}",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+        enforce_status, enforced = post_json(
+            server,
+            payload=body(grant_ref=issued["grant_ref"]),
+            headers={"X-Agent-Key": "agent_key_main"},
+        )
+        revoke_status, revoked = raw_request(
+            server,
+            method="POST",
+            path=f"/v1/grants/{issued['grant_ref']}/revoke",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+        revoked_enforce_status, revoked_enforce = post_json(
+            server,
+            payload=body(grant_ref=issued["grant_ref"]),
+            headers={"X-Agent-Key": "agent_key_main"},
+        )
+
+    assert issue_status == 201
+    assert issued["grant_ref"].startswith("grt_")
+    assert issued["agent_id"] == "agent_release"
+    assert issued["scopes"] == ["write:repo/feature/readme"]
+    assert lookup_status == 200
+    assert looked_up["grant_ref"] == issued["grant_ref"]
+    assert enforce_status == 200
+    assert enforced["decision"] == "permit"
+    assert revoke_status == 200
+    assert revoked["status"] == "revoked"
+    assert revoked_enforce_status == 403
+    assert revoked_enforce["error"] == "grant_revoked"
+    assert [event.event_type for event in svc.audit_events][:2] == [
+        "grant_issued",
+        "action_permitted",
+    ]
+    assert svc.audit_events[2].event_type == "grant_revoked"
+
+
+def test_local_http_agent_key_cannot_issue_grant() -> None:
+    svc = InMemoryV1Service()
+    svc.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        scopes=("write:repo/feature/*",),
+        now=NOW,
+    )
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        status, response = post_json(
+            server,
+            path="/v1/grants",
+            headers={"X-Agent-Key": "agent_key_main"},
+            payload={
+                "agent_id": "agent_release",
+                "scopes": ["write:repo/feature/readme"],
+                "ttl_seconds": 3600,
+            },
+        )
+
+    assert status == 401
+    assert response["error"] == "authentication_required"
+    assert svc.audit_events == ()

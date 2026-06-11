@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from secrets import token_urlsafe
@@ -18,6 +18,7 @@ from vinctor_service.keys import (
     SQLiteLocalKeyRepository,
 )
 from vinctor_service.local_http import create_v1_http_server
+from vinctor_service.models import GrantIssueRequest
 from vinctor_service.sqlite import SQLiteV1Service
 
 DEFAULT_SCOPE = "write:repo/feature/*"
@@ -252,6 +253,12 @@ def _ensure_grant(
     *,
     now: datetime,
 ) -> Grant:
+    service.set_agent_issuable_scope_bounds(
+        workspace_id=config.workspace_id,
+        agent_id=config.agent_id,
+        scopes=config.scopes,
+        now=now,
+    )
     existing = service.grant_repository.get_by_ref(config.grant_ref)
     if existing is not None:
         if (
@@ -264,17 +271,20 @@ def _ensure_grant(
             )
         return existing
 
-    grant = Grant(
-        grant_id=config.grant_id or _new_id("grnt"),
-        grant_ref=config.grant_ref,
-        workspace_id=config.workspace_id,
-        agent_id=config.agent_id,
-        scopes=config.scopes,
-        status="active",
-        expires_at=now + timedelta(hours=config.grant_ttl_hours),
+    result = service.issue_grant(
+        GrantIssueRequest(
+            workspace_id=config.workspace_id,
+            target_agent_id=config.agent_id,
+            requested_scopes=config.scopes,
+            ttl_seconds=config.grant_ttl_hours * 60 * 60,
+            grant_id=config.grant_id,
+            grant_ref=config.grant_ref,
+        ),
+        now=now,
     )
-    service.insert_grant(grant)
-    return grant
+    if result.status == "rejected" or result.grant is None:
+        raise ValueError(f"could not issue local grant: {result.reason}")
+    return result.grant
 
 
 def _ensure_boundary(

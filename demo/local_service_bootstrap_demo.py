@@ -69,9 +69,8 @@ def main() -> None:
 
             assert status == 200
             assert response["decision"] == "permit"
-            assert len(second.service.audit_events) == 1
-            assert second.service.audit_events[0].reason == "permitted"
-            assert second.service.audit_events[0].boundary_id == second.boundary.boundary_id
+            assert second.service.audit_events[-1].reason == "permitted"
+            assert second.service.audit_events[-1].boundary_id == second.boundary.boundary_id
         finally:
             second.server.shutdown()
             thread.join(timeout=5)

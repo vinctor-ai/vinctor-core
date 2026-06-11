@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
-from vinctor_core.models import Decision
+from vinctor_core.models import Decision, Grant
+
+GrantIssueStatus = Literal["issued", "rejected"]
 
 
 @dataclass(frozen=True)
@@ -48,4 +51,22 @@ class V1EnforceResponse:
     grant_id: str | None = None
     agent_id: str | None = None
     scope_matched: str | None = None
+    audit_event_id: str | None = None
+
+
+@dataclass(frozen=True)
+class GrantIssueRequest:
+    workspace_id: str
+    target_agent_id: str
+    requested_scopes: tuple[str, ...]
+    ttl_seconds: int
+    grant_id: str | None = None
+    grant_ref: str | None = None
+
+
+@dataclass(frozen=True)
+class GrantIssueResult:
+    status: GrantIssueStatus
+    reason: str
+    grant: Grant | None = None
     audit_event_id: str | None = None

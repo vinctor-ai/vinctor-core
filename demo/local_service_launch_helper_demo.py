@@ -54,10 +54,13 @@ def main() -> None:
             assert response["decision"] == "permit"
 
             audit_events = handle.service.audit_events
-            assert len(audit_events) == 1
-            assert audit_events[0].boundary_id == handle.boundary.boundary_id
-            assert audit_events[0].runtime == "claude-code"
-            assert audit_events[0].boundary_type == "pretooluse"
+            assert [event.event_type for event in audit_events] == [
+                "grant_issued",
+                "action_permitted",
+            ]
+            assert audit_events[-1].boundary_id == handle.boundary.boundary_id
+            assert audit_events[-1].runtime == "claude-code"
+            assert audit_events[-1].boundary_type == "pretooluse"
         finally:
             handle.server.shutdown()
             thread.join(timeout=5)

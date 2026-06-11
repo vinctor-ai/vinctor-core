@@ -240,7 +240,7 @@ def test_prepared_service_accepts_hook_shaped_enforce_request(
 
         assert response.status == 200
         assert body["decision"] == "permit"
-        assert handle.service.audit_events[0].boundary_id == handle.boundary.boundary_id
+        assert handle.service.audit_events[-1].boundary_id == handle.boundary.boundary_id
     finally:
         handle.server.shutdown()
         thread.join(timeout=5)

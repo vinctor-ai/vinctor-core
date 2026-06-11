@@ -86,6 +86,7 @@ This repository is responsible for:
 - action/resource matching semantics
 - permit/deny decision logic
 - revoked or expired grant state checks
+- service-issued scoped grant lifecycle helpers
 - boundary registry models
 - deterministic reason codes
 - audit event construction semantics
@@ -193,8 +194,9 @@ the boundary identity and updates `updated_at`.
 
 The `vinctor_service` package composes this core with service-shaped application
 requests. Future service slices may add concerns such as HTTP APIs, caller
-authentication, workspace and agent identity, durable grant storage, durable
-audit storage, revocation endpoints, and service availability.
+authentication, workspace and agent identity, durable audit storage, and service
+availability. The current local service layer includes a first grant issuance
+lifecycle for service-issued scoped grants.
 
 Layering rule:
 
@@ -235,6 +237,30 @@ implementing HTTP routing, auth headers, durable grant storage, durable audit
 persistence, hosted service behavior, or runtime adapter hooks. Those remain
 future service-layer responsibilities.
 
+Grant issuance is a separate service-layer decision from enforce-time
+authorization. `GrantIssueRequest` and `GrantIssueResult` model workspace/admin
+grant issuance. Execution agents consume issued `grant_ref` values; they do not
+mint authority for themselves.
+
+Agent issuable scope bounds are issuance constraints, not agent permissions.
+Before a grant is issued, the service checks that every requested scope is
+within the target agent's configured issuable scope bounds. For example,
+`execute:ci/test` may be issued when the target agent's bounds include
+`execute:ci/test`; `execute:deploy/production` is rejected when it is outside
+those bounds.
+
+`handle_v1_grants_http` maps workspace-key-protected grant lifecycle requests
+into service-layer helpers:
+
+- `POST /v1/grants` issues a grant for a target `agent_id`, requested `scopes`,
+  and `ttl_seconds`.
+- `GET /v1/grants/{grant_ref}` looks up a workspace-local grant.
+- `POST /v1/grants/{grant_ref}/revoke` revokes a workspace-local grant.
+
+These routes use `X-Workspace-Key`, not `X-Agent-Key`. Hooks remain
+enforce-only and continue to call `POST /v1/enforce` with an already-issued
+`grant_ref`.
+
 The current service package exists to make the layering concrete:
 `vinctor_service` imports `vinctor_core`, and `vinctor_core` does not import
 `vinctor_service`.
@@ -251,8 +277,9 @@ HTTP routing or hosted behavior.
 
 `SQLiteV1Service` composes the SQLite grant repository, audit writer, boundary
 registry, and v1 enforce adapter for local in-process integration tests and
-demos. It exposes small helpers for grant insertion, boundary management, and
-audit event lookup. It is not an HTTP service.
+demos. It exposes small helpers for grant issuance, grant lookup, grant
+revocation, agent issuable scope bounds, boundary management, and audit event
+lookup. It is not an HTTP service.
 
 `handle_v1_enforce_http` maps a v1-shaped HTTP request into the service layer:
 it validates `X-Agent-Key`, keeps the enforce body strict
@@ -268,9 +295,9 @@ not add delete behavior or approval workflows. `X-Workspace-Key` carries the
 workspace-scoped local/admin token.
 
 `create_v1_http_server` provides a small stdlib local HTTP wrapper for
-`POST /v1/enforce` and boundary registry demos and integration tests. It
-delegates request handling to the HTTP contract adapters; it is not a hosted
-service or production HTTP server.
+`POST /v1/enforce`, `POST /v1/grants`, grant lookup/revocation, and boundary
+registry demos and integration tests. It delegates request handling to the HTTP
+contract adapters; it is not a hosted service or production HTTP server.
 
 `python -m vinctor_service.local_launcher` starts a local SQLite-backed
 prototype service and prints copy-pasteable exports:
@@ -323,6 +350,21 @@ The bootstrap flow is covered by:
 ```bash
 .venv/bin/python demo/local_service_bootstrap_demo.py
 ```
+
+The grant lifecycle flow is covered by:
+
+```bash
+.venv/bin/python demo/grant_lifecycle_demo.py
+```
+
+This slice supports service-issued scoped, time-bounded, revocable grants. It
+does not claim single-use JIT tokens, full JIT orchestration, least-privilege
+orchestration, credential shielding, human approval workflow, or complete
+enforcement isolation.
+
+See `docs/decisions/0003-grant-lifecycle-jit-semantics.md` for the grant
+lifecycle terminology: in Vinctor, JIT means issuance timing plus scoped,
+time-bounded authority, not immediate one-shot expiration.
 
 ## Audit Semantics
 
