@@ -7,6 +7,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
 from urllib.parse import urlsplit
 
+from vinctor_service.auto_approval_http import (
+    AutoApprovalAdminService,
+    handle_v1_auto_approval_rules_http,
+)
 from vinctor_service.boundary_http import (
     BoundaryAdminService,
     WorkspaceIdentity,
@@ -92,6 +96,11 @@ def create_v1_http_handler(
         if path == "/v1/boundaries" or path.startswith("/v1/boundaries/"):
             _handle_boundary_request(handler, method, path)
             return
+        if path == "/v1/auto-approval-rules" or path.startswith(
+            "/v1/auto-approval-rules/"
+        ):
+            _handle_auto_approval_rule_request(handler, method, path)
+            return
         if path == "/v1/grant-requests" or path.startswith("/v1/grant-requests/"):
             _handle_grant_request_request(handler, method, path)
             return
@@ -157,6 +166,31 @@ def create_v1_http_handler(
             workspace_identities=workspace_keys,
             workspace_identity_resolver=workspace_identity_resolver,
             service=cast(BoundaryAdminService, service),
+            now=now(),
+        )
+        _send_json(handler, response)
+
+    def _handle_auto_approval_rule_request(
+        handler: BaseHTTPRequestHandler,
+        method: str,
+        path: str,
+    ) -> None:
+        body: object = None
+        if method == "POST" and path == "/v1/auto-approval-rules":
+            parsed = _read_json_body(handler)
+            if isinstance(parsed, V1HttpResponse):
+                _send_json(handler, parsed)
+                return
+            body = parsed
+
+        response = handle_v1_auto_approval_rules_http(
+            method=method,
+            path=path,
+            headers=dict(handler.headers.items()),
+            body=body,
+            workspace_identities=workspace_keys,
+            workspace_identity_resolver=workspace_identity_resolver,
+            service=cast(AutoApprovalAdminService, service),
             now=now(),
         )
         _send_json(handler, response)

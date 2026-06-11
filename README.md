@@ -280,7 +280,8 @@ workflow or automated policy engine.
 
 Auto-approval rules are workspace/admin-controlled service data. The first
 auto-approval slice provides in-process helpers for admin-defined rules and a
-dry-run evaluator:
+dry-run evaluator, plus workspace-key-protected HTTP/admin contracts for rule
+management:
 
 - `AutoApprovalRule` defines the target agent, allowed scopes, maximum TTL,
   status, and admin metadata for a rule.
@@ -288,6 +289,13 @@ dry-run evaluator:
 - `evaluate_auto_approval` checks a pending grant request against active rules
   and returns `auto_approval_match`, `scope_outside_rule`, `ttl_exceeds_rule`,
   `no_matching_rule`, or `grant_request_not_pending`.
+- `handle_v1_auto_approval_rules_http` maps admin rule management requests:
+  `POST /v1/auto-approval-rules`, `GET /v1/auto-approval-rules`, and
+  `POST /v1/auto-approval-rules/{rule_id}/disable`.
+
+These auto-approval rule management routes use `X-Workspace-Key`, not
+`X-Agent-Key`. Execution agents can request authority, but they cannot create,
+list, or disable the rules that may later approve those requests.
 
 The dry-run evaluator does not mutate the grant request and does not issue a
 grant. A later explicit slice may connect matching rules to automatic approval,
@@ -328,8 +336,9 @@ not add delete behavior or approval workflows. `X-Workspace-Key` carries the
 workspace-scoped local/admin token.
 
 `create_v1_http_server` provides a small stdlib local HTTP wrapper for
-`POST /v1/enforce`, `POST /v1/grants`, grant lookup/revocation, and boundary
-registry demos and integration tests. It delegates request handling to the HTTP
+`POST /v1/enforce`, `POST /v1/grants`, grant lookup/revocation, boundary
+registry routes, grant request routes, and auto-approval rule management routes
+for demos and integration tests. It delegates request handling to the HTTP
 contract adapters; it is not a hosted service or production HTTP server.
 
 `python -m vinctor_service.local_launcher` starts a local SQLite-backed
@@ -400,6 +409,12 @@ The auto-approval dry-run flow is covered by:
 
 ```bash
 .venv/bin/python demo/auto_approval_dry_run_demo.py
+```
+
+The auto-approval HTTP/admin rule management flow is covered by:
+
+```bash
+.venv/bin/python demo/auto_approval_http_admin_demo.py
 ```
 
 This slice supports service-issued scoped, time-bounded, revocable grants. It

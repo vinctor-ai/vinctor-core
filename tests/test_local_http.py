@@ -541,3 +541,50 @@ def test_local_http_workspace_rejects_grant_request() -> None:
         "grant_requested",
         "grant_request_rejected",
     ]
+
+
+def test_local_http_workspace_manages_auto_approval_rules() -> None:
+    svc = InMemoryV1Service()
+    payload = {
+        "name": "CI auto approval",
+        "target_agent_id": "agent_release",
+        "allowed_scopes": ["write:repo/feature/*"],
+        "max_ttl_seconds": 3600,
+    }
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        create_status, created = post_json(
+            server,
+            path="/v1/auto-approval-rules",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+            payload=payload,
+        )
+        list_status, listed = raw_request(
+            server,
+            method="GET",
+            path="/v1/auto-approval-rules",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+        agent_create_status, agent_create = post_json(
+            server,
+            path="/v1/auto-approval-rules",
+            headers={"X-Agent-Key": "agent_key_main"},
+            payload=payload,
+        )
+        disable_status, disabled = raw_request(
+            server,
+            method="POST",
+            path=f"/v1/auto-approval-rules/{created['rule_id']}/disable",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert create_status == 201
+    assert created["workspace_id"] == "ws_main"
+    assert created["status"] == "active"
+    assert list_status == 200
+    assert listed["auto_approval_rules"] == [created]
+    assert agent_create_status == 401
+    assert agent_create["error"] == "authentication_required"
+    assert disable_status == 200
+    assert disabled["rule_id"] == created["rule_id"]
+    assert disabled["status"] == "disabled"

@@ -46,6 +46,21 @@ Only a later explicit slice may connect matching rules to automatic approval.
 That future path must still reuse the existing grant request approval and
 service-issued grant lifecycle.
 
+## HTTP/Admin Contract
+
+Auto-approval rule management is exposed only through workspace/admin authority:
+
+- `POST /v1/auto-approval-rules`
+- `GET /v1/auto-approval-rules`
+- `POST /v1/auto-approval-rules/{rule_id}/disable`
+
+These routes use `X-Workspace-Key`, not `X-Agent-Key`. The requesting execution
+agent must not create, list, disable, or otherwise select the rules that may
+approve its own grant request.
+
+The HTTP/admin contract manages rule data only. It does not auto-approve a
+request, does not issue a grant, and does not add a human approval workflow.
+
 ## Rule Shape
 
 The initial rule model should stay small:

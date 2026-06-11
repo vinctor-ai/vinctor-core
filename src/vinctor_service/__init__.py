@@ -8,6 +8,7 @@ from vinctor_service.auto_approval import (
     evaluate_auto_approval,
     list_auto_approval_rules,
 )
+from vinctor_service.auto_approval_http import handle_v1_auto_approval_rules_http
 from vinctor_service.boundary_http import WorkspaceIdentity, handle_v1_boundaries_http
 from vinctor_service.grant_http import handle_v1_grants_http
 from vinctor_service.grant_request_http import handle_v1_grant_requests_http
@@ -122,6 +123,7 @@ __all__ = [
     "enforce_v1_contract",
     "evaluate_auto_approval",
     "handle_v1_boundaries_http",
+    "handle_v1_auto_approval_rules_http",
     "handle_v1_enforce_http",
     "handle_v1_grant_requests_http",
     "handle_v1_grants_http",
