@@ -7,8 +7,9 @@ V1 service contract boundary:
 - Keep `vinctor_service` as in-process application helpers.
 - Preserve v1 enforce semantics while adding service-layer storage and HTTP
   wrappers above the contract boundary.
-- Keep local HTTP helpers thin and explicit. Do not add hosted behavior,
-  production server claims, runtime hooks, or runtime adapter implementations.
+- Keep local/self-hostable HTTP helpers thin and explicit. Do not add hosted
+  behavior, production server claims, runtime hooks, or runtime adapter
+  implementations.
 
 ## Done
 
@@ -189,11 +190,17 @@ V1 service contract boundary:
   timeline` for pending request review and audit timeline viewing.
 - Added local demo policy templates under `docs/examples/policies/`.
 - Added `docs/openapi/v1.yaml` and `make demo` as a simple demo entrypoint.
+- Added a self-hostable service foundation with `vinctor service serve`, a
+  small runtime config model, `/healthz`, a separated serve-only runtime path,
+  minimal Docker/Compose files, `docs/deployment/self-hosting.md`, and
+  `demo/self_hostable_service_demo.py`.
 
 ## Next
 
 - Keep local config-file auto-reuse and OS keychain integration deferred until
   the local bootstrap UX is stable enough for a separate ADR-backed slice.
+- Keep production deployment hardening deferred. The current self-hosting
+  support is single-node prototype infrastructure, not HA or managed auth.
 - Consider HTTP-level policy import/export once a hosted or long-running service
   deployment contract exists. Current policy file apply/export is local
   SQLite-backed.

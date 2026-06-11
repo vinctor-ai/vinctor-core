@@ -7,5 +7,7 @@ __pycache__/
 dist/
 build/
 .DS_Store
+.vinctor/
+.vinctor-local.sqlite
 .vinctor.env
 .vinctor-*.env

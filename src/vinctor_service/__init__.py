@@ -63,6 +63,12 @@ from vinctor_service.repositories import (
     InMemoryGrantRepository,
     InMemoryGrantRequestRepository,
 )
+from vinctor_service.service_config import ServiceRuntimeConfig, load_service_runtime_config
+from vinctor_service.service_runtime import (
+    ServiceRuntimeHandle,
+    prepare_service_runtime,
+    render_service_runtime_banner,
+)
 from vinctor_service.sqlite import (
     SQLiteAgentIssuableScopeBoundsRepository,
     SQLiteAuditWriter,
@@ -114,6 +120,8 @@ __all__ = [
     "SQLiteGrantRequestRepository",
     "SQLiteLocalKeyRepository",
     "SQLiteV1Service",
+    "ServiceRuntimeConfig",
+    "ServiceRuntimeHandle",
     "V1EnforceRequest",
     "V1EnforceResponse",
     "V1HttpResponse",
@@ -139,10 +147,13 @@ __all__ = [
     "issue_grant",
     "list_auto_approval_rules",
     "list_grant_requests",
+    "load_service_runtime_config",
     "lookup_grant_request",
     "lookup_grant",
     "mask_key",
+    "prepare_service_runtime",
     "reject_grant_request",
+    "render_service_runtime_banner",
     "revoke_grant",
     "disable_auto_approval_rule",
     "upsert_auto_approval_rule",

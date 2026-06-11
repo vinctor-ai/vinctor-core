@@ -42,6 +42,7 @@ def create_v1_http_server(
     agent_identity_resolver: AgentIdentityResolver | None = None,
     workspace_identity_resolver: WorkspaceIdentityResolver | None = None,
     clock: Clock | None = None,
+    service_mode: str = "local",
 ) -> ThreadingHTTPServer:
     handler = create_v1_http_handler(
         service=service,
@@ -50,6 +51,7 @@ def create_v1_http_server(
         agent_identity_resolver=agent_identity_resolver,
         workspace_identity_resolver=workspace_identity_resolver,
         clock=clock,
+        service_mode=service_mode,
     )
     return ThreadingHTTPServer(address, handler)
 
@@ -62,6 +64,7 @@ def create_v1_http_handler(
     agent_identity_resolver: AgentIdentityResolver | None = None,
     workspace_identity_resolver: WorkspaceIdentityResolver | None = None,
     clock: Clock | None = None,
+    service_mode: str = "local",
 ) -> type[BaseHTTPRequestHandler]:
     agent_keys = dict(agent_identities)
     workspace_keys = dict(workspace_identities or {})
@@ -90,6 +93,9 @@ def create_v1_http_handler(
 
     def _handle_request(handler: BaseHTTPRequestHandler, method: str) -> None:
         path = urlsplit(handler.path).path
+        if path == "/healthz":
+            _handle_health_request(handler, method)
+            return
         if path == "/v1/enforce":
             _handle_enforce_request(handler, method)
             return
@@ -113,6 +119,32 @@ def create_v1_http_handler(
             V1HttpResponse(
                 status_code=404,
                 body={"error": "not_found", "reason": "route not found"},
+            ),
+        )
+
+    def _handle_health_request(handler: BaseHTTPRequestHandler, method: str) -> None:
+        if method != "GET":
+            _send_json(
+                handler,
+                V1HttpResponse(
+                    status_code=405,
+                    body={
+                        "error": "method_not_allowed",
+                        "reason": "GET is required for /healthz",
+                    },
+                ),
+            )
+            return
+
+        _send_json(
+            handler,
+            V1HttpResponse(
+                status_code=200,
+                body={
+                    "status": "ok",
+                    "service": "vinctor-service",
+                    "mode": service_mode,
+                },
             ),
         )
 

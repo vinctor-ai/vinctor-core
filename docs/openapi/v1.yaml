@@ -7,6 +7,17 @@ servers:
   - url: http://127.0.0.1:8765
 security: []
 paths:
+  /healthz:
+    get:
+      summary: Check service health.
+      description: Does not expose secrets, keys, grant refs, database path, or internal config.
+      responses:
+        "200":
+          description: Service is reachable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
   /v1/enforce:
     post:
       summary: Enforce one action/resource check with an issued grant.
@@ -218,6 +229,27 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
   schemas:
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - service
+        - mode
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+        service:
+          type: string
+          enum:
+            - vinctor-service
+        mode:
+          type: string
+          enum:
+            - local
+            - self_hosted
     EnforceRequest:
       type: object
       additionalProperties: false

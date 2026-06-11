@@ -1,0 +1,17 @@
+services:
+  vinctor:
+    build: .
+    command: ["vinctor", "service", "serve"]
+    environment:
+      VINCTOR_HOST: "0.0.0.0"
+      VINCTOR_PORT: "8765"
+      VINCTOR_DB: "/data/vinctor.sqlite"
+      VINCTOR_SERVICE_MODE: "self_hosted"
+      VINCTOR_LOG_LEVEL: "info"
+    ports:
+      - "8765:8765"
+    volumes:
+      - vinctor-data:/data
+
+volumes:
+  vinctor-data:

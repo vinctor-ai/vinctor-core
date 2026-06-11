@@ -72,6 +72,20 @@ vinctor agent requests status <request_id>
 For a complete local service flow, see
 `docs/demo-service-runbook.md`.
 
+Run the service runtime without bootstrapping new keys:
+
+```bash
+vinctor service serve \
+  --host 127.0.0.1 \
+  --port 8765 \
+  --db .vinctor/vinctor.sqlite \
+  --mode self_hosted
+```
+
+This opens an existing SQLite-backed service state and exposes `/healthz` plus
+the local v1 API. It does not print raw keys or create grants by itself. See
+`docs/deployment/self-hosting.md`.
+
 For repeatable demo policy templates, see `docs/examples/policies/`.
 
 For the machine-readable local API contract, see `docs/openapi/v1.yaml`.

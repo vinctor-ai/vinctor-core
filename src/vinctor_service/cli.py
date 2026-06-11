@@ -26,6 +26,8 @@ from vinctor_service.policy_files import (
     export_policy_document,
     write_policy_file,
 )
+from vinctor_service.service_config import LOG_LEVELS, SERVICE_MODES, load_service_runtime_config
+from vinctor_service.service_runtime import serve_service_runtime
 from vinctor_service.sqlite import SQLiteV1Service
 
 EXIT_UNEXPECTED = 1
@@ -85,11 +87,24 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("-o", "--output", choices=("text", "json"), default=None)
 
     roles = parser.add_subparsers(dest="role", required=True)
+    _add_service_commands(roles)
     _add_local_commands(roles)
     _add_agent_commands(roles)
     _add_operator_commands(roles)
     _add_demo_commands(roles)
     return parser
+
+
+def _add_service_commands(roles: argparse._SubParsersAction) -> None:
+    parser = roles.add_parser("service", help="Run the Vinctor service runtime.")
+    commands = parser.add_subparsers(dest="service_command", required=True)
+
+    serve = commands.add_parser("serve", help="Serve an existing SQLite-backed Vinctor service.")
+    serve.add_argument("--host")
+    serve.add_argument("--port", type=int)
+    serve.add_argument("--db", dest="service_db", type=Path)
+    serve.add_argument("--mode", choices=SERVICE_MODES, dest="service_mode")
+    serve.add_argument("--log-level", choices=LOG_LEVELS)
 
 
 def _add_local_commands(roles: argparse._SubParsersAction) -> None:
@@ -223,6 +238,9 @@ def _add_demo_commands(roles: argparse._SubParsersAction) -> None:
 
 
 def _dispatch(args: argparse.Namespace, *, stdout: TextIO) -> None:
+    if args.role == "service":
+        _service(args)
+        return
     if args.role == "local":
         _local(args, stdout=stdout)
         return
@@ -236,6 +254,24 @@ def _dispatch(args: argparse.Namespace, *, stdout: TextIO) -> None:
         _demo(args, stdout=stdout)
         return
     raise CliError(f"unknown role: {args.role}")
+
+
+def _service(args: argparse.Namespace) -> None:
+    if args.service_command == "serve":
+        try:
+            config = load_service_runtime_config(
+                host=args.host,
+                port=args.port,
+                sqlite_db_path=args.service_db or args.db,
+                log_level=args.log_level,
+                service_mode=args.service_mode,
+                env=os.environ,
+            )
+        except ValueError as error:
+            raise CliError(str(error)) from error
+        serve_service_runtime(config)
+        return
+    raise CliError(f"unknown service command: {args.service_command}")
 
 
 def _local(args: argparse.Namespace, *, stdout: TextIO) -> None:

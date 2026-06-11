@@ -5,6 +5,25 @@ claim hosted service behavior or production readiness.
 
 Machine-readable schema: `docs/openapi/v1.yaml`.
 
+## Health
+
+`GET /healthz`
+
+Auth: none
+
+Response:
+
+```json
+{
+  "status": "ok",
+  "service": "vinctor-service",
+  "mode": "local"
+}
+```
+
+The health response intentionally omits secrets, raw keys, grant refs, database
+paths, and internal configuration.
+
 ## Authentication Headers
 
 | Header | Used by | Meaning |

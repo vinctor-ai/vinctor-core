@@ -1,7 +1,7 @@
 PYTHON ?= .venv/bin/python
 VINCTOR ?= .venv/bin/vinctor
 
-.PHONY: install-dev test lint demo demo-mock build
+.PHONY: install-dev test lint demo demo-self-host demo-mock build
 
 install-dev:
 	$(PYTHON) -m pip install -e ".[dev]"
@@ -15,6 +15,9 @@ lint:
 
 demo:
 	$(VINCTOR) demo service
+
+demo-self-host:
+	$(PYTHON) demo/self_hostable_service_demo.py
 
 demo-mock:
 	$(PYTHON) demo/mock_vinctor_service_demo.py

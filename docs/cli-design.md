@@ -29,15 +29,18 @@ visible.
 Vinctor should keep role boundaries explicit in the command tree:
 
 ```bash
+vinctor service ...
 vinctor local ...
 vinctor agent ...
 vinctor operator ...
 vinctor demo ...
 ```
 
-Agent commands request or consume authority. Operator commands decide, configure,
-or inspect authority. Local commands prepare the prototype service. Demo commands
-are smoke checks and walkthrough helpers, not product claims.
+Service commands run the local/self-hostable HTTP runtime without minting new
+authority. Agent commands request or consume authority. Operator commands
+decide, configure, or inspect authority. Local commands prepare the prototype
+service and may bootstrap local keys/grants. Demo commands are smoke checks and
+walkthrough helpers, not product claims.
 
 ## Human / Operator Tasks
 
@@ -85,6 +88,9 @@ This repo should not yet claim hosted orchestration or human approval workflow.
 Initial commands:
 
 ```bash
+vinctor service serve --host 127.0.0.1 --port 8765 --db .vinctor/vinctor.sqlite \
+  --mode self_hosted
+
 vinctor local start --db .vinctor-local.sqlite --boundary-name claude-code-local
 vinctor local env
 vinctor local env --write-file .vinctor.env
@@ -122,6 +128,11 @@ vinctor demo check
 vinctor demo service
 ```
 
+`vinctor service serve` opens existing SQLite service state and starts the HTTP
+runtime. It prints listening URL, mode, database path, and a prototype warning,
+but it does not print raw keys. Bootstrap remains explicit through local setup
+or operator/admin flows.
+
 `vinctor local env` is only a formatter for already-known endpoint/key values.
 It must not imply that raw keys can be recovered from SQLite.
 
@@ -153,6 +164,10 @@ VINCTOR_AGENT_KEY
 VINCTOR_GRANT_REF
 VINCTOR_BOUNDARY_ID
 VINCTOR_DB
+VINCTOR_HOST
+VINCTOR_PORT
+VINCTOR_SERVICE_MODE
+VINCTOR_LOG_LEVEL
 ```
 
 Raw keys should not be written to repo-local config. Future config/keychain work
