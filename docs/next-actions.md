@@ -128,6 +128,9 @@ V1 service contract boundary:
   grant request queue visibility, manual approve/reject, auto-approve attempts,
   auto-approval rule management, local agent issuable scope bounds, enforce
   checks, and recent audit viewing.
+- Added a local operator flow demo that drives the helper through rule creation,
+  grant request creation, queue inspection, auto-approval, enforce, and audit
+  viewing against a temporary local service.
 
 ## Next
 

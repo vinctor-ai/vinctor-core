@@ -470,6 +470,12 @@ The auto-approval service path flow is covered by:
 .venv/bin/python demo/auto_approval_service_path_demo.py
 ```
 
+The local operator flow is covered by:
+
+```bash
+.venv/bin/python demo/local_operator_flow_demo.py
+```
+
 This slice supports service-issued scoped, time-bounded, revocable grants. It
 does not claim single-use JIT tokens, full JIT orchestration, least-privilege
 orchestration, credential shielding, human approval workflow, or complete
