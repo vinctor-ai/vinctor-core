@@ -137,6 +137,12 @@ V1 service contract boundary:
 - Added operator-facing approval mode examples for CI, docs edits, staging and
   production deploys, secret reads, destructive actions, and disabled rules in
   `docs/operator-policy-authoring/approval-mode-examples.md`.
+- Updated `vinctor-codex-hook` so it forwards optional
+  `VINCTOR_BOUNDARY_ID` as `X-Vinctor-Boundary-Id`, allowing Codex-originated
+  local audit rows to include boundary context.
+- Updated `vinctor-hermes-plugin` so it forwards optional
+  `VINCTOR_BOUNDARY_ID` as `X-Vinctor-Boundary-Id`, allowing Hermes-originated
+  local audit rows to include boundary context.
 
 ## Next
 
@@ -144,8 +150,6 @@ V1 service contract boundary:
   non-authoritative routing hint, such as `pending_review` or
   `auto_approval_available`, without letting the requesting execution agent
   choose its own approval path.
-- Add equivalent boundary-id audit context support to the Codex hook and Hermes
-  plugin if those repositories do not already forward it.
 - Keep local config-file auto-reuse and OS keychain integration deferred until
   the local bootstrap UX is stable enough for a separate ADR-backed slice.
 
