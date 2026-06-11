@@ -7,6 +7,17 @@ work.
 This document describes the single-node local/self-hostable prototype shape. It
 does not claim production readiness.
 
+## Current Boundary
+
+The current self-hosting work is a foundation slice. It answers:
+
+> Can an operator run the Vinctor service runtime against local SQLite state on
+> a machine they control?
+
+The answer is yes for a single-node prototype. The next work should turn this
+foundation into explicit operator interfaces for setup, storage, keys, upgrade,
+and runtime operations.
+
 ## Deployment Modes
 
 | Mode | Status | Meaning |
@@ -195,11 +206,36 @@ ALL SELF-HOSTABLE SERVICE STEPS PASSED ✓
 
 ## Deferred Work
 
-- production deployment guidance
-- keychain-backed operator bootstrap
-- schema migration command UX
-- Docker image publishing
-- release artifacts
-- hosted control plane
-- high availability
-- managed identity/auth
+These items are intentionally deferred because the current slice only creates
+the self-hostable runtime foundation.
+
+### Operator Interfaces
+
+- `vinctor operator storage backup` and `restore` for SQLite state
+- `vinctor operator storage reset` for explicit local/dev resets
+- `vinctor operator storage migrate` or `upgrade` for schema transitions
+- `vinctor operator keys rotate` for workspace and agent key rotation
+- `vinctor operator keys revoke` for disabling compromised or stale keys
+- `vinctor operator service info` for mode, schema version, and safe runtime
+  metadata
+
+### Deployment And Runtime Operations
+
+- TLS/reverse proxy guidance
+- firewall and network exposure guidance
+- process supervision guidance such as systemd or supervisor examples
+- log format and operational log-level guidance
+- Docker image publishing and tagged release artifacts
+- backup/restore runbook for mounted SQLite volumes
+
+### Production Hardening
+
+- production auth/session/user management
+- managed identity integration
+- high availability and replication strategy
+- multi-tenant cloud control plane
+- hosted managed service
+
+Until these exist, use the wording "self-hostable foundation" or
+"single-node self-hostable prototype", not "production-ready self-hosted
+Vinctor".

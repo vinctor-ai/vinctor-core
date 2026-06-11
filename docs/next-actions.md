@@ -197,6 +197,11 @@ V1 service contract boundary:
 
 ## Next
 
+- Build the operational interfaces on top of the self-hostable foundation:
+  storage backup/restore/reset, schema migrate/upgrade, key rotate/revoke, and
+  safe service info commands.
+- Add deployment runbooks for TLS/reverse proxy setup, firewall exposure,
+  process supervision, logs, and SQLite volume backup.
 - Keep local config-file auto-reuse and OS keychain integration deferred until
   the local bootstrap UX is stable enough for a separate ADR-backed slice.
 - Keep production deployment hardening deferred. The current self-hosting
