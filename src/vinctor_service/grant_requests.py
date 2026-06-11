@@ -74,6 +74,9 @@ def approve_grant_request(
     scope_bounds_repository: AgentIssuableScopeBoundsRepository,
     audit_writer: AuditWriter,
     now: datetime,
+    audit_event_type: str = "grant_request_approved",
+    audit_reason: str = "grant_request_approved",
+    audit_action: str = "approve_grant_request",
 ) -> GrantRequestDecisionResult:
     grant_request = _get_pending_workspace_request(
         request_id=request_id,
@@ -110,17 +113,17 @@ def approve_grant_request(
     )
     request_repository.update_request(updated)
     audit_event = _request_decision_event(
-        event_type="grant_request_approved",
-        reason="grant_request_approved",
+        event_type=audit_event_type,
+        reason=audit_reason,
         request=updated,
         grant=issued.grant,
-        action="approve_grant_request",
+        action=audit_action,
         now=now,
     )
     audit_writer.write(audit_event)
     return GrantRequestDecisionResult(
         status="approved",
-        reason="grant_request_approved",
+        reason=audit_reason,
         request=updated,
         grant=issued.grant,
         audit_event_id=audit_event.event_id,

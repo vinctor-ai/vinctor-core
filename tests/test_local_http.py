@@ -482,6 +482,102 @@ def test_local_http_agent_requests_and_workspace_approves_grant() -> None:
     ]
 
 
+def test_local_http_workspace_auto_approves_matching_grant_request() -> None:
+    svc = InMemoryV1Service()
+    svc.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        scopes=("write:repo/feature/*",),
+        now=NOW,
+    )
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        rule_status, rule = post_json(
+            server,
+            path="/v1/auto-approval-rules",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+            payload={
+                "name": "Feature docs auto approval",
+                "target_agent_id": "agent_release",
+                "allowed_scopes": ["write:repo/feature/*"],
+                "max_ttl_seconds": 3600,
+            },
+        )
+        create_status, created = post_json(
+            server,
+            path="/v1/grant-requests",
+            headers={"X-Agent-Key": "agent_key_main"},
+            payload={
+                "scopes": ["write:repo/feature/readme"],
+                "ttl_seconds": 3600,
+                "reason": "edit the feature readme",
+            },
+        )
+        auto_status, auto_approved = raw_request(
+            server,
+            method="POST",
+            path=f"/v1/grant-requests/{created['request_id']}/auto-approve",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+        enforce_status, enforced = post_json(
+            server,
+            payload=body(grant_ref=auto_approved["issued_grant_ref"]),
+            headers={"X-Agent-Key": "agent_key_main"},
+        )
+
+    assert rule_status == 201
+    assert create_status == 201
+    assert auto_status == 200
+    assert auto_approved["status"] == "approved"
+    assert auto_approved["decision_reason"] == f"auto_approval_rule:{rule['rule_id']}"
+    assert auto_approved["auto_approval"] == {
+        "decision": "approved",
+        "reason": "grant_request_auto_approved",
+        "rule_id": rule["rule_id"],
+    }
+    assert auto_approved["grant"]["grant_ref"] == auto_approved["issued_grant_ref"]
+    assert enforce_status == 200
+    assert enforced["decision"] == "permit"
+    assert [event.event_type for event in svc.audit_events] == [
+        "grant_requested",
+        "grant_issued",
+        "grant_request_auto_approved",
+        "action_permitted",
+    ]
+
+
+def test_local_http_auto_approve_leaves_non_matching_request_pending() -> None:
+    svc = InMemoryV1Service()
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        create_status, created = post_json(
+            server,
+            path="/v1/grant-requests",
+            headers={"X-Agent-Key": "agent_key_main"},
+            payload={
+                "scopes": ["write:repo/feature/readme"],
+                "ttl_seconds": 3600,
+                "reason": "edit the feature readme",
+            },
+        )
+        auto_status, response = raw_request(
+            server,
+            method="POST",
+            path=f"/v1/grant-requests/{created['request_id']}/auto-approve",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert create_status == 201
+    assert auto_status == 200
+    assert response["status"] == "pending"
+    assert response["issued_grant_ref"] is None
+    assert response["auto_approval"] == {
+        "decision": "would_not_approve",
+        "reason": "no_matching_rule",
+    }
+    assert [event.event_type for event in svc.audit_events] == ["grant_requested"]
+
+
 def test_local_http_agent_key_cannot_approve_grant_request() -> None:
     svc = InMemoryV1Service()
 
@@ -505,6 +601,33 @@ def test_local_http_agent_key_cannot_approve_grant_request() -> None:
 
     assert create_status == 201
     assert approve_status == 401
+    assert response["error"] == "authentication_required"
+    assert [event.event_type for event in svc.audit_events] == ["grant_requested"]
+
+
+def test_local_http_agent_key_cannot_auto_approve_grant_request() -> None:
+    svc = InMemoryV1Service()
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        create_status, created = post_json(
+            server,
+            path="/v1/grant-requests",
+            headers={"X-Agent-Key": "agent_key_main"},
+            payload={
+                "scopes": ["write:repo/feature/readme"],
+                "ttl_seconds": 3600,
+                "reason": "edit the feature readme",
+            },
+        )
+        auto_status, response = raw_request(
+            server,
+            method="POST",
+            path=f"/v1/grant-requests/{created['request_id']}/auto-approve",
+            headers={"X-Agent-Key": "agent_key_main"},
+        )
+
+    assert create_status == 201
+    assert auto_status == 401
     assert response["error"] == "authentication_required"
     assert [event.event_type for event in svc.audit_events] == ["grant_requested"]
 

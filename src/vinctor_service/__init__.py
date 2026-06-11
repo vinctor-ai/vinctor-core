@@ -3,6 +3,7 @@
 from vinctor_service.audit import AuditWriter, InMemoryAuditWriter
 from vinctor_service.authorize import authorize_action
 from vinctor_service.auto_approval import (
+    auto_approve_grant_request,
     create_auto_approval_rule,
     disable_auto_approval_rule,
     evaluate_auto_approval,
@@ -115,6 +116,7 @@ __all__ = [
     "WORKSPACE_KEY_PREFIX",
     "WorkspaceIdentity",
     "approve_grant_request",
+    "auto_approve_grant_request",
     "authorize_action",
     "create_auto_approval_rule",
     "create_grant_request",

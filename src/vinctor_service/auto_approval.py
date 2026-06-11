@@ -4,12 +4,20 @@ from dataclasses import replace
 from datetime import datetime
 
 from vinctor_core.scope import is_valid_grant_scope
+from vinctor_service.audit import AuditWriter
+from vinctor_service.grant_requests import approve_grant_request, lookup_grant_request
+from vinctor_service.grants import AgentIssuableScopeBoundsRepository
 from vinctor_service.models import (
     AutoApprovalEvaluationResult,
     AutoApprovalRule,
     GrantRequest,
+    GrantRequestDecisionResult,
 )
-from vinctor_service.repositories import AutoApprovalRuleRepository
+from vinctor_service.repositories import (
+    AutoApprovalRuleRepository,
+    GrantLifecycleRepository,
+    GrantRequestRepository,
+)
 
 
 def create_auto_approval_rule(
@@ -92,6 +100,61 @@ def evaluate_auto_approval(
         decision="would_not_approve",
         reason="scope_outside_rule" if saw_scope_candidate else "no_matching_rule",
         request=request,
+    )
+
+
+def auto_approve_grant_request(
+    *,
+    request_id: str,
+    workspace_id: str,
+    decided_by: str,
+    request_repository: GrantRequestRepository,
+    rule_repository: AutoApprovalRuleRepository,
+    grant_repository: GrantLifecycleRepository,
+    scope_bounds_repository: AgentIssuableScopeBoundsRepository,
+    audit_writer: AuditWriter,
+    now: datetime,
+) -> GrantRequestDecisionResult:
+    request = lookup_grant_request(
+        request_id=request_id,
+        workspace_id=workspace_id,
+        request_repository=request_repository,
+    )
+    if request is None:
+        return GrantRequestDecisionResult(status="failed", reason="grant_request_not_found")
+
+    evaluation = evaluate_auto_approval(
+        request=request,
+        rule_repository=rule_repository,
+    )
+    if evaluation.decision != "would_approve" or evaluation.rule is None:
+        return GrantRequestDecisionResult(
+            status="failed",
+            reason=evaluation.reason,
+            request=evaluation.request,
+        )
+
+    approved = approve_grant_request(
+        request_id=request.request_id,
+        workspace_id=request.workspace_id,
+        decided_by=decided_by,
+        decision_reason=f"auto_approval_rule:{evaluation.rule.rule_id}",
+        request_repository=request_repository,
+        grant_repository=grant_repository,
+        scope_bounds_repository=scope_bounds_repository,
+        audit_writer=audit_writer,
+        now=now,
+        audit_event_type="grant_request_auto_approved",
+        audit_reason="grant_request_auto_approved",
+        audit_action="auto_approve_grant_request",
+    )
+    return GrantRequestDecisionResult(
+        status=approved.status,
+        reason=approved.reason,
+        request=approved.request or request,
+        grant=approved.grant,
+        audit_event_id=approved.audit_event_id,
+        auto_approval_rule_id=evaluation.rule.rule_id if approved.status == "approved" else None,
     )
 
 

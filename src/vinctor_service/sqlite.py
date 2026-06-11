@@ -13,6 +13,7 @@ from vinctor_core import (
 )
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput, Grant
 from vinctor_service.auto_approval import (
+    auto_approve_grant_request,
     create_auto_approval_rule,
     disable_auto_approval_rule,
     evaluate_auto_approval,
@@ -769,6 +770,26 @@ class SQLiteV1Service:
         return evaluate_auto_approval(
             request=request,
             rule_repository=self.auto_approval_rule_repository,
+        )
+
+    def auto_approve_grant_request(
+        self,
+        *,
+        request_id: str,
+        workspace_id: str,
+        decided_by: str,
+        now: datetime,
+    ) -> GrantRequestDecisionResult:
+        return auto_approve_grant_request(
+            request_id=request_id,
+            workspace_id=workspace_id,
+            decided_by=decided_by,
+            request_repository=self.grant_request_repository,
+            rule_repository=self.auto_approval_rule_repository,
+            grant_repository=self.grant_repository,
+            scope_bounds_repository=self.scope_bounds_repository,
+            audit_writer=self.audit_writer,
+            now=now,
         )
 
     @property

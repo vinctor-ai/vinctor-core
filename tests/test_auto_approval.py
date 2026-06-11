@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from vinctor_service import (
     AutoApprovalRule,
     GrantRequestCreateRequest,
     SQLiteV1Service,
+    V1EnforceRequest,
 )
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
@@ -176,4 +177,184 @@ def test_auto_approval_dry_run_rejects_decided_requests(tmp_path: Path) -> None:
 
     assert result.decision == "would_not_approve"
     assert result.reason == "grant_request_not_pending"
+    conn.close()
+
+
+def test_auto_approval_service_path_approves_and_issues_grant(
+    tmp_path: Path,
+) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_runner",
+        scopes=("execute:ci/test",),
+        now=NOW,
+    )
+    service.create_auto_approval_rule(rule())
+    pending_request(service)
+
+    approved = service.auto_approve_grant_request(
+        request_id="grq_ci",
+        workspace_id="ws_main",
+        decided_by="workspace:ws_main",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    assert approved.status == "approved"
+    assert approved.reason == "grant_request_auto_approved"
+    assert approved.auto_approval_rule_id == "apr_ci"
+    assert approved.request is not None
+    assert approved.request.status == "approved"
+    assert approved.request.decided_by == "workspace:ws_main"
+    assert approved.request.decision_reason == "auto_approval_rule:apr_ci"
+    assert approved.grant is not None
+    assert approved.request.issued_grant_ref == approved.grant.grant_ref
+
+    enforced = service.enforce(
+        V1EnforceRequest(
+            workspace_id="ws_main",
+            agent_id="agent_runner",
+            grant_ref=approved.grant.grant_ref,
+            action="execute",
+            resource="ci/test",
+        ),
+        now=NOW + timedelta(seconds=2),
+    )
+
+    assert enforced.status_code == 200
+    assert enforced.decision == "permit"
+    assert [event.event_type for event in service.audit_events] == [
+        "grant_requested",
+        "grant_issued",
+        "grant_request_auto_approved",
+        "action_permitted",
+    ]
+    conn.close()
+
+
+def test_auto_approval_service_path_leaves_non_matching_request_pending(
+    tmp_path: Path,
+) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_runner",
+        scopes=("execute:deploy/production",),
+        now=NOW,
+    )
+    service.create_auto_approval_rule(rule(allowed_scopes=("execute:ci/test",)))
+    pending_request(
+        service,
+        request_body=request(scopes=("execute:deploy/production",)),
+    )
+
+    result = service.auto_approve_grant_request(
+        request_id="grq_ci",
+        workspace_id="ws_main",
+        decided_by="workspace:ws_main",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    assert result.status == "failed"
+    assert result.reason == "scope_outside_rule"
+    assert result.request is not None
+    assert result.request.status == "pending"
+    assert result.grant is None
+    assert service.list_grant_requests(workspace_id="ws_main") == (result.request,)
+    assert [event.event_type for event in service.audit_events] == ["grant_requested"]
+    conn.close()
+
+
+def test_auto_approval_service_path_ignores_disabled_rule(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_runner",
+        scopes=("execute:ci/test",),
+        now=NOW,
+    )
+    service.create_auto_approval_rule(rule(status="disabled"))
+    pending_request(service)
+
+    result = service.auto_approve_grant_request(
+        request_id="grq_ci",
+        workspace_id="ws_main",
+        decided_by="workspace:ws_main",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    assert result.status == "failed"
+    assert result.reason == "no_matching_rule"
+    assert result.request is not None
+    assert result.request.status == "pending"
+    assert result.grant is None
+    assert [event.event_type for event in service.audit_events] == ["grant_requested"]
+    conn.close()
+
+
+def test_auto_approval_service_path_rejects_rule_ttl_excess(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_runner",
+        scopes=("execute:ci/test",),
+        now=NOW,
+    )
+    service.create_auto_approval_rule(rule(max_ttl_seconds=900))
+    pending_request(service, request_body=request(ttl_seconds=1800))
+
+    result = service.auto_approve_grant_request(
+        request_id="grq_ci",
+        workspace_id="ws_main",
+        decided_by="workspace:ws_main",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    assert result.status == "failed"
+    assert result.reason == "ttl_exceeds_rule"
+    assert result.request is not None
+    assert result.request.status == "pending"
+    assert result.grant is None
+    assert [event.event_type for event in service.audit_events] == ["grant_requested"]
+    conn.close()
+
+
+def test_auto_approval_service_path_still_requires_agent_issuable_bounds(
+    tmp_path: Path,
+) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_runner",
+        scopes=("execute:ci/test",),
+        now=NOW,
+    )
+    service.create_auto_approval_rule(rule(allowed_scopes=("execute:deploy/*",)))
+    pending_request(
+        service,
+        request_body=request(scopes=("execute:deploy/production",)),
+    )
+
+    result = service.auto_approve_grant_request(
+        request_id="grq_ci",
+        workspace_id="ws_main",
+        decided_by="workspace:ws_main",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    assert result.status == "failed"
+    assert result.reason == "scope_outside_issuable_bounds"
+    assert result.request is not None
+    assert result.request.status == "pending"
+    assert result.grant is None
+    assert service.lookup_grant_request(
+        request_id="grq_ci",
+        workspace_id="ws_main",
+    ).status == "pending"
+    assert [event.event_type for event in service.audit_events] == ["grant_requested"]
     conn.close()

@@ -278,10 +278,11 @@ execution agent that requested authority cannot approve its own request through
 the agent-key route. This is an approval boundary, not a full human approval
 workflow or automated policy engine.
 
-Auto-approval rules are workspace/admin-controlled service data. The first
-auto-approval slice provides in-process helpers for admin-defined rules and a
-dry-run evaluator, plus workspace-key-protected HTTP/admin contracts for rule
-management:
+Auto-approval rules are workspace/admin-controlled service data. The
+auto-approval path provides in-process helpers for admin-defined rules, a
+dry-run evaluator, workspace-key-protected HTTP/admin contracts for rule
+management, and a service path that can turn a matching pending request into a
+service-issued grant:
 
 - `AutoApprovalRule` defines the target agent, allowed scopes, maximum TTL,
   status, and admin metadata for a rule.
@@ -289,18 +290,23 @@ management:
 - `evaluate_auto_approval` checks a pending grant request against active rules
   and returns `auto_approval_match`, `scope_outside_rule`, `ttl_exceeds_rule`,
   `no_matching_rule`, or `grant_request_not_pending`.
+- `auto_approve_grant_request` evaluates a pending grant request and, when a
+  rule matches, reuses the existing grant request approval and service-issued
+  grant lifecycle.
 - `handle_v1_auto_approval_rules_http` maps admin rule management requests:
   `POST /v1/auto-approval-rules`, `GET /v1/auto-approval-rules`, and
   `POST /v1/auto-approval-rules/{rule_id}/disable`.
+- `POST /v1/grant-requests/{request_id}/auto-approve` maps workspace-key
+  protected auto-approval attempts into that service path.
 
 These auto-approval rule management routes use `X-Workspace-Key`, not
 `X-Agent-Key`. Execution agents can request authority, but they cannot create,
-list, or disable the rules that may later approve those requests.
+list, disable, or invoke the rules that may later approve those requests.
 
-The dry-run evaluator does not mutate the grant request and does not issue a
-grant. A later explicit slice may connect matching rules to automatic approval,
-but that path must still use workspace/admin authority and reuse the existing
-grant request approval and service-issued grant lifecycle.
+Non-matching auto-approval attempts leave the grant request pending and do not
+issue a grant. Matching auto-approval attempts still use workspace/admin
+authority, still pass through agent issuable scope bounds, and write
+`grant_issued` plus `grant_request_auto_approved` audit events.
 
 The current service package exists to make the layering concrete:
 `vinctor_service` imports `vinctor_core`, and `vinctor_core` does not import
@@ -415,6 +421,12 @@ The auto-approval HTTP/admin rule management flow is covered by:
 
 ```bash
 .venv/bin/python demo/auto_approval_http_admin_demo.py
+```
+
+The auto-approval service path flow is covered by:
+
+```bash
+.venv/bin/python demo/auto_approval_service_path_demo.py
 ```
 
 This slice supports service-issued scoped, time-bounded, revocable grants. It

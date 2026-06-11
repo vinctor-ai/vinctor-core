@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from vinctor_core.models import Grant
 from vinctor_service.boundary_http import WorkspaceIdentity
 from vinctor_service.models import (
     GrantRequest,
@@ -49,6 +50,15 @@ class GrantRequestService(Protocol):
         workspace_id: str,
         decided_by: str,
         decision_reason: str | None,
+        now: datetime,
+    ) -> GrantRequestDecisionResult: ...
+
+    def auto_approve_grant_request(
+        self,
+        *,
+        request_id: str,
+        workspace_id: str,
+        decided_by: str,
         now: datetime,
     ) -> GrantRequestDecisionResult: ...
 
@@ -164,12 +174,29 @@ def handle_v1_grant_requests_http(
                 )
             return V1HttpResponse(status_code=200, body=_grant_request_body(request))
 
-        if len(parts) == 2 and parts[0] != "" and parts[1] in {"approve", "reject"}:
+        if len(parts) == 2 and parts[0] != "" and parts[1] in {
+            "approve",
+            "reject",
+            "auto-approve",
+        }:
             if method != "POST":
                 return _error(
                     405,
                     "method_not_allowed",
                     f"POST is required for /v1/grant-requests/{{request_id}}/{parts[1]}",
+                )
+            if parts[1] == "auto-approve":
+                if body is not None:
+                    return _error(
+                        400,
+                        "invalid_request",
+                        "auto-approve request body must be empty",
+                    )
+                return _auto_approve_grant_request(
+                    service=service,
+                    request_id=parts[0],
+                    identity=workspace_identity,
+                    now=now,
                 )
             decision_reason = _decision_reason(body)
             if isinstance(decision_reason, V1HttpResponse):
@@ -223,6 +250,59 @@ def _create_grant_request(
     )
 
 
+def _auto_approve_grant_request(
+    *,
+    service: GrantRequestService,
+    request_id: str,
+    identity: WorkspaceIdentity,
+    now: datetime,
+) -> V1HttpResponse:
+    result = service.auto_approve_grant_request(
+        request_id=request_id,
+        workspace_id=identity.workspace_id,
+        decided_by=f"workspace:{identity.workspace_id}",
+        now=now,
+    )
+
+    if result.status == "failed":
+        if result.reason == "grant_request_not_found":
+            return _error(404, result.reason, result.reason)
+        if result.reason in {
+            "no_matching_rule",
+            "scope_outside_rule",
+            "ttl_exceeds_rule",
+        }:
+            if result.request is None:
+                return _error(503, "service_unavailable", "auto-approval failed")
+            return V1HttpResponse(
+                status_code=200,
+                body={
+                    **_grant_request_body(result.request),
+                    "auto_approval": {
+                        "decision": "would_not_approve",
+                        "reason": result.reason,
+                    },
+                },
+            )
+        return _error(409, result.reason, result.reason)
+
+    if result.request is None:
+        return _error(503, "service_unavailable", "auto-approval failed")
+
+    body = {
+        **_grant_request_body(result.request),
+        "audit_event_id": result.audit_event_id,
+        "auto_approval": {
+            "decision": "approved",
+            "reason": result.reason,
+            "rule_id": result.auto_approval_rule_id,
+        },
+    }
+    if result.grant is not None:
+        body["grant"] = _grant_body(result.grant)
+    return V1HttpResponse(status_code=200, body=body)
+
+
 def _decide_grant_request(
     *,
     service: GrantRequestService,
@@ -261,17 +341,7 @@ def _decide_grant_request(
         "audit_event_id": result.audit_event_id,
     }
     if result.grant is not None:
-        body["grant"] = {
-            "grant_id": result.grant.grant_id,
-            "grant_ref": result.grant.grant_ref,
-            "workspace_id": result.grant.workspace_id,
-            "agent_id": result.grant.agent_id,
-            "scopes": list(result.grant.scopes),
-            "status": result.grant.status,
-            "expires_at": result.grant.expires_at.isoformat()
-            if result.grant.expires_at is not None
-            else None,
-        }
+        body["grant"] = _grant_body(result.grant)
     return V1HttpResponse(status_code=200, body=body)
 
 
@@ -378,6 +448,20 @@ def _grant_request_body(request: GrantRequest) -> dict[str, object]:
         "decided_by": request.decided_by,
         "decision_reason": request.decision_reason,
         "issued_grant_ref": request.issued_grant_ref,
+    }
+
+
+def _grant_body(grant: Grant) -> dict[str, object]:
+    return {
+        "grant_id": grant.grant_id,
+        "grant_ref": grant.grant_ref,
+        "workspace_id": grant.workspace_id,
+        "agent_id": grant.agent_id,
+        "scopes": list(grant.scopes),
+        "status": grant.status,
+        "expires_at": grant.expires_at.isoformat()
+        if grant.expires_at is not None
+        else None,
     }
 
 

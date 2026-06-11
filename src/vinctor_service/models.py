@@ -121,6 +121,7 @@ class GrantRequestDecisionResult:
     request: GrantRequest | None = None
     grant: Grant | None = None
     audit_event_id: str | None = None
+    auto_approval_rule_id: str | None = None
 
 
 @dataclass(frozen=True)
