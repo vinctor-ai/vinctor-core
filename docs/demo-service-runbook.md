@@ -164,10 +164,10 @@ vinctor --db .vinctor-local.sqlite \
   operator audit list --request-id <request_id>
 ```
 
-Show storage metadata:
+Show storage and runtime metadata:
 
 ```bash
-vinctor --db .vinctor-local.sqlite operator storage info
+vinctor --db .vinctor-local.sqlite operator service info
 ```
 
 ## Smoke Check

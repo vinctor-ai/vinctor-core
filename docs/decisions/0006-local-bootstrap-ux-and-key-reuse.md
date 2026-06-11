@@ -32,8 +32,8 @@ For now, Vinctor keeps raw key handling explicit:
 - `vinctor local env --write-file .vinctor.env` may explicitly write a
   test/dev env file when the operator asks for it.
 - SQLite stores key hashes, not raw keys.
-- `vinctor operator storage info` exposes local storage metadata without
-  exposing raw secrets.
+- `vinctor operator service info` exposes local storage and runtime metadata
+  (mode, host, port, db path, schema version) without exposing raw secrets.
 - Policy import/export may write non-secret operator policy to files.
 
 Vinctor will not silently persist raw workspace or agent keys to repository

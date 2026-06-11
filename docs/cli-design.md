@@ -123,7 +123,17 @@ vinctor operator audit list --event grant_request_auto_approved
 vinctor operator audit list --request-id grq_...
 vinctor operator audit list --boundary-id bnd_...
 vinctor operator audit export --format jsonl --file audit.jsonl
-vinctor operator storage info
+
+vinctor operator service info
+vinctor operator storage backup --output backups/vinctor.sqlite
+vinctor operator storage restore --input backups/vinctor.sqlite --yes
+vinctor operator storage reset --yes
+vinctor operator storage migrate
+
+vinctor operator keys list
+vinctor operator keys revoke lkey_...
+vinctor operator keys rotate workspace
+vinctor operator keys rotate agent --agent-id agent_local
 
 vinctor demo check
 vinctor demo service

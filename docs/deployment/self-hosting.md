@@ -163,6 +163,337 @@ The strict `/v1/enforce` request body remains:
 
 Boundary context belongs in the `X-Vinctor-Boundary-Id` header, not the body.
 
+## Operator Storage And Service Info
+
+These operator commands manage the local SQLite state that backs a self-hosted
+Vinctor service. They operate on the database file directly, so they:
+
+- do **not** require a running HTTP service (run them while `serve` is stopped),
+- never print raw workspace/agent keys or key hashes,
+- read and write only the local SQLite file you point them at.
+
+The database stores only key **hashes** and metadata (see
+[ADR 0002](../decisions/0002-durable-local-key-storage.md)), so a backup file
+carries no recoverable secrets.
+
+### When to use which command
+
+| Goal | Command |
+| --- | --- |
+| Check what mode/port/schema a deployment is on, before or after bootstrap | `operator service info` |
+| Take a point-in-time snapshot of the database before an upgrade or risky change | `operator storage backup` |
+| Restore the database from a snapshot | `operator storage restore` |
+| Wipe a local/dev database and start from an empty schema | `operator storage reset` |
+| Confirm the on-disk schema is current after a package upgrade | `operator storage migrate` |
+| See which local keys exist (masked metadata) | `operator keys list` |
+| Disable a compromised or stale key | `operator keys revoke` |
+| Replace a workspace or agent key (prints the new raw key once) | `operator keys rotate` |
+
+`operator service info` is the single safe-metadata command. (An earlier
+`operator storage info` has been folded into it.)
+
+### Flag ordering
+
+`--db` and `--json` are **global** flags: place them before the role, not after
+the subcommand. Use `vinctor --db <path> operator ...`, not
+`vinctor operator ... --db <path>` (the latter is rejected as an unrecognized
+argument). Subcommand-specific flags like `--output`, `--force`, and `--yes`
+come after the subcommand.
+
+### Database path resolution
+
+These commands act on a single SQLite file. How that path is resolved differs on
+purpose:
+
+- **`service info`** resolves the path from `--db`, then `VINCTOR_DB`, then the
+  default `.vinctor/vinctor.sqlite`. It is safe to run with no arguments as a
+  pre-flight check; it never creates the file.
+- **`storage backup`/`reset`/`restore`/`migrate` and the `keys` commands**
+  require an explicit database via `--db` or `VINCTOR_DB`. They do **not** fall
+  back to the default path, so a destructive `reset`/`restore` can never touch
+  an unintended default database by accident.
+
+### `operator service info`
+
+Reports safe runtime and storage metadata from configuration plus local SQLite.
+
+```bash
+vinctor --db .vinctor/vinctor.sqlite operator service info
+```
+
+Text output:
+
+```text
+service mode=local host=127.0.0.1 port=8765 db=.vinctor/vinctor.sqlite schema_version=2 key_storage=sqlite_hashes
+```
+
+JSON output (`--json`):
+
+```json
+{
+  "db_path": ".vinctor/vinctor.sqlite",
+  "host": "127.0.0.1",
+  "key_storage_mode": "sqlite_hashes",
+  "mode": "local",
+  "port": 8765,
+  "schema_version": 2,
+  "schema_versions": [1, 2]
+}
+```
+
+- `mode`, `host`, `port` come from the same `VINCTOR_SERVICE_MODE`,
+  `VINCTOR_HOST`, `VINCTOR_PORT` configuration used by `vinctor service serve`.
+- `schema_version` is the highest applied schema version (a scalar);
+  `schema_versions` is the full list of applied versions. Use `schema_version`
+  for a simple "what version is this DB" check.
+- If the database does not exist yet, `schema_version` is `null`,
+  `schema_versions` is `[]`, and **no database is created**.
+
+### `operator storage backup`
+
+Writes a consistent snapshot of the database to a file.
+
+```bash
+vinctor --db .vinctor/vinctor.sqlite operator storage backup \
+  --output backups/vinctor-$(date +%Y%m%d).sqlite
+```
+
+Text output:
+
+```text
+backup db=.vinctor/vinctor.sqlite output=backups/vinctor-20260611.sqlite bytes=102400
+```
+
+JSON output (`--json`):
+
+```json
+{
+  "bytes": 102400,
+  "db_path": ".vinctor/vinctor.sqlite",
+  "output_path": "backups/vinctor-20260611.sqlite",
+  "schema_versions": [1, 2]
+}
+```
+
+- The snapshot uses the SQLite backup API, so it is consistent even if a
+  service holds the database open. You do not have to stop the service to back
+  up, but a quiesced database gives the cleanest snapshot.
+- `--output` refuses to overwrite an existing file unless `--force` is passed,
+  to prevent clobbering a previous backup.
+- Parent directories of `--output` are created automatically.
+
+### `operator storage reset`
+
+Removes the database file and recreates an empty, initialized schema.
+
+```bash
+vinctor --db .vinctor/vinctor.sqlite operator storage reset --yes
+```
+
+Text output:
+
+```text
+reset db=.vinctor/vinctor.sqlite schema_versions=1,2
+```
+
+JSON output (`--json`):
+
+```json
+{
+  "db_path": ".vinctor/vinctor.sqlite",
+  "reset": true,
+  "schema_versions": [1, 2]
+}
+```
+
+- `--yes` is **required**. Without it the command refuses and changes nothing.
+- Reset takes **no implicit backup**. Run `storage backup` first if you want
+  one.
+- **Stop the running service first.** Resetting a database that a live service
+  has open leaves that process pointing at a now-stale file handle.
+- This is a local/development convenience. The database is always
+  operator-created and never committed to the repository.
+
+### `operator storage restore`
+
+Replaces the database with a snapshot produced by `storage backup`.
+
+```bash
+vinctor --db .vinctor/vinctor.sqlite operator storage restore \
+  --input backups/vinctor-20260611.sqlite --yes
+```
+
+JSON output (`--json`):
+
+```json
+{
+  "db_path": ".vinctor/vinctor.sqlite",
+  "input_path": "backups/vinctor-20260611.sqlite",
+  "restored": true,
+  "schema_versions": [1, 2]
+}
+```
+
+- `--yes` is **required** (restore overwrites the live database).
+- The input is **validated before anything is replaced**: if it is missing or
+  not a usable Vinctor SQLite snapshot, the command errors and the existing
+  database is left untouched.
+- **Stop the running service first**, then restore, then restart.
+
+### `operator storage migrate`
+
+Applies schema setup explicitly and reports the resulting versions. The schema
+is applied on open, so this is idempotent and never destroys data; run it after
+upgrading the package to confirm the on-disk schema is current.
+
+```bash
+vinctor --db .vinctor/vinctor.sqlite operator storage migrate
+```
+
+```text
+migrate db=.vinctor/vinctor.sqlite schema_versions=1,2
+```
+
+### `operator keys list`
+
+Lists local key records as **masked metadata** for the workspace selected by
+`--workspace-id` (default `ws_local`). Never prints raw keys or key hashes.
+
+```bash
+vinctor --db .vinctor/vinctor.sqlite --workspace-id ws_local operator keys list
+```
+
+JSON output (`--json`):
+
+```json
+{
+  "keys": [
+    {
+      "key_id": "lkey_...",
+      "key_type": "workspace",
+      "workspace_id": "ws_local",
+      "agent_id": null,
+      "key_prefix": "wsk_",
+      "status": "active",
+      "created_at": "2026-06-10T12:00:00+00:00",
+      "last_used_at": null,
+      "revoked_at": null
+    }
+  ]
+}
+```
+
+`key_id` is the stable handle used by `keys revoke`. `key_prefix` is only the
+key-type prefix (`wsk_`/`aak_`), not a recoverable secret.
+
+### `operator keys revoke`
+
+Revokes a key by its `key_id` (from `keys list`). Revoked keys resolve as
+unauthenticated, returning the generic `401 authentication_required`.
+
+```bash
+vinctor --db .vinctor/vinctor.sqlite operator keys revoke lkey_...
+```
+
+```text
+revoked key lkey_... status=revoked
+```
+
+### `operator keys rotate`
+
+Mints a replacement key and revokes the previously active key(s) of that type.
+The new raw key is printed **once** — store it immediately, because SQLite keeps
+only the hash and it cannot be recovered.
+
+```bash
+# Rotate the workspace/admin key:
+vinctor --db .vinctor/vinctor.sqlite --workspace-id ws_local operator keys rotate workspace
+
+# Rotate a specific agent's key:
+vinctor --db .vinctor/vinctor.sqlite --workspace-id ws_local operator keys rotate agent \
+  --agent-id agent_local
+```
+
+Text output (the raw key is shown once):
+
+```text
+rotated workspace key key_id=lkey_... revoked=lkey_old
+raw_key=wsk_...
+# Store this raw key now; it cannot be recovered from SQLite.
+```
+
+JSON output (`--json`) includes the raw key **only** for `rotate` — never for
+`list`:
+
+```json
+{
+  "agent_id": null,
+  "key_id": "lkey_new",
+  "key_type": "workspace",
+  "raw_key": "wsk_...",
+  "revoked_key_ids": ["lkey_old"],
+  "workspace_id": "ws_local"
+}
+```
+
+Rotating the workspace key revokes prior active workspace keys only; rotating an
+agent key revokes prior active keys for that agent id only. After rotating,
+distribute the new key to the relevant caller and update its `VINCTOR_*`
+environment.
+
+### Flags
+
+| Flag | Commands | Required | Meaning |
+| --- | --- | --- | --- |
+| `--db <path>` | all (backup/reset/restore/migrate/keys require it; info falls back) | backup, reset, restore, migrate, keys | SQLite database path. Also read from `VINCTOR_DB`. |
+| `--workspace-id <id>` | keys | no (default `ws_local`) | Workspace scope for key list/rotate. |
+| `--output <path>` | backup | yes | Snapshot destination file. |
+| `--input <path>` | restore | yes | Snapshot source file. |
+| `--force` | backup | no | Overwrite an existing `--output` file. |
+| `--yes` | reset, restore | yes | Confirm the destructive operation. |
+| `--agent-id <id>` | keys rotate agent | yes | Agent whose key is rotated. |
+| `--json` / `-o json` | all | no | Emit JSON instead of text (global flag). |
+
+The snapshot commands use `--output` (backup) and `--input` (restore) for binary
+database artifacts. Document-style commands (`policy apply/export`,
+`audit export`) use `--file`. This `--output`/`--input` vs `--file` split is
+intentional: snapshot files in, snapshot files out.
+
+### Exit codes
+
+| Situation | Exit code |
+| --- | --- |
+| Success | `0` |
+| `reset` / `restore` without `--yes` | `2` |
+| `backup --output` points at an existing file without `--force` | `2` |
+| `backup` source database missing | `2` |
+| `restore --input` missing or not a valid snapshot | `2` |
+| `keys revoke` with an unknown `key_id` | `2` |
+| `--db` required but not provided | `2` |
+
+These map to the shared CLI exit codes documented in
+[`docs/cli-design.md`](../cli-design.md) (`2` = usage error).
+
+### Backup / restore lifecycle
+
+```bash
+# 1. Stop the service (Ctrl+C on `vinctor service serve`, or `docker compose down`).
+
+# 2. Snapshot the current database.
+vinctor --db .vinctor/vinctor.sqlite operator storage backup \
+  --output backups/vinctor-before-change.sqlite
+
+# 3. (optional) Reset to an empty schema for a clean dev run.
+vinctor --db .vinctor/vinctor.sqlite operator storage reset --yes
+
+# 4. Restore from a snapshot (validates the input before replacing the DB).
+vinctor --db .vinctor/vinctor.sqlite operator storage restore \
+  --input backups/vinctor-before-change.sqlite --yes
+
+# 5. Start the service again.
+vinctor service serve --db .vinctor/vinctor.sqlite --mode self_hosted
+```
+
 ## Docker Compose
 
 A minimal Compose file is included for local self-hosting experiments:
@@ -174,14 +505,11 @@ docker compose up --build
 It mounts SQLite state at `/data/vinctor.sqlite` inside the container and
 publishes port `8765`.
 
-This is not a production deployment recipe. Operators remain responsible for:
-
-- network exposure and firewall rules
-- TLS or reverse proxy setup
-- workspace and agent key distribution
-- SQLite backup/restore
-- host patching and process supervision
-- access controls around the database volume
+This is not a production deployment recipe. Operators remain responsible for
+network exposure, TLS, key distribution, backup/restore, host patching, process
+supervision, and database-volume access controls. See
+[Operational Runbooks](operational-runbooks.md) for starting-point recipes
+(reverse proxy/TLS, firewall, systemd, logs, and SQLite/volume backup).
 
 ## Demo
 
@@ -211,22 +539,25 @@ the self-hostable runtime foundation.
 
 ### Operator Interfaces
 
-- `vinctor operator storage backup` and `restore` for SQLite state
-- `vinctor operator storage reset` for explicit local/dev resets
-- `vinctor operator storage migrate` or `upgrade` for schema transitions
-- `vinctor operator keys rotate` for workspace and agent key rotation
-- `vinctor operator keys revoke` for disabling compromised or stale keys
-- `vinctor operator service info` for mode, schema version, and safe runtime
-  metadata
+The storage (`backup`/`reset`/`restore`/`migrate`), `service info`, and `keys`
+(`list`/`revoke`/`rotate`) commands are now implemented — see
+[Operator Storage And Service Info](#operator-storage-and-service-info).
+Remaining operator-interface follow-ups:
+
+- Real schema migrations beyond the current version markers (the `migrate`
+  command is in place; it becomes meaningful once a v3+ migration exists).
+- Richer key listing filters and `last_used` reporting as the local key set
+  grows.
 
 ### Deployment And Runtime Operations
 
-- TLS/reverse proxy guidance
-- firewall and network exposure guidance
-- process supervision guidance such as systemd or supervisor examples
-- log format and operational log-level guidance
+Starting-point runbooks for TLS/reverse proxy, firewall, systemd supervision,
+logs/observability, and SQLite/volume backup are documented in
+[Operational Runbooks](operational-runbooks.md). Still deferred:
+
+- structured/exportable operational logging and metrics (audit records are the
+  current operational signal)
 - Docker image publishing and tagged release artifacts
-- backup/restore runbook for mounted SQLite volumes
 
 ### Production Hardening
 

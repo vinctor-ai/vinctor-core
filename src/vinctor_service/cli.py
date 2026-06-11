@@ -15,6 +15,7 @@ from typing import NoReturn, TextIO
 from urllib.parse import urlsplit
 
 from vinctor_core.models import Grant
+from vinctor_service.key_ops import rotate_agent_key, rotate_workspace_key, serialize_key_record
 from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.local_launcher import (
     DEFAULT_SCOPE,
@@ -30,6 +31,13 @@ from vinctor_service.policy_files import (
 from vinctor_service.service_config import LOG_LEVELS, SERVICE_MODES, load_service_runtime_config
 from vinctor_service.service_runtime import serve_service_runtime
 from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.storage_ops import (
+    backup_sqlite,
+    migrate_sqlite,
+    read_schema_versions,
+    reset_sqlite,
+    restore_sqlite,
+)
 
 EXIT_UNEXPECTED = 1
 EXIT_USAGE = 2
@@ -230,7 +238,30 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
 
     storage = resources.add_parser("storage")
     storage_commands = storage.add_subparsers(dest="storage_command", required=True)
-    storage_commands.add_parser("info")
+    backup = storage_commands.add_parser("backup")
+    backup.add_argument("--output", required=True, type=Path)
+    backup.add_argument("--force", action="store_true")
+    reset = storage_commands.add_parser("reset")
+    reset.add_argument("--yes", action="store_true")
+    restore = storage_commands.add_parser("restore")
+    restore.add_argument("--input", required=True, type=Path)
+    restore.add_argument("--yes", action="store_true")
+    storage_commands.add_parser("migrate")
+
+    service = resources.add_parser("service")
+    service_commands = service.add_subparsers(dest="service_info_command", required=True)
+    service_commands.add_parser("info")
+
+    keys = resources.add_parser("keys")
+    keys_commands = keys.add_subparsers(dest="keys_command", required=True)
+    keys_commands.add_parser("list")
+    keys_revoke = keys_commands.add_parser("revoke")
+    keys_revoke.add_argument("key_id")
+    keys_rotate = keys_commands.add_parser("rotate")
+    rotate_targets = keys_rotate.add_subparsers(dest="rotate_target", required=True)
+    rotate_targets.add_parser("workspace")
+    rotate_agent = rotate_targets.add_parser("agent")
+    rotate_agent.add_argument("--agent-id", required=True)
 
 
 def _add_demo_commands(roles: argparse._SubParsersAction) -> None:
@@ -377,6 +408,12 @@ def _operator(args: argparse.Namespace, *, stdout: TextIO) -> None:
         return
     if resource == "storage":
         _operator_storage(args, stdout=stdout)
+        return
+    if resource == "service":
+        _operator_service(args, stdout=stdout)
+        return
+    if resource == "keys":
+        _operator_keys(args, stdout=stdout)
         return
     raise CliError(f"unknown operator resource: {resource}")
 
@@ -671,15 +708,159 @@ def _operator_policy(args: argparse.Namespace, *, stdout: TextIO) -> None:
 
 
 def _operator_storage(args: argparse.Namespace, *, stdout: TextIO) -> None:
-    if args.storage_command != "info":
-        raise CliError(f"unknown storage command: {args.storage_command}")
-    service = _sqlite_service(args.db)
+    command = args.storage_command
+    if command == "backup":
+        db_path = Path(_required(args.db, "db"))
+        try:
+            result = backup_sqlite(db_path, args.output, force=args.force)
+        except (FileNotFoundError, FileExistsError) as error:
+            raise CliError(str(error)) from error
+        body = {
+            "db_path": str(result.db_path),
+            "output_path": str(result.output_path),
+            "bytes": result.bytes,
+            "schema_versions": list(result.schema_versions),
+        }
+        _emit(
+            args,
+            body,
+            f"backup db={result.db_path} output={result.output_path} bytes={result.bytes}",
+            stdout=stdout,
+        )
+        return
+    if command == "reset":
+        if not args.yes:
+            raise CliError("storage reset requires --yes to confirm wiping the database")
+        result = reset_sqlite(Path(_required(args.db, "db")))
+        body = {
+            "db_path": str(result.db_path),
+            "schema_versions": list(result.schema_versions),
+            "reset": True,
+        }
+        versions = ",".join(map(str, result.schema_versions))
+        _emit(args, body, f"reset db={result.db_path} schema_versions={versions}", stdout=stdout)
+        return
+    if command == "restore":
+        if not args.yes:
+            raise CliError("storage restore requires --yes to confirm replacing the database")
+        try:
+            result = restore_sqlite(Path(_required(args.db, "db")), args.input)
+        except (FileNotFoundError, ValueError) as error:
+            raise CliError(str(error)) from error
+        body = {
+            "db_path": str(result.db_path),
+            "input_path": str(result.input_path),
+            "schema_versions": list(result.schema_versions),
+            "restored": True,
+        }
+        _emit(
+            args,
+            body,
+            f"restore db={result.db_path} input={result.input_path}",
+            stdout=stdout,
+        )
+        return
+    if command == "migrate":
+        result = migrate_sqlite(Path(_required(args.db, "db")))
+        body = {
+            "db_path": str(result.db_path),
+            "schema_versions": list(result.schema_versions),
+        }
+        versions = ",".join(map(str, result.schema_versions))
+        _emit(args, body, f"migrate db={result.db_path} schema_versions={versions}", stdout=stdout)
+        return
+    raise CliError(f"unknown storage command: {command}")
+
+
+def _operator_service(args: argparse.Namespace, *, stdout: TextIO) -> None:
+    if args.service_info_command != "info":
+        raise CliError(f"unknown service command: {args.service_info_command}")
+    config = load_service_runtime_config(sqlite_db_path=args.db, env=os.environ)
+    versions = read_schema_versions(config.sqlite_db_path)
+    schema_version = max(versions) if versions else None
     body = {
-        "db_path": str(_required(args.db, "db")),
-        "schema_versions": list(service.schema_versions()),
+        "mode": config.service_mode,
+        "host": config.host,
+        "port": config.port,
+        "db_path": str(config.sqlite_db_path),
+        "schema_version": schema_version,
+        "schema_versions": list(versions or ()),
+        "key_storage_mode": config.key_storage_mode,
     }
-    versions = ",".join(map(str, body["schema_versions"]))
-    _emit(args, body, f"storage db={body['db_path']} schema_versions={versions}", stdout=stdout)
+    text = (
+        f"service mode={config.service_mode} host={config.host} port={config.port} "
+        f"db={config.sqlite_db_path} "
+        f"schema_version={schema_version if schema_version is not None else '-'} "
+        f"key_storage={config.key_storage_mode}"
+    )
+    _emit(args, body, text, stdout=stdout)
+
+
+def _operator_keys(args: argparse.Namespace, *, stdout: TextIO) -> None:
+    repository = SQLiteLocalKeyRepository(_sqlite_service(args.db).conn)
+    command = args.keys_command
+    now = datetime.now(UTC)
+    if command == "list":
+        records = repository.list_for_workspace(args.workspace_id)
+        body = {"keys": [serialize_key_record(record) for record in records]}
+        _emit(args, body, _keys_list_text(records), stdout=stdout)
+        return
+    if command == "revoke":
+        record = repository.revoke_key(args.key_id, now=now)
+        if record is None:
+            raise CliError(f"unknown key: {args.key_id}")
+        body = serialize_key_record(record)
+        _emit(args, body, f"revoked key {record.key_id} status={record.status}", stdout=stdout)
+        return
+    if command == "rotate":
+        if args.rotate_target == "workspace":
+            result = rotate_workspace_key(repository, workspace_id=args.workspace_id, now=now)
+            key_type = "workspace"
+            agent_id = None
+        elif args.rotate_target == "agent":
+            result = rotate_agent_key(
+                repository,
+                workspace_id=args.workspace_id,
+                agent_id=args.agent_id,
+                now=now,
+            )
+            key_type = "agent"
+            agent_id = args.agent_id
+        else:
+            raise CliError(f"unknown rotate target: {args.rotate_target}")
+        body = {
+            "key_id": result.new_key_id,
+            "key_type": key_type,
+            "agent_id": agent_id,
+            "workspace_id": args.workspace_id,
+            "raw_key": result.raw_key,
+            "revoked_key_ids": list(result.revoked_key_ids),
+        }
+        revoked = ",".join(result.revoked_key_ids) or "-"
+        text = "\n".join(
+            [
+                f"rotated {key_type} key key_id={result.new_key_id} revoked={revoked}",
+                f"raw_key={result.raw_key}",
+                "# Store this raw key now; it cannot be recovered from SQLite.",
+            ]
+        )
+        _emit(args, body, text, stdout=stdout)
+        return
+    raise CliError(f"unknown keys command: {command}")
+
+
+def _keys_list_text(records: tuple[object, ...]) -> str:
+    if not records:
+        return "no keys"
+    lines = []
+    for record in records:
+        lines.append(
+            f"{record.key_id} type={record.key_type} agent={record.agent_id or '-'} "
+            f"status={record.status} created={record.created_at.isoformat()} "
+            f"last_used={record.last_used_at.isoformat() if record.last_used_at else '-'} "
+            f"revoked={record.revoked_at.isoformat() if record.revoked_at else '-'}"
+        )
+    return "\n".join(lines)
 
 
 def _demo(args: argparse.Namespace, *, stdout: TextIO) -> None:

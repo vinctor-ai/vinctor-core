@@ -201,14 +201,37 @@ V1 service contract boundary:
   predicate.
 - Added workspace-key-gated `vinctor operator audit export --format jsonl` for
   full local audit export without adding model-facing raw inputs.
+- Added the first operational interface slice on top of the self-hostable
+  foundation: `vinctor operator storage backup --output` (consistent SQLite
+  snapshot, `--force` to overwrite), `vinctor operator storage reset --yes`
+  (wipe and recreate empty schema, no implicit backup), and
+  `vinctor operator service info` (safe mode/host/port/db-path/schema-version
+  metadata that never creates a database or prints raw keys/hashes), with a
+  `storage_ops` helper module, focused tests, and an operator storage ops demo.
+- Completed the operational interface command surface: `vinctor operator storage
+  restore --input --yes` (validates the snapshot before replacing the live DB),
+  `vinctor operator storage migrate` (explicit idempotent schema apply +
+  version report), and `vinctor operator keys list` / `revoke <key_id>` /
+  `rotate workspace` / `rotate agent --agent-id` (masked key metadata, revoke by
+  id, rotation that mints a replacement and revokes the prior active key while
+  printing the new raw key only once). Added a `key_ops` helper module, extended
+  `storage_ops`, focused tests, and a full lifecycle demo.
+- Added `docs/deployment/operational-runbooks.md` with starting-point operator
+  runbooks for network/binding, TLS/reverse proxy, firewall, systemd
+  supervision, logs/observability (honest about suppressed per-request logging
+  and audit records as the operational signal), and SQLite/Docker-volume
+  backup/restore. Linked from `self-hosting.md`; no production-readiness claims.
 
 ## Next
 
-- Build the operational interfaces on top of the self-hostable foundation:
-  storage backup/restore/reset, schema migrate/upgrade, key rotate/revoke, and
-  safe service info commands.
-- Add deployment runbooks for TLS/reverse proxy setup, firewall exposure,
-  process supervision, logs, and SQLite volume backup.
+- The operator command surface for the self-hostable foundation is complete:
+  storage backup/reset/restore/migrate, safe service info, and keys
+  list/revoke/rotate. Remaining operational work is deployment-ops docs, not new
+  commands.
+- Deployment-ops runbooks (TLS/reverse proxy, firewall, systemd, logs, SQLite/
+  volume backup) are written in `docs/deployment/operational-runbooks.md`.
+  Remaining deployment work: structured/exportable operational logging and
+  metrics, and Docker image publishing / tagged release artifacts.
 - Keep local config-file auto-reuse and OS keychain integration deferred until
   the local bootstrap UX is stable enough for a separate ADR-backed slice.
 - Keep production deployment hardening deferred. The current self-hosting
@@ -216,8 +239,9 @@ V1 service contract boundary:
 - Consider HTTP-level policy import/export once a hosted or long-running service
   deployment contract exists. Current policy file apply/export is local
   SQLite-backed.
-- Add explicit SQLite backup/reset/upgrade commands after schema migration needs
-  exceed the current version marker.
+- Add an explicit SQLite schema migrate/upgrade command once migration needs
+  exceed the current version markers. (Backup and reset shipped in the first
+  operational-interfaces slice; restore is still pending.)
 - Add richer reviewer identity and operator inbox assignment only after a
   concrete human/operator workflow exists.
 - Add stronger local secret storage such as OS keychain integration only after

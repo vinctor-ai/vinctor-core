@@ -13,6 +13,7 @@ from vinctor_service import GrantRequestCreateRequest, SQLiteV1Service
 from vinctor_service.cli import run_vinctor
 from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.local_launcher import LocalLaunchConfig, prepare_local_service
+from vinctor_service.models import GrantIssueRequest
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -329,7 +330,7 @@ def test_vinctor_local_env_writes_explicit_env_file(tmp_path: Path) -> None:
     assert 'export VINCTOR_AGENT_KEY="aak_demo"' in env_path.read_text(encoding="utf-8")
 
 
-def test_vinctor_cli_policy_apply_export_and_storage_info(tmp_path: Path) -> None:
+def test_vinctor_cli_policy_apply_export_and_service_info(tmp_path: Path) -> None:
     db_path = tmp_path / "vinctor.sqlite"
     policy_path = tmp_path / "policy.yaml"
     exported_path = tmp_path / "exported-policy.yaml"
@@ -355,7 +356,7 @@ auto_approval_rules:
 
     common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
     applied = _run([*common, "operator", "policy", "apply", "--file", str(policy_path)])
-    storage = _run([*common, "operator", "storage", "info"])
+    service_info = _run([*common, "operator", "service", "info"])
     exported = _run([*common, "operator", "policy", "export", "--file", str(exported_path)])
 
     conn = sqlite3.connect(db_path)
@@ -373,7 +374,8 @@ auto_approval_rules:
         "rules_updated": 0,
         "workspace_id": "ws_demo",
     }
-    assert storage["schema_versions"] == [1, 2]
+    assert service_info["schema_versions"] == [1, 2]
+    assert service_info["schema_version"] == 2
     assert exported["agent_bounds"] == 1
     assert exported["auto_approval_rules"] == 1
     assert bounds == ("execute:ci/test", "write:repo/vinctor-core/*")
@@ -381,6 +383,310 @@ auto_approval_rules:
     assert rules[0].max_ttl_seconds == 1800
     assert exported_yaml["auto_approval_rules"][0]["rule_id"] == "apr_ci"
     conn.close()
+
+
+def test_vinctor_cli_storage_backup_and_reset(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    backup_path = tmp_path / "backups" / "vinctor.backup.sqlite"
+    _seed_storage_db(db_path)
+    common = ["--json", "--db", str(db_path)]
+
+    backup = _run([*common, "operator", "storage", "backup", "--output", str(backup_path)])
+    reset = _run([*common, "operator", "storage", "reset", "--yes"])
+
+    assert backup["output_path"] == str(backup_path)
+    assert backup["bytes"] > 0
+    assert backup["schema_versions"] == [1, 2]
+    assert reset == {
+        "db_path": str(db_path),
+        "reset": True,
+        "schema_versions": [1, 2],
+    }
+
+    backup_conn = sqlite3.connect(backup_path)
+    reset_conn = sqlite3.connect(db_path)
+    try:
+        backup_grant = SQLiteV1Service(
+            backup_conn, initialize_schema=False
+        ).grant_repository.get_by_ref("grt_seed")
+        reset_grant = SQLiteV1Service(
+            reset_conn, initialize_schema=False
+        ).grant_repository.get_by_ref("grt_seed")
+    finally:
+        backup_conn.close()
+        reset_conn.close()
+    assert backup_grant is not None
+    assert reset_grant is None
+
+
+def test_vinctor_cli_storage_reset_requires_yes(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+
+    stdout = StringIO()
+    stderr = StringIO()
+    status = run_vinctor(
+        ["--db", str(db_path), "operator", "storage", "reset"],
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert status != 0
+    conn = sqlite3.connect(db_path)
+    try:
+        grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
+            "grt_seed"
+        )
+    finally:
+        conn.close()
+    assert grant is not None
+
+
+def test_vinctor_cli_storage_backup_refuses_existing_without_force(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    backup_path = tmp_path / "vinctor.backup.sqlite"
+    _seed_storage_db(db_path)
+    backup_path.write_text("existing", encoding="utf-8")
+    common = ["--json", "--db", str(db_path)]
+
+    stdout = StringIO()
+    stderr = StringIO()
+    status = run_vinctor(
+        [*common, "operator", "storage", "backup", "--output", str(backup_path)],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    assert status != 0
+
+    forced = _run(
+        [*common, "operator", "storage", "backup", "--output", str(backup_path), "--force"]
+    )
+    assert forced["bytes"] > 0
+
+
+def test_vinctor_cli_service_info_reports_schema(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+
+    info = _run(["--json", "--db", str(db_path), "operator", "service", "info"])
+
+    assert info["mode"] == "local"
+    assert info["db_path"] == str(db_path)
+    assert info["schema_version"] == 2
+    assert info["schema_versions"] == [1, 2]
+    assert info["key_storage_mode"] == "sqlite_hashes"
+    assert "host" in info
+    assert "port" in info
+    serialized = json.dumps(info).lower()
+    assert "wsk_" not in serialized
+    assert "aak_" not in serialized
+    assert "key_hash" not in serialized
+
+
+def test_vinctor_cli_service_info_graceful_without_db(tmp_path: Path) -> None:
+    db_path = tmp_path / "missing.sqlite"
+
+    info = _run(["--json", "--db", str(db_path), "operator", "service", "info"])
+
+    assert info["schema_version"] is None
+    assert info["schema_versions"] == []
+    assert not db_path.exists()
+
+
+def test_vinctor_cli_storage_restore_roundtrip(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    backup_path = tmp_path / "vinctor.backup.sqlite"
+    _seed_storage_db(db_path)
+    common = ["--json", "--db", str(db_path)]
+
+    _run([*common, "operator", "storage", "backup", "--output", str(backup_path)])
+    _run([*common, "operator", "storage", "reset", "--yes"])
+    restore = _run(
+        [*common, "operator", "storage", "restore", "--input", str(backup_path), "--yes"]
+    )
+
+    assert restore == {
+        "db_path": str(db_path),
+        "input_path": str(backup_path),
+        "restored": True,
+        "schema_versions": [1, 2],
+    }
+    conn = sqlite3.connect(db_path)
+    try:
+        grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
+            "grt_seed"
+        )
+    finally:
+        conn.close()
+    assert grant is not None
+
+
+def test_vinctor_cli_storage_restore_requires_yes(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    backup_path = tmp_path / "vinctor.backup.sqlite"
+    _seed_storage_db(db_path)
+    _run(
+        [
+            "--json", "--db", str(db_path),
+            "operator", "storage", "backup", "--output", str(backup_path),
+        ]
+    )
+
+    stdout = StringIO()
+    stderr = StringIO()
+    status = run_vinctor(
+        ["--db", str(db_path), "operator", "storage", "restore", "--input", str(backup_path)],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    assert status != 0
+
+
+def test_vinctor_cli_storage_restore_rejects_invalid_input(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    bad_input = tmp_path / "garbage.sqlite"
+    _seed_storage_db(db_path)
+    bad_input.write_text("not a database", encoding="utf-8")
+
+    stdout = StringIO()
+    stderr = StringIO()
+    status = run_vinctor(
+        [
+            "--db", str(db_path), "operator", "storage", "restore",
+            "--input", str(bad_input), "--yes",
+        ],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    assert status != 0
+    conn = sqlite3.connect(db_path)
+    try:
+        grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
+            "grt_seed"
+        )
+    finally:
+        conn.close()
+    assert grant is not None
+
+
+def test_vinctor_cli_storage_migrate_reports_versions(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+
+    migrate = _run(["--json", "--db", str(db_path), "operator", "storage", "migrate"])
+
+    assert migrate == {"db_path": str(db_path), "schema_versions": [1, 2]}
+    conn = sqlite3.connect(db_path)
+    try:
+        grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
+            "grt_seed"
+        )
+    finally:
+        conn.close()
+    assert grant is not None
+
+
+def test_vinctor_cli_keys_list_and_revoke(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+
+    listed = _run([*common, "operator", "keys", "list"])
+    assert len(listed["keys"]) == 1
+    key_id = listed["keys"][0]["key_id"]
+    assert listed["keys"][0]["key_type"] == "workspace"
+    assert listed["keys"][0]["status"] == "active"
+    serialized = json.dumps(listed)
+    assert "key_hash" not in serialized
+    assert "raw_key" not in serialized
+    assert "wsk_demo" not in serialized
+
+    revoked = _run([*common, "operator", "keys", "revoke", key_id])
+    assert revoked["key_id"] == key_id
+    assert revoked["status"] == "revoked"
+
+    conn = sqlite3.connect(db_path)
+    try:
+        record = SQLiteLocalKeyRepository(conn).get_by_id(key_id)
+    finally:
+        conn.close()
+    assert record.status == "revoked"
+
+
+def test_vinctor_cli_keys_revoke_unknown_errors(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+
+    stdout = StringIO()
+    stderr = StringIO()
+    status = run_vinctor(
+        [
+            "--db", str(db_path), "--workspace-id", "ws_demo",
+            "operator", "keys", "revoke", "lkey_nope",
+        ],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    assert status != 0
+
+
+def test_vinctor_cli_keys_rotate_workspace_prints_raw_once(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+
+    rotated = _run([*common, "operator", "keys", "rotate", "workspace"])
+    assert rotated["raw_key"].startswith("wsk_")
+    assert rotated["key_type"] == "workspace"
+    assert len(rotated["revoked_key_ids"]) == 1
+
+    # The new key is active; the rotated raw value must not appear in `keys list`.
+    listed = _run([*common, "operator", "keys", "list"])
+    active = [key for key in listed["keys"] if key["status"] == "active"]
+    assert len(active) == 1
+    assert active[0]["key_id"] == rotated["key_id"]
+    assert rotated["raw_key"] not in json.dumps(listed)
+    assert "raw_key" not in json.dumps(listed)
+
+
+def test_vinctor_cli_keys_rotate_agent(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+
+    rotated = _run([*common, "operator", "keys", "rotate", "agent", "--agent-id", "agent_runner"])
+    assert rotated["raw_key"].startswith("aak_")
+    assert rotated["key_type"] == "agent"
+    assert rotated["agent_id"] == "agent_runner"
+
+
+def _seed_storage_db(db_path: Path) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        service = SQLiteV1Service(conn)
+        service.set_agent_issuable_scope_bounds(
+            workspace_id="ws_demo",
+            agent_id="agent_runner",
+            scopes=("execute:ci/test",),
+            now=NOW,
+        )
+        service.issue_grant(
+            GrantIssueRequest(
+                workspace_id="ws_demo",
+                target_agent_id="agent_runner",
+                requested_scopes=("execute:ci/test",),
+                ttl_seconds=3600,
+                grant_ref="grt_seed",
+            ),
+            now=NOW,
+        )
+        SQLiteLocalKeyRepository(conn).create_workspace_key(
+            workspace_id="ws_demo",
+            raw_key="wsk_demo",
+            now=NOW,
+        )
+    finally:
+        conn.close()
 
 
 def _start_service(tmp_path: Path, *, scopes: tuple[str, ...]):
