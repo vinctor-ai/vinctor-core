@@ -175,6 +175,62 @@ Auth: `X-Workspace-Key`
 
 Revokes a grant.
 
+## Audit Events
+
+`GET /v1/audit-events`
+
+Auth: `X-Workspace-Key`
+
+Returns workspace audit events through an explicit output allowlist. Supported
+query parameters:
+
+- `limit`: positive integer, default `20`, max `100`
+- `event_type`
+- `grant_ref`
+- `boundary_id`
+- `request_id`
+
+`request_id` matches both grant request lifecycle events that store the request
+id in `grant_ref` and decision events that store it as
+`resource=grant_request/{request_id}`.
+
+Response:
+
+```json
+{
+  "audit_events": [
+    {
+      "event_id": "evt_...",
+      "event_type": "action_denied",
+      "decision": "deny",
+      "reason": "action_denied",
+      "workspace_id": "ws_local",
+      "agent_id": "agent_local",
+      "grant_id": "grnt_...",
+      "grant_ref": "grt_...",
+      "action": "execute",
+      "resource": "ci/test",
+      "scope_attempted": "execute:ci/test",
+      "scope_matched": null,
+      "boundary_id": "bnd_...",
+      "runtime": "codex",
+      "boundary_type": "pretooluse",
+      "created_at": "2026-06-11T12:00:00+00:00"
+    }
+  ]
+}
+```
+
+`GET /v1/audit-events/{event_id}`
+
+Auth: `X-Workspace-Key`
+
+Returns one audit event from the same allowlist.
+
+Audit event HTTP responses must not expose raw audit payloads, raw prompts, raw
+tool input, raw commands, raw keys, key hashes, local database paths, or other
+service internals.
+
 ## Auto-Approval Rules
 
 `POST /v1/auto-approval-rules`

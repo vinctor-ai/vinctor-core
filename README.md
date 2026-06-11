@@ -90,6 +90,8 @@ For repeatable demo policy templates, see `docs/examples/policies/`.
 
 For the machine-readable local API contract, see `docs/openapi/v1.yaml`.
 
+For the read-only MCP control-plane interface, see `docs/mcp-server.md`.
+
 Hook/plugin repositories can use the deterministic mock `/v1/enforce` fixture
 for integration smoke tests:
 

@@ -30,12 +30,16 @@ dev = [
   "pytest>=8.0",
   "ruff>=0.8",
 ]
+mcp = [
+  "mcp>=1.0",
+]
 
 [project.scripts]
 vinctor = "vinctor_service.cli:main"
+vinctor-mcp-server = "vinctor_mcp_server.server:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/vinctor_core", "src/vinctor_service"]
+packages = ["src/vinctor_core", "src/vinctor_service", "src/vinctor_mcp_server"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

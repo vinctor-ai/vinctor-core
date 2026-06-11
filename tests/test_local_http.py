@@ -732,6 +732,129 @@ def test_local_http_workspace_rejects_grant_request() -> None:
     ]
 
 
+def test_local_http_workspace_lists_audit_events_with_allowlisted_fields() -> None:
+    svc = service()
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        post_json(
+            server,
+            payload=body(action="send", resource="email/external"),
+        )
+        status, response = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events?limit=5",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert status == 200
+    assert len(response["audit_events"]) == 1
+    event = response["audit_events"][0]
+    assert event == {
+        "event_id": svc.audit_events[0].event_id,
+        "event_type": "action_denied",
+        "decision": "deny",
+        "reason": "action_denied",
+        "workspace_id": "ws_main",
+        "agent_id": "agent_release",
+        "grant_id": "grnt_main",
+        "grant_ref": "grt_main",
+        "action": "send",
+        "resource": "email/external",
+        "scope_attempted": "send:email/external",
+        "scope_matched": None,
+        "boundary_id": None,
+        "runtime": None,
+        "boundary_type": None,
+        "created_at": NOW.isoformat(),
+    }
+    assert "event_json" not in event
+    assert "raw_prompt" not in event
+    assert "raw_tool_input" not in event
+    assert "raw_command" not in event
+    assert "key_hash" not in event
+    assert "db_path" not in event
+
+
+def test_local_http_workspace_gets_single_audit_event() -> None:
+    svc = service()
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        post_json(server)
+        event_id = svc.audit_events[0].event_id
+        status, response = raw_request(
+            server,
+            method="GET",
+            path=f"/v1/audit-events/{event_id}",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert status == 200
+    assert response["event_id"] == event_id
+    assert response["decision"] == "permit"
+    assert "event_json" not in response
+
+
+def test_local_http_audit_events_require_workspace_key() -> None:
+    svc = service()
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        status, response = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events",
+            headers={"X-Agent-Key": "agent_key_main"},
+        )
+
+    assert status == 401
+    assert response["error"] == "authentication_required"
+
+
+def test_local_http_audit_events_filter_by_request_id() -> None:
+    svc = service()
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        _, created = post_json(
+            server,
+            path="/v1/grant-requests",
+            headers={"X-Agent-Key": "agent_key_main"},
+            payload={
+                "scopes": ["write:repo/feature/*"],
+                "ttl_seconds": 300,
+                "reason": "write docs",
+            },
+        )
+        request_id = created["request_id"]
+        status, response = raw_request(
+            server,
+            method="GET",
+            path=f"/v1/audit-events?request_id={request_id}",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert status == 200
+    assert [event["event_type"] for event in response["audit_events"]] == [
+        "grant_requested"
+    ]
+    assert response["audit_events"][0]["grant_ref"] == request_id
+
+
+def test_local_http_audit_events_rejects_event_alias() -> None:
+    svc = service()
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        status, response = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events?event=action_denied",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert status == 400
+    assert response["error"] == "invalid_request"
+    assert response["reason"] == "unexpected query parameter: event"
+
+
 def test_local_http_workspace_manages_auto_approval_rules() -> None:
     svc = InMemoryV1Service()
     payload = {
