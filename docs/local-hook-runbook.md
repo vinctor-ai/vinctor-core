@@ -21,12 +21,24 @@ For the first run, omit explicit keys and copy the printed exports. For repeat
 runs, pass copied keys back explicitly or use:
 
 ```bash
-vinctor local env \
-  --db .vinctor-local.sqlite \
+vinctor \
+  --endpoint "$VINCTOR_ENDPOINT" \
   --workspace-key "$VINCTOR_WORKSPACE_KEY" \
   --agent-key "$VINCTOR_AGENT_KEY" \
   --grant-ref "$VINCTOR_GRANT_REF" \
-  --boundary-name claude-code-local
+  --boundary-id "$VINCTOR_BOUNDARY_ID" \
+  local env
+```
+
+`vinctor local env` formats known values. It does not recover raw keys from the
+SQLite database.
+
+For repeatable rule and bounds setup, apply a non-secret policy file:
+
+```bash
+vinctor --db .vinctor-local.sqlite \
+  --workspace-id ws_local \
+  operator policy apply --file docs/examples/local-demo-policy.yaml
 ```
 
 ## 2. Export Runtime Values

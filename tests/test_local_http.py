@@ -12,6 +12,7 @@ from typing import Any
 from vinctor_core import BoundaryRegistrationInput, Grant, register_boundary
 from vinctor_service import (
     AgentIdentity,
+    GrantRequestCreateRequest,
     InMemoryV1Service,
     WorkspaceIdentity,
     create_v1_http_server,
@@ -482,6 +483,53 @@ def test_local_http_agent_requests_and_workspace_approves_grant() -> None:
         "grant_request_approved",
         "action_permitted",
     ]
+
+
+def test_local_http_agent_can_only_view_own_grant_request_status() -> None:
+    svc = InMemoryV1Service()
+    other_request = svc.create_grant_request(
+        GrantRequestCreateRequest(
+            workspace_id="ws_main",
+            requester_agent_id="agent_other",
+            requested_scopes=("write:repo/feature/readme",),
+            requested_ttl_seconds=3600,
+            reason="other agent request",
+            request_id="grq_other",
+        ),
+        now=NOW,
+    )
+    assert other_request.request is not None
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        create_status, created = post_json(
+            server,
+            path="/v1/grant-requests",
+            headers={"X-Agent-Key": "agent_key_main"},
+            payload={
+                "scopes": ["write:repo/feature/readme"],
+                "ttl_seconds": 3600,
+                "reason": "edit the feature readme",
+            },
+        )
+        own_status, own = raw_request(
+            server,
+            method="GET",
+            path=f"/v1/grant-requests/{created['request_id']}",
+            headers={"X-Agent-Key": "agent_key_main"},
+        )
+        other_status, other = raw_request(
+            server,
+            method="GET",
+            path="/v1/grant-requests/grq_other",
+            headers={"X-Agent-Key": "agent_key_main"},
+        )
+
+    assert create_status == 201
+    assert own_status == 200
+    assert own["request_id"] == created["request_id"]
+    assert "decided_by" not in own
+    assert other_status == 404
+    assert other["error"] == "grant_request_not_found"
 
 
 def test_local_http_workspace_auto_approves_matching_grant_request() -> None:

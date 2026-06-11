@@ -30,3 +30,4 @@ Current decisions:
 - `0003-grant-lifecycle-jit-semantics.md`
 - `0004-approval-authority-and-auto-approval-rules.md`
 - `0005-grant-request-routing-and-approval-modes.md`
+- `0006-local-bootstrap-ux-and-key-reuse.md`

@@ -36,6 +36,30 @@ metadata, not raw workspace or agent keys.
 Copy these exports into the shell or process that will call the boundary while
 the launcher keeps running.
 
+Apply a repeatable local operator policy:
+
+```bash
+vinctor --db .vinctor-local.sqlite \
+  --workspace-id ws_local \
+  operator policy apply --file docs/examples/local-demo-policy.yaml
+```
+
+Agents can request grants, then operators can evaluate or decide those requests:
+
+```bash
+vinctor agent requests create \
+  --scope execute:ci/test \
+  --ttl 15m \
+  --reason "run CI validation"
+
+vinctor operator requests evaluate <request_id>
+
+vinctor agent requests status <request_id>
+```
+
+For a complete local service flow, see
+`docs/demo-service-runbook.md`.
+
 Use the exports from a boundary caller:
 
 ```bash
@@ -254,6 +278,10 @@ within the target agent's configured issuable scope bounds. For example,
 `execute:ci/test` may be issued when the target agent's bounds include
 `execute:ci/test`; `execute:deploy/production` is rejected when it is outside
 those bounds.
+
+Local operators can apply and export these bounds and auto-approval rules with
+`vinctor operator policy apply/export` using the `policy.yaml` schema documented
+in `docs/operator-policy-authoring/policy-file.md`.
 
 `handle_v1_grants_http` maps workspace-key-protected grant lifecycle requests
 into service-layer helpers:

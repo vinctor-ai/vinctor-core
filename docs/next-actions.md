@@ -161,14 +161,32 @@ V1 service contract boundary:
   boundary id, and request id.
 - Added `vinctor demo check` as a single local smoke check covering rule
   creation, request creation, auto-approval, enforce, and audit count.
+- Added local `policy.yaml` import/export for agent issuable scope bounds and
+  auto-approval rules through `vinctor operator policy apply/export`.
+- Added an agent-safe request status path: agents may `GET` only their own
+  `grant_request` records and use `vinctor agent requests status`.
+- Added queue-facing routing and queue reason fields to workspace grant request
+  views so pending requests explain why they are pending.
+- Added local SQLite schema migration metadata and `vinctor operator storage
+  info` for demo/storage sanity checks.
+- Recorded local bootstrap key-reuse boundaries in
+  `docs/decisions/0006-local-bootstrap-ux-and-key-reuse.md`.
+- Added `docs/api-contract.md` for the current local v1 HTTP API contract and
+  reason codes.
+- Added `docs/demo-service-runbook.md` and `docs/examples/local-demo-policy.yaml`
+  for repeatable local demo service setup.
 
 ## Next
 
 - Keep local config-file auto-reuse and OS keychain integration deferred until
   the local bootstrap UX is stable enough for a separate ADR-backed slice.
-- Add rule/bounds import and export once the CLI command shape has stabilized.
-- Consider an agent-safe request status route that only exposes the requesting
-  agent's own request, rather than the workspace queue.
+- Consider HTTP-level policy import/export once a hosted or long-running service
+  deployment contract exists. Current policy file apply/export is local
+  SQLite-backed.
+- Add explicit SQLite backup/reset/upgrade commands after schema migration needs
+  exceed the current version marker.
+- Add richer approval queue fields only when new request metadata exists, such
+  as task id, session id, boundary id at request time, or human reviewer id.
 
 ## Open Questions
 

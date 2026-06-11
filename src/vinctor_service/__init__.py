@@ -8,6 +8,7 @@ from vinctor_service.auto_approval import (
     disable_auto_approval_rule,
     evaluate_auto_approval,
     list_auto_approval_rules,
+    upsert_auto_approval_rule,
 )
 from vinctor_service.auto_approval_http import handle_v1_auto_approval_rules_http
 from vinctor_service.boundary_http import WorkspaceIdentity, handle_v1_boundaries_http
@@ -70,6 +71,7 @@ from vinctor_service.sqlite import (
     SQLiteGrantRepository,
     SQLiteGrantRequestRepository,
     SQLiteV1Service,
+    get_sqlite_schema_versions,
     init_sqlite_schema,
     insert_grant,
 )
@@ -126,6 +128,7 @@ __all__ = [
     "create_v1_http_server",
     "enforce_v1_contract",
     "evaluate_auto_approval",
+    "get_sqlite_schema_versions",
     "handle_v1_boundaries_http",
     "handle_v1_auto_approval_rules_http",
     "handle_v1_enforce_http",
@@ -142,5 +145,6 @@ __all__ = [
     "reject_grant_request",
     "revoke_grant",
     "disable_auto_approval_rule",
+    "upsert_auto_approval_rule",
     "validate_issuable_scope_bounds",
 ]

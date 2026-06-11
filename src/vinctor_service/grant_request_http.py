@@ -133,7 +133,7 @@ def handle_v1_grant_requests_http(
                 status_code=200,
                 body={
                     "grant_requests": [
-                        _grant_request_body(request)
+                        _workspace_grant_request_body(service, request)
                         for request in service.list_grant_requests(
                             workspace_id=workspace_identity.workspace_id
                         )
@@ -154,12 +154,20 @@ def handle_v1_grant_requests_http(
             workspace_identity_resolver=workspace_identity_resolver,
             now=now,
         )
+        agent_identity = None
         if workspace_identity is None:
-            return _error(
-                401,
-                "authentication_required",
-                "valid X-Workspace-Key header is required",
+            agent_identity = _agent_identity(
+                headers,
+                agent_identities=agent_identities,
+                agent_identity_resolver=agent_identity_resolver,
+                now=now,
             )
+            if agent_identity is None:
+                return _error(
+                    401,
+                    "authentication_required",
+                    "valid X-Workspace-Key or X-Agent-Key header is required",
+                )
 
         suffix = path.removeprefix(prefix)
         parts = suffix.split("/")
@@ -170,23 +178,45 @@ def handle_v1_grant_requests_http(
                     "method_not_allowed",
                     "GET is required for /v1/grant-requests/{request_id}",
                 )
-            request = service.lookup_grant_request(
-                request_id=parts[0],
-                workspace_id=workspace_identity.workspace_id,
+            workspace_id = (
+                workspace_identity.workspace_id
+                if workspace_identity is not None
+                else agent_identity.workspace_id
             )
+            request = service.lookup_grant_request(request_id=parts[0], workspace_id=workspace_id)
             if request is None:
                 return _error(
                     404,
                     "grant_request_not_found",
                     "grant request was not found",
                 )
-            return V1HttpResponse(status_code=200, body=_grant_request_body(request))
+            if workspace_identity is not None:
+                return V1HttpResponse(
+                    status_code=200,
+                    body=_workspace_grant_request_body(service, request),
+                )
+            if agent_identity is not None and not _agent_can_view_request(
+                agent_identity,
+                request,
+            ):
+                return _error(
+                    404,
+                    "grant_request_not_found",
+                    "grant request was not found",
+                )
+            return V1HttpResponse(status_code=200, body=_agent_grant_request_body(request))
 
         if len(parts) == 2 and parts[0] != "" and parts[1] in {
             "approve",
             "reject",
             "auto-approve",
         }:
+            if workspace_identity is None:
+                return _error(
+                    401,
+                    "authentication_required",
+                    "valid X-Workspace-Key header is required",
+                )
             if method != "POST":
                 return _error(
                     405,
@@ -287,6 +317,7 @@ def _auto_approve_grant_request(
                 status_code=200,
                 body={
                     **_grant_request_body(result.request),
+                    **_routing_hint_body(service, result.request),
                     "auto_approval": {
                         "decision": "would_not_approve",
                         "reason": result.reason,
@@ -460,6 +491,43 @@ def _grant_request_body(request: GrantRequest) -> dict[str, object]:
     }
 
 
+def _workspace_grant_request_body(
+    service: GrantRequestService,
+    request: GrantRequest,
+) -> dict[str, object]:
+    return {
+        **_grant_request_body(request),
+        **_routing_hint_body(service, request),
+        "queue_reason": _queue_reason(service, request),
+    }
+
+
+def _agent_grant_request_body(request: GrantRequest) -> dict[str, object]:
+    return {
+        "request_id": request.request_id,
+        "workspace_id": request.workspace_id,
+        "requester_agent_id": request.requester_agent_id,
+        "target_agent_id": request.target_agent_id,
+        "requested_scopes": list(request.requested_scopes),
+        "requested_ttl_seconds": request.requested_ttl_seconds,
+        "reason": request.reason,
+        "status": request.status,
+        "created_at": request.created_at.isoformat(),
+        "decided_at": request.decided_at.isoformat()
+        if request.decided_at is not None
+        else None,
+        "decision_reason": request.decision_reason,
+        "issued_grant_ref": request.issued_grant_ref,
+    }
+
+
+def _agent_can_view_request(identity: AgentIdentity, request: GrantRequest) -> bool:
+    return (
+        request.workspace_id == identity.workspace_id
+        and identity.agent_id in {request.requester_agent_id, request.target_agent_id}
+    )
+
+
 def _routing_hint_body(
     service: GrantRequestService,
     request: GrantRequest,
@@ -482,6 +550,12 @@ def _routing_hint(
     if evaluation.decision == "would_approve":
         return "auto_approval_available", evaluation.reason
     return "manual_review_required", evaluation.reason
+
+
+def _queue_reason(service: GrantRequestService, request: GrantRequest) -> str | None:
+    if request.status == "pending":
+        return _routing_hint(service, request)[1]
+    return request.decision_reason
 
 
 def _grant_body(grant: Grant) -> dict[str, object]:

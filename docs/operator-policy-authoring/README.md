@@ -177,6 +177,8 @@ cross-boundary taxonomy is finalized.
 ## Related Guides
 
 - `examples.md` shows mapping and grant scope examples.
+- `policy-file.md` documents local `policy.yaml` import/export for agent
+  bounds and auto-approval rules.
 - `approval-mode-examples.md` shows when to use auto-approval, human/operator
   review, disabled rules, or rejection.
 - `troubleshooting.md` lists common policy and mapping failures.

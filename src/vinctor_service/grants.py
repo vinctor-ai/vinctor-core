@@ -10,9 +10,13 @@ from vinctor_service.audit import AuditWriter
 from vinctor_service.models import GrantIssueRequest, GrantIssueResult
 from vinctor_service.repositories import GrantLifecycleRepository
 
+ScopeBoundsListing = tuple[tuple[str, tuple[str, ...]], ...]
+
 
 class AgentIssuableScopeBoundsRepository(Protocol):
     def get_bounds(self, *, workspace_id: str, agent_id: str) -> tuple[str, ...] | None: ...
+
+    def list_bounds_for_workspace(self, workspace_id: str) -> ScopeBoundsListing: ...
 
     def set_bounds(
         self,
@@ -33,6 +37,13 @@ class InMemoryAgentIssuableScopeBoundsRepository:
 
     def get_bounds(self, *, workspace_id: str, agent_id: str) -> tuple[str, ...] | None:
         return self._bounds.get((workspace_id, agent_id))
+
+    def list_bounds_for_workspace(self, workspace_id: str) -> ScopeBoundsListing:
+        return tuple(
+            (agent_id, scopes)
+            for (bound_workspace_id, agent_id), scopes in sorted(self._bounds.items())
+            if bound_workspace_id == workspace_id
+        )
 
     def set_bounds(
         self,

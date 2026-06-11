@@ -50,7 +50,8 @@ People are likely to directly perform:
 - agent issuable scope bounds configuration
 - audit inspection and filtering
 - high-risk request review
-- future rule/bounds import/export review
+- rule/bounds import/export review
+- local storage metadata checks
 
 These actions require workspace/admin authority and should use
 `vinctor operator ...`.
@@ -61,8 +62,8 @@ Agents should be able to perform only:
 
 - create a grant request
 - consume an issued grant through enforce
+- inspect only their own request status
 - parse JSON output and exit codes
-- later, poll or inspect only their own request status
 
 Agents must not get commands for rule creation, approval, rejection, or selecting
 their own approval path.
@@ -88,9 +89,10 @@ vinctor local start --db .vinctor-local.sqlite --boundary-name claude-code-local
 vinctor local env
 
 vinctor agent requests create --scope execute:ci/test --ttl 30m --reason "run tests"
+vinctor agent requests status grq_...
 vinctor agent enforce --action execute --resource ci/test
 
-vinctor operator requests list
+vinctor operator requests list --status pending
 vinctor operator requests view grq_...
 vinctor operator requests approve grq_... --reason "reviewed"
 vinctor operator requests reject grq_... --reason "too broad"
@@ -103,11 +105,14 @@ vinctor operator rules disable apr_...
 
 vinctor operator bounds set agent_local --scope execute:ci/test
 vinctor operator bounds show agent_local
+vinctor operator policy apply --file policy.yaml
+vinctor operator policy export --file exported-policy.yaml
 
 vinctor operator audit list --limit 20
 vinctor operator audit list --event grant_request_auto_approved
 vinctor operator audit list --request-id grq_...
 vinctor operator audit list --boundary-id bnd_...
+vinctor operator storage info
 
 vinctor demo check
 ```
@@ -171,6 +176,7 @@ The current Python module commands remain developer fallbacks:
 | --- | --- |
 | `python -m vinctor_service.local_launcher` | `vinctor local start` |
 | `local_admin grant-requests create` | `vinctor agent requests create` |
+| n/a | `vinctor agent requests status` |
 | `local_admin grant-requests list` | `vinctor operator requests list` |
 | `local_admin grant-requests approve` | `vinctor operator requests approve` |
 | `local_admin grant-requests reject` | `vinctor operator requests reject` |
@@ -179,5 +185,6 @@ The current Python module commands remain developer fallbacks:
 | `local_admin auto-approval-rules list` | `vinctor operator rules list` |
 | `local_admin auto-approval-rules disable` | `vinctor operator rules disable` |
 | `local_admin bounds set/show` | `vinctor operator bounds set/show` |
+| n/a | `vinctor operator policy apply/export` |
 | `local_admin audit` | `vinctor operator audit list` |
 | `local_admin enforce` | `vinctor agent enforce` |

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 from threading import Thread
 
+import yaml
+
+from vinctor_service import SQLiteV1Service
 from vinctor_service.cli import run_vinctor
 from vinctor_service.local_launcher import LocalLaunchConfig, prepare_local_service
 
@@ -106,6 +110,25 @@ def test_vinctor_cli_manual_review_flow_and_audit_filter(tmp_path: Path) -> None
                 created["request_id"],
             ]
         )
+        status = _run(
+            [
+                *common,
+                "agent",
+                "requests",
+                "status",
+                created["request_id"],
+            ]
+        )
+        queue = _run(
+            [
+                *common,
+                "operator",
+                "requests",
+                "list",
+                "--status",
+                "pending",
+            ]
+        )
         approved = _run(
             [
                 *common,
@@ -132,6 +155,9 @@ def test_vinctor_cli_manual_review_flow_and_audit_filter(tmp_path: Path) -> None
         assert created["routing_reason"] == "no_matching_rule"
         assert evaluated["status"] == "pending"
         assert evaluated["auto_approval"]["reason"] == "no_matching_rule"
+        assert status["status"] == "pending"
+        assert "decided_by" not in status
+        assert queue["grant_requests"][0]["queue_reason"] == "no_matching_rule"
         assert approved["status"] == "approved"
         assert [event["event_type"] for event in audit["audit_events"]] == [
             "grant_requested",
@@ -175,6 +201,60 @@ def test_vinctor_local_env_formats_existing_values() -> None:
     assert status == 0, stderr.getvalue()
     assert 'export VINCTOR_ENDPOINT="http://127.0.0.1:8765"' in stdout.getvalue()
     assert 'export VINCTOR_BOUNDARY_ID="bnd_demo"' in stdout.getvalue()
+
+
+def test_vinctor_cli_policy_apply_export_and_storage_info(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    policy_path = tmp_path / "policy.yaml"
+    exported_path = tmp_path / "exported-policy.yaml"
+    policy_path.write_text(
+        """
+version: 1
+workspace_id: ws_demo
+agent_bounds:
+  - agent_id: agent_runner
+    scopes:
+      - execute:ci/test
+      - write:repo/vinctor-core/*
+auto_approval_rules:
+  - rule_id: apr_ci
+    name: CI auto approval
+    target_agent_id: agent_runner
+    allowed_scopes:
+      - execute:ci/test
+    max_ttl: 30m
+""".strip(),
+        encoding="utf-8",
+    )
+
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+    applied = _run([*common, "operator", "policy", "apply", "--file", str(policy_path)])
+    storage = _run([*common, "operator", "storage", "info"])
+    exported = _run([*common, "operator", "policy", "export", "--file", str(exported_path)])
+
+    conn = sqlite3.connect(db_path)
+    service = SQLiteV1Service(conn)
+    bounds = service.scope_bounds_repository.get_bounds(
+        workspace_id="ws_demo",
+        agent_id="agent_runner",
+    )
+    rules = service.list_auto_approval_rules(workspace_id="ws_demo")
+    exported_yaml = yaml.safe_load(exported_path.read_text(encoding="utf-8"))
+
+    assert applied == {
+        "bounds_set": 1,
+        "rules_created": 1,
+        "rules_updated": 0,
+        "workspace_id": "ws_demo",
+    }
+    assert storage["schema_versions"] == [1]
+    assert exported["agent_bounds"] == 1
+    assert exported["auto_approval_rules"] == 1
+    assert bounds == ("execute:ci/test", "write:repo/vinctor-core/*")
+    assert rules[0].rule_id == "apr_ci"
+    assert rules[0].max_ttl_seconds == 1800
+    assert exported_yaml["auto_approval_rules"][0]["rule_id"] == "apr_ci"
+    conn.close()
 
 
 def _start_service(tmp_path: Path, *, scopes: tuple[str, ...]):

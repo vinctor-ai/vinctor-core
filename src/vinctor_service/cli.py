@@ -21,6 +21,11 @@ from vinctor_service.local_launcher import (
     prepare_local_service,
     serve_local_service,
 )
+from vinctor_service.policy_files import (
+    apply_policy_file,
+    export_policy_document,
+    write_policy_file,
+)
 from vinctor_service.sqlite import SQLiteV1Service
 
 EXIT_UNEXPECTED = 1
@@ -124,6 +129,8 @@ def _add_agent_commands(roles: argparse._SubParsersAction) -> None:
     create.add_argument("--scope", action="append", dest="scopes", required=True)
     create.add_argument("--ttl", required=True)
     create.add_argument("--reason", required=True)
+    status = request_commands.add_parser("status")
+    status.add_argument("request_id")
 
     enforce = commands.add_parser("enforce")
     enforce.add_argument("--grant-ref", dest="enforce_grant_ref")
@@ -137,7 +144,11 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
 
     requests = resources.add_parser("requests")
     request_commands = requests.add_subparsers(dest="requests_command", required=True)
-    request_commands.add_parser("list")
+    list_requests = request_commands.add_parser("list")
+    list_requests.add_argument(
+        "--status",
+        choices=("pending", "approved", "rejected", "cancelled", "expired"),
+    )
     view = request_commands.add_parser("view")
     view.add_argument("request_id")
     approve = request_commands.add_parser("approve")
@@ -176,6 +187,17 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
     audit_list.add_argument("--grant-ref")
     audit_list.add_argument("--boundary-id")
     audit_list.add_argument("--request-id")
+
+    policy = resources.add_parser("policy")
+    policy_commands = policy.add_subparsers(dest="policy_command", required=True)
+    policy_apply = policy_commands.add_parser("apply")
+    policy_apply.add_argument("--file", required=True, type=Path)
+    policy_export = policy_commands.add_parser("export")
+    policy_export.add_argument("--file", required=True, type=Path)
+
+    storage = resources.add_parser("storage")
+    storage_commands = storage.add_subparsers(dest="storage_command", required=True)
+    storage_commands.add_parser("info")
 
 
 def _add_demo_commands(roles: argparse._SubParsersAction) -> None:
@@ -232,6 +254,22 @@ def _agent(args: argparse.Namespace, *, stdout: TextIO) -> None:
         _emit(args, body, summary, stdout=stdout)
         return
 
+    if args.agent_command == "requests" and args.requests_command == "status":
+        status, body = _request_json(
+            args.endpoint,
+            "GET",
+            f"/v1/grant-requests/{args.request_id}",
+            headers={"X-Agent-Key": _required(args.agent_key, "agent key")},
+        )
+        _raise_for_status(status, body)
+        grant_ref = body.get("issued_grant_ref") or "-"
+        summary = (
+            f"request {body['request_id']} status={body['status']} "
+            f"grant_ref={grant_ref} scopes={_scopes(body)}"
+        )
+        _emit(args, body, summary, stdout=stdout)
+        return
+
     if args.agent_command == "enforce":
         grant_ref = args.enforce_grant_ref or args.grant_ref or os.environ.get("VINCTOR_GRANT_REF")
         headers = {"X-Agent-Key": _required(args.agent_key, "agent key")}
@@ -276,6 +314,12 @@ def _operator(args: argparse.Namespace, *, stdout: TextIO) -> None:
     if resource == "audit":
         _operator_audit(args, stdout=stdout)
         return
+    if resource == "policy":
+        _operator_policy(args, stdout=stdout)
+        return
+    if resource == "storage":
+        _operator_storage(args, stdout=stdout)
+        return
     raise CliError(f"unknown operator resource: {resource}")
 
 
@@ -289,7 +333,15 @@ def _operator_requests(args: argparse.Namespace, *, stdout: TextIO) -> None:
             headers={"X-Workspace-Key": _required(args.workspace_key, "workspace key")},
         )
         _raise_for_status(status, body)
-        _emit(args, body, _request_list_text(body["grant_requests"]), stdout=stdout)
+        requests = body["grant_requests"]
+        if args.status is not None and isinstance(requests, list):
+            requests = [
+                request
+                for request in requests
+                if isinstance(request, dict) and request.get("status") == args.status
+            ]
+            body = {"grant_requests": requests}
+        _emit(args, body, _request_list_text(requests), stdout=stdout)
         return
     if command == "view":
         status, body = _request_json(
@@ -447,6 +499,59 @@ def _operator_audit(args: argparse.Namespace, *, stdout: TextIO) -> None:
     ][-args.limit :]
     body = {"audit_events": [_audit_body(event) for event in events]}
     _emit(args, body, _audit_list_text(events), stdout=stdout)
+
+
+def _operator_policy(args: argparse.Namespace, *, stdout: TextIO) -> None:
+    service = _sqlite_service(args.db)
+    if args.policy_command == "apply":
+        try:
+            result = apply_policy_file(
+                args.file,
+                service=service,
+                workspace_id=args.workspace_id,
+                applied_by=f"workspace:{args.workspace_id}",
+                now=datetime.now(UTC),
+            )
+        except ValueError as error:
+            raise CliError(str(error)) from error
+        body = asdict(result)
+        summary = (
+            f"applied policy workspace={result.workspace_id} bounds={result.bounds_set} "
+            f"rules_created={result.rules_created} rules_updated={result.rules_updated}"
+        )
+        _emit(args, body, summary, stdout=stdout)
+        return
+    if args.policy_command == "export":
+        document = export_policy_document(service=service, workspace_id=args.workspace_id)
+        try:
+            write_policy_file(args.file, document)
+        except OSError as error:
+            raise CliError(f"could not write policy file: {args.file}") from error
+        body = {
+            "workspace_id": args.workspace_id,
+            "file": str(args.file),
+            "agent_bounds": len(document["agent_bounds"]),
+            "auto_approval_rules": len(document["auto_approval_rules"]),
+        }
+        summary = (
+            f"exported policy workspace={args.workspace_id} file={args.file} "
+            f"bounds={body['agent_bounds']} rules={body['auto_approval_rules']}"
+        )
+        _emit(args, body, summary, stdout=stdout)
+        return
+    raise CliError(f"unknown policy command: {args.policy_command}")
+
+
+def _operator_storage(args: argparse.Namespace, *, stdout: TextIO) -> None:
+    if args.storage_command != "info":
+        raise CliError(f"unknown storage command: {args.storage_command}")
+    service = _sqlite_service(args.db)
+    body = {
+        "db_path": str(_required(args.db, "db")),
+        "schema_versions": list(service.schema_versions()),
+    }
+    versions = ",".join(map(str, body["schema_versions"]))
+    _emit(args, body, f"storage db={body['db_path']} schema_versions={versions}", stdout=stdout)
 
 
 def _demo(args: argparse.Namespace, *, stdout: TextIO) -> None:
@@ -662,11 +767,13 @@ def _scopes(body: dict[str, object], key: str = "requested_scopes") -> str:
 
 
 def _request_text(body: dict[str, object]) -> str:
+    routing = body.get("routing_hint") or "-"
+    queue_reason = body.get("queue_reason") or body.get("routing_reason") or "-"
     return (
         f"{body['request_id']} status={body['status']} requester={body['requester_agent_id']} "
         f"target={body['target_agent_id']} ttl={body['requested_ttl_seconds']} "
         f"scopes={_scopes(body)} issued={body.get('issued_grant_ref') or '-'} "
-        f"reason={body['reason']}"
+        f"routing={routing} queue_reason={queue_reason} reason={body['reason']}"
     )
 
 

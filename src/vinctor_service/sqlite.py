@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 
 from vinctor_core import (
     disable_boundary,
@@ -27,6 +27,7 @@ from vinctor_service.grant_requests import (
     reject_grant_request,
 )
 from vinctor_service.grants import (
+    ScopeBoundsListing,
     issue_grant,
     lookup_grant,
     revoke_grant,
@@ -50,6 +51,11 @@ from vinctor_service.v1_enforce import enforce_v1_contract
 def init_sqlite_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS grants (
             grant_id TEXT PRIMARY KEY,
             grant_ref TEXT NOT NULL UNIQUE,
@@ -157,6 +163,13 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         ON auto_approval_rules(workspace_id);
         """
     )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (1, datetime.now(UTC).isoformat()),
+    )
     conn.commit()
 
 
@@ -186,6 +199,17 @@ def insert_grant(conn: sqlite3.Connection, grant: Grant) -> None:
                 _datetime_to_storage(grant.expires_at),
             ),
         )
+
+
+def get_sqlite_schema_versions(conn: sqlite3.Connection) -> tuple[int, ...]:
+    rows = conn.execute(
+        """
+        SELECT version
+        FROM schema_migrations
+        ORDER BY version
+        """
+    ).fetchall()
+    return tuple(row[0] for row in rows)
 
 
 class SQLiteGrantRepository:
@@ -257,6 +281,18 @@ class SQLiteAgentIssuableScopeBoundsRepository:
         if row is None:
             return None
         return tuple(json.loads(row[0]))
+
+    def list_bounds_for_workspace(self, workspace_id: str) -> ScopeBoundsListing:
+        rows = self._conn.execute(
+            """
+            SELECT agent_id, scopes_json
+            FROM agent_issuable_scope_bounds
+            WHERE workspace_id = ?
+            ORDER BY agent_id
+            """,
+            (workspace_id,),
+        ).fetchall()
+        return tuple((row[0], tuple(json.loads(row[1]))) for row in rows)
 
     def set_bounds(
         self,
@@ -611,6 +647,9 @@ class SQLiteV1Service:
 
     def insert_grant(self, grant: Grant) -> None:
         insert_grant(self.conn, grant)
+
+    def schema_versions(self) -> tuple[int, ...]:
+        return get_sqlite_schema_versions(self.conn)
 
     def set_agent_issuable_scope_bounds(
         self,

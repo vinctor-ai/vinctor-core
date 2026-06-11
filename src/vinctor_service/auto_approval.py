@@ -30,6 +30,22 @@ def create_auto_approval_rule(
     return rule
 
 
+def upsert_auto_approval_rule(
+    *,
+    rule_repository: AutoApprovalRuleRepository,
+    rule: AutoApprovalRule,
+) -> str:
+    _validate_rule(rule)
+    existing = rule_repository.get_rule(rule.rule_id)
+    if existing is None:
+        rule_repository.add_rule(rule)
+        return "created"
+    if existing.workspace_id != rule.workspace_id:
+        raise ValueError("auto-approval rule_id belongs to another workspace")
+    rule_repository.update_rule(rule)
+    return "updated"
+
+
 def disable_auto_approval_rule(
     *,
     rule_repository: AutoApprovalRuleRepository,

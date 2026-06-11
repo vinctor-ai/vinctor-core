@@ -41,6 +41,13 @@ Runtime adapters translate tool calls into action/resource pairs. Service
 layers handle authentication and persistence. This core evaluates explicit
 authorization inputs.
 
+## Sibling Runtime Repositories
+
+Do not directly edit or push sibling hook/plugin repositories from this
+repository's workstream. If Vinctor core work reveals a needed hook change,
+document the request here or open an issue/PR for the sibling repo owner to
+review.
+
 ## Development Workflow
 
 Use a small, test-first loop:
