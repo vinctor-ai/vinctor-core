@@ -10,6 +10,8 @@ GrantIssueStatus = Literal["issued", "rejected"]
 GrantRequestStatus = Literal["pending", "approved", "rejected", "cancelled", "expired"]
 GrantRequestCreateStatus = Literal["created", "rejected"]
 GrantRequestDecisionStatus = Literal["approved", "rejected", "failed"]
+ApprovalRuleStatus = Literal["active", "disabled"]
+AutoApprovalEvaluationDecision = Literal["would_approve", "would_not_approve"]
 
 
 @dataclass(frozen=True)
@@ -119,3 +121,26 @@ class GrantRequestDecisionResult:
     request: GrantRequest | None = None
     grant: Grant | None = None
     audit_event_id: str | None = None
+
+
+@dataclass(frozen=True)
+class AutoApprovalRule:
+    rule_id: str
+    workspace_id: str
+    name: str
+    target_agent_id: str
+    allowed_scopes: tuple[str, ...]
+    max_ttl_seconds: int
+    status: ApprovalRuleStatus
+    created_by: str
+    created_at: datetime
+    updated_by: str | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class AutoApprovalEvaluationResult:
+    decision: AutoApprovalEvaluationDecision
+    reason: str
+    request: GrantRequest
+    rule: AutoApprovalRule | None = None

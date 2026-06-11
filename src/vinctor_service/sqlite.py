@@ -12,6 +12,12 @@ from vinctor_core import (
     register_boundary,
 )
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput, Grant
+from vinctor_service.auto_approval import (
+    create_auto_approval_rule,
+    disable_auto_approval_rule,
+    evaluate_auto_approval,
+    list_auto_approval_rules,
+)
 from vinctor_service.grant_requests import (
     approve_grant_request,
     create_grant_request,
@@ -26,6 +32,8 @@ from vinctor_service.grants import (
     validate_issuable_scope_bounds,
 )
 from vinctor_service.models import (
+    AutoApprovalEvaluationResult,
+    AutoApprovalRule,
     GrantIssueRequest,
     GrantIssueResult,
     GrantRequest,
@@ -121,6 +129,20 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             issued_grant_ref TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS auto_approval_rules (
+            rule_id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            target_agent_id TEXT NOT NULL,
+            allowed_scopes_json TEXT NOT NULL,
+            max_ttl_seconds INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_by TEXT,
+            updated_at TEXT
+        );
+
         CREATE INDEX IF NOT EXISTS idx_local_keys_hash
         ON local_keys(key_hash);
 
@@ -129,6 +151,9 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_grant_requests_workspace
         ON grant_requests(workspace_id);
+
+        CREATE INDEX IF NOT EXISTS idx_auto_approval_rules_workspace
+        ON auto_approval_rules(workspace_id);
         """
     )
     conn.commit()
@@ -352,6 +377,91 @@ class SQLiteGrantRequestRepository:
             )
 
 
+class SQLiteAutoApprovalRuleRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def add_rule(self, rule: AutoApprovalRule) -> None:
+        if self.get_rule(rule.rule_id) is not None:
+            raise ValueError(f"duplicate auto-approval rule_id: {rule.rule_id}")
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO auto_approval_rules (
+                    rule_id, workspace_id, name, target_agent_id,
+                    allowed_scopes_json, max_ttl_seconds, status,
+                    created_by, created_at, updated_by, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                _auto_approval_rule_values(rule),
+            )
+
+    def get_rule(self, rule_id: str) -> AutoApprovalRule | None:
+        row = self._conn.execute(
+            """
+            SELECT rule_id, workspace_id, name, target_agent_id,
+                   allowed_scopes_json, max_ttl_seconds, status,
+                   created_by, created_at, updated_by, updated_at
+            FROM auto_approval_rules
+            WHERE rule_id = ?
+            """,
+            (rule_id,),
+        ).fetchone()
+        return _auto_approval_rule_from_row(row)
+
+    def list_rules_for_workspace(self, workspace_id: str) -> tuple[AutoApprovalRule, ...]:
+        rows = self._conn.execute(
+            """
+            SELECT rule_id, workspace_id, name, target_agent_id,
+                   allowed_scopes_json, max_ttl_seconds, status,
+                   created_by, created_at, updated_by, updated_at
+            FROM auto_approval_rules
+            WHERE workspace_id = ?
+            ORDER BY created_at, rule_id
+            """,
+            (workspace_id,),
+        ).fetchall()
+        return tuple(
+            rule
+            for row in rows
+            if (rule := _auto_approval_rule_from_row(row)) is not None
+        )
+
+    def update_rule(self, rule: AutoApprovalRule) -> None:
+        if self.get_rule(rule.rule_id) is None:
+            raise ValueError(f"unknown auto-approval rule_id: {rule.rule_id}")
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE auto_approval_rules
+                SET workspace_id = ?,
+                    name = ?,
+                    target_agent_id = ?,
+                    allowed_scopes_json = ?,
+                    max_ttl_seconds = ?,
+                    status = ?,
+                    created_by = ?,
+                    created_at = ?,
+                    updated_by = ?,
+                    updated_at = ?
+                WHERE rule_id = ?
+                """,
+                (
+                    rule.workspace_id,
+                    rule.name,
+                    rule.target_agent_id,
+                    json.dumps(list(rule.allowed_scopes)),
+                    rule.max_ttl_seconds,
+                    rule.status,
+                    rule.created_by,
+                    rule.created_at.isoformat(),
+                    rule.updated_by,
+                    _datetime_to_storage(rule.updated_at),
+                    rule.rule_id,
+                ),
+            )
+
+
 class SQLiteAuditWriter:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
@@ -486,6 +596,7 @@ class SQLiteV1Service:
     boundary_registry: SQLiteBoundaryRegistry = field(init=False)
     scope_bounds_repository: SQLiteAgentIssuableScopeBoundsRepository = field(init=False)
     grant_request_repository: SQLiteGrantRequestRepository = field(init=False)
+    auto_approval_rule_repository: SQLiteAutoApprovalRuleRepository = field(init=False)
 
     def __post_init__(self) -> None:
         if self.initialize_schema:
@@ -495,6 +606,7 @@ class SQLiteV1Service:
         self.boundary_registry = SQLiteBoundaryRegistry(self.conn)
         self.scope_bounds_repository = SQLiteAgentIssuableScopeBoundsRepository(self.conn)
         self.grant_request_repository = SQLiteGrantRequestRepository(self.conn)
+        self.auto_approval_rule_repository = SQLiteAutoApprovalRuleRepository(self.conn)
 
     def insert_grant(self, grant: Grant) -> None:
         insert_grant(self.conn, grant)
@@ -619,6 +731,44 @@ class SQLiteV1Service:
             request_repository=self.grant_request_repository,
             audit_writer=self.audit_writer,
             now=now,
+        )
+
+    def create_auto_approval_rule(self, rule: AutoApprovalRule) -> AutoApprovalRule:
+        return create_auto_approval_rule(
+            rule_repository=self.auto_approval_rule_repository,
+            rule=rule,
+        )
+
+    def list_auto_approval_rules(self, *, workspace_id: str) -> tuple[AutoApprovalRule, ...]:
+        return list_auto_approval_rules(
+            rule_repository=self.auto_approval_rule_repository,
+            workspace_id=workspace_id,
+        )
+
+    def disable_auto_approval_rule(
+        self,
+        *,
+        rule_id: str,
+        workspace_id: str,
+        disabled_by: str,
+        now: datetime,
+    ) -> AutoApprovalRule | None:
+        return disable_auto_approval_rule(
+            rule_repository=self.auto_approval_rule_repository,
+            rule_id=rule_id,
+            workspace_id=workspace_id,
+            disabled_by=disabled_by,
+            now=now,
+        )
+
+    def evaluate_auto_approval(
+        self,
+        *,
+        request: GrantRequest,
+    ) -> AutoApprovalEvaluationResult:
+        return evaluate_auto_approval(
+            request=request,
+            rule_repository=self.auto_approval_rule_repository,
         )
 
     @property
@@ -749,6 +899,42 @@ def _grant_request_from_row(row: sqlite3.Row | tuple | None) -> GrantRequest | N
         decided_by=row[10],
         decision_reason=row[11],
         issued_grant_ref=row[12],
+    )
+
+
+def _auto_approval_rule_values(rule: AutoApprovalRule) -> tuple[object, ...]:
+    return (
+        rule.rule_id,
+        rule.workspace_id,
+        rule.name,
+        rule.target_agent_id,
+        json.dumps(list(rule.allowed_scopes)),
+        rule.max_ttl_seconds,
+        rule.status,
+        rule.created_by,
+        rule.created_at.isoformat(),
+        rule.updated_by,
+        _datetime_to_storage(rule.updated_at),
+    )
+
+
+def _auto_approval_rule_from_row(
+    row: sqlite3.Row | tuple | None,
+) -> AutoApprovalRule | None:
+    if row is None:
+        return None
+    return AutoApprovalRule(
+        rule_id=row[0],
+        workspace_id=row[1],
+        name=row[2],
+        target_agent_id=row[3],
+        allowed_scopes=tuple(json.loads(row[4])),
+        max_ttl_seconds=row[5],
+        status=row[6],
+        created_by=row[7],
+        created_at=datetime.fromisoformat(row[8]),
+        updated_by=row[9],
+        updated_at=_datetime_from_storage(row[10]),
     )
 
 

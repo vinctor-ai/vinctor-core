@@ -278,6 +278,22 @@ execution agent that requested authority cannot approve its own request through
 the agent-key route. This is an approval boundary, not a full human approval
 workflow or automated policy engine.
 
+Auto-approval rules are workspace/admin-controlled service data. The first
+auto-approval slice provides in-process helpers for admin-defined rules and a
+dry-run evaluator:
+
+- `AutoApprovalRule` defines the target agent, allowed scopes, maximum TTL,
+  status, and admin metadata for a rule.
+- `create_auto_approval_rule` stores an admin-defined rule.
+- `evaluate_auto_approval` checks a pending grant request against active rules
+  and returns `auto_approval_match`, `scope_outside_rule`, `ttl_exceeds_rule`,
+  `no_matching_rule`, or `grant_request_not_pending`.
+
+The dry-run evaluator does not mutate the grant request and does not issue a
+grant. A later explicit slice may connect matching rules to automatic approval,
+but that path must still use workspace/admin authority and reuse the existing
+grant request approval and service-issued grant lifecycle.
+
 The current service package exists to make the layering concrete:
 `vinctor_service` imports `vinctor_core`, and `vinctor_core` does not import
 `vinctor_service`.
@@ -378,6 +394,12 @@ The grant request lifecycle flow is covered by:
 
 ```bash
 .venv/bin/python demo/grant_request_lifecycle_demo.py
+```
+
+The auto-approval dry-run flow is covered by:
+
+```bash
+.venv/bin/python demo/auto_approval_dry_run_demo.py
 ```
 
 This slice supports service-issued scoped, time-bounded, revocable grants. It

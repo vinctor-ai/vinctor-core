@@ -13,6 +13,12 @@ from vinctor_core import (
 )
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput
 from vinctor_service.audit import InMemoryAuditWriter
+from vinctor_service.auto_approval import (
+    create_auto_approval_rule,
+    disable_auto_approval_rule,
+    evaluate_auto_approval,
+    list_auto_approval_rules,
+)
 from vinctor_service.grant_requests import (
     approve_grant_request,
     create_grant_request,
@@ -27,6 +33,8 @@ from vinctor_service.grants import (
     revoke_grant,
 )
 from vinctor_service.models import (
+    AutoApprovalEvaluationResult,
+    AutoApprovalRule,
     GrantIssueRequest,
     GrantIssueResult,
     GrantRequest,
@@ -36,7 +44,11 @@ from vinctor_service.models import (
     V1EnforceRequest,
     V1EnforceResponse,
 )
-from vinctor_service.repositories import InMemoryGrantRepository, InMemoryGrantRequestRepository
+from vinctor_service.repositories import (
+    InMemoryAutoApprovalRuleRepository,
+    InMemoryGrantRepository,
+    InMemoryGrantRequestRepository,
+)
 from vinctor_service.v1_enforce import enforce_v1_contract
 
 
@@ -52,6 +64,7 @@ class InMemoryV1Service:
     def __post_init__(self) -> None:
         self.grant_repository = InMemoryGrantRepository(self.grants)
         self.grant_request_repository = InMemoryGrantRequestRepository()
+        self.auto_approval_rule_repository = InMemoryAutoApprovalRuleRepository()
         self.scope_bounds_repository = InMemoryAgentIssuableScopeBoundsRepository(
             self.initial_issuable_scope_bounds
         )
@@ -232,6 +245,44 @@ class InMemoryV1Service:
             request_repository=self.grant_request_repository,
             audit_writer=self.audit_writer,
             now=now,
+        )
+
+    def create_auto_approval_rule(self, rule: AutoApprovalRule) -> AutoApprovalRule:
+        return create_auto_approval_rule(
+            rule_repository=self.auto_approval_rule_repository,
+            rule=rule,
+        )
+
+    def list_auto_approval_rules(self, *, workspace_id: str) -> tuple[AutoApprovalRule, ...]:
+        return list_auto_approval_rules(
+            rule_repository=self.auto_approval_rule_repository,
+            workspace_id=workspace_id,
+        )
+
+    def disable_auto_approval_rule(
+        self,
+        *,
+        rule_id: str,
+        workspace_id: str,
+        disabled_by: str,
+        now: datetime,
+    ) -> AutoApprovalRule | None:
+        return disable_auto_approval_rule(
+            rule_repository=self.auto_approval_rule_repository,
+            rule_id=rule_id,
+            workspace_id=workspace_id,
+            disabled_by=disabled_by,
+            now=now,
+        )
+
+    def evaluate_auto_approval(
+        self,
+        *,
+        request: GrantRequest,
+    ) -> AutoApprovalEvaluationResult:
+        return evaluate_auto_approval(
+            request=request,
+            rule_repository=self.auto_approval_rule_repository,
         )
 
     def enforce(self, request: V1EnforceRequest, *, now: datetime) -> V1EnforceResponse:

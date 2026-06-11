@@ -2,6 +2,12 @@
 
 from vinctor_service.audit import AuditWriter, InMemoryAuditWriter
 from vinctor_service.authorize import authorize_action
+from vinctor_service.auto_approval import (
+    create_auto_approval_rule,
+    disable_auto_approval_rule,
+    evaluate_auto_approval,
+    list_auto_approval_rules,
+)
 from vinctor_service.boundary_http import WorkspaceIdentity, handle_v1_boundaries_http
 from vinctor_service.grant_http import handle_v1_grants_http
 from vinctor_service.grant_request_http import handle_v1_grant_requests_http
@@ -33,6 +39,8 @@ from vinctor_service.local_http import create_v1_http_handler, create_v1_http_se
 from vinctor_service.models import (
     AuthorizationRequest,
     AuthorizationResponse,
+    AutoApprovalEvaluationResult,
+    AutoApprovalRule,
     GrantIssueRequest,
     GrantIssueResult,
     GrantRequest,
@@ -43,15 +51,18 @@ from vinctor_service.models import (
     V1EnforceResponse,
 )
 from vinctor_service.repositories import (
+    AutoApprovalRuleRepository,
     GrantLifecycleRepository,
     GrantRepository,
     GrantRequestRepository,
+    InMemoryAutoApprovalRuleRepository,
     InMemoryGrantRepository,
     InMemoryGrantRequestRepository,
 )
 from vinctor_service.sqlite import (
     SQLiteAgentIssuableScopeBoundsRepository,
     SQLiteAuditWriter,
+    SQLiteAutoApprovalRuleRepository,
     SQLiteBoundaryRegistry,
     SQLiteGrantRepository,
     SQLiteGrantRequestRepository,
@@ -66,6 +77,9 @@ __all__ = [
     "AgentIdentity",
     "AuthorizationRequest",
     "AuthorizationResponse",
+    "AutoApprovalEvaluationResult",
+    "AutoApprovalRule",
+    "AutoApprovalRuleRepository",
     "AuditWriter",
     "AGENT_KEY_PREFIX",
     "CreatedLocalKey",
@@ -80,6 +94,7 @@ __all__ = [
     "GrantRequestRepository",
     "GrantRepository",
     "InMemoryAgentIssuableScopeBoundsRepository",
+    "InMemoryAutoApprovalRuleRepository",
     "InMemoryAuditWriter",
     "InMemoryGrantRepository",
     "InMemoryGrantRequestRepository",
@@ -87,6 +102,7 @@ __all__ = [
     "LocalKeyRecord",
     "SQLiteAgentIssuableScopeBoundsRepository",
     "SQLiteAuditWriter",
+    "SQLiteAutoApprovalRuleRepository",
     "SQLiteBoundaryRegistry",
     "SQLiteGrantRepository",
     "SQLiteGrantRequestRepository",
@@ -99,10 +115,12 @@ __all__ = [
     "WorkspaceIdentity",
     "approve_grant_request",
     "authorize_action",
+    "create_auto_approval_rule",
     "create_grant_request",
     "create_v1_http_handler",
     "create_v1_http_server",
     "enforce_v1_contract",
+    "evaluate_auto_approval",
     "handle_v1_boundaries_http",
     "handle_v1_enforce_http",
     "handle_v1_grant_requests_http",
@@ -110,11 +128,13 @@ __all__ = [
     "init_sqlite_schema",
     "insert_grant",
     "issue_grant",
+    "list_auto_approval_rules",
     "list_grant_requests",
     "lookup_grant_request",
     "lookup_grant",
     "mask_key",
     "reject_grant_request",
     "revoke_grant",
+    "disable_auto_approval_rule",
     "validate_issuable_scope_bounds",
 ]

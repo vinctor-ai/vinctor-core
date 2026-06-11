@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from vinctor_core.models import Grant
-from vinctor_service.models import GrantRequest
+from vinctor_service.models import AutoApprovalRule, GrantRequest
 
 
 class GrantRepository(Protocol):
@@ -24,6 +24,16 @@ class GrantRequestRepository(Protocol):
     def list_requests_for_workspace(self, workspace_id: str) -> tuple[GrantRequest, ...]: ...
 
     def update_request(self, request: GrantRequest) -> None: ...
+
+
+class AutoApprovalRuleRepository(Protocol):
+    def add_rule(self, rule: AutoApprovalRule) -> None: ...
+
+    def get_rule(self, rule_id: str) -> AutoApprovalRule | None: ...
+
+    def list_rules_for_workspace(self, workspace_id: str) -> tuple[AutoApprovalRule, ...]: ...
+
+    def update_rule(self, rule: AutoApprovalRule) -> None: ...
 
 
 class InMemoryGrantRepository:
@@ -79,3 +89,31 @@ class InMemoryGrantRequestRepository:
         if request.request_id not in self._requests_by_id:
             raise ValueError(f"unknown grant request_id: {request.request_id}")
         self._requests_by_id[request.request_id] = request
+
+
+class InMemoryAutoApprovalRuleRepository:
+    def __init__(self, rules: tuple[AutoApprovalRule, ...] = ()) -> None:
+        rules_by_id: dict[str, AutoApprovalRule] = {}
+        for rule in rules:
+            if rule.rule_id in rules_by_id:
+                raise ValueError(f"duplicate auto-approval rule_id: {rule.rule_id}")
+            rules_by_id[rule.rule_id] = rule
+        self._rules_by_id = rules_by_id
+
+    def add_rule(self, rule: AutoApprovalRule) -> None:
+        if rule.rule_id in self._rules_by_id:
+            raise ValueError(f"duplicate auto-approval rule_id: {rule.rule_id}")
+        self._rules_by_id[rule.rule_id] = rule
+
+    def get_rule(self, rule_id: str) -> AutoApprovalRule | None:
+        return self._rules_by_id.get(rule_id)
+
+    def list_rules_for_workspace(self, workspace_id: str) -> tuple[AutoApprovalRule, ...]:
+        return tuple(
+            rule for rule in self._rules_by_id.values() if rule.workspace_id == workspace_id
+        )
+
+    def update_rule(self, rule: AutoApprovalRule) -> None:
+        if rule.rule_id not in self._rules_by_id:
+            raise ValueError(f"unknown auto-approval rule_id: {rule.rule_id}")
+        self._rules_by_id[rule.rule_id] = rule

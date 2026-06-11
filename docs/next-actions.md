@@ -97,6 +97,15 @@ V1 service contract boundary:
   `grant_request_approved`, and `grant_request_rejected`.
 - Added a grant request lifecycle demo covering request, approval, issued
   grant consumption, and audit event order.
+- Recorded approval authority rules in
+  `docs/decisions/0004-approval-authority-and-auto-approval-rules.md`: execution
+  agents may request authority but must not define or invoke the rules that
+  approve their own requests.
+- Added admin-defined auto-approval rule models, in-memory and SQLite rule
+  repositories, and a dry-run evaluator that reports whether a pending grant
+  request would be approved without mutating the request or issuing a grant.
+- Added an auto-approval dry-run demo covering rule creation, request creation,
+  evaluation, and the fact that the request remains pending.
 
 ## Next
 
@@ -104,10 +113,11 @@ V1 service contract boundary:
   `vinctor-claude-code-hook` currently sends `X-Agent-Key` but does not send
   `X-Vinctor-Boundary-Id`, so service enforcement works while hook-originated
   audit rows do not yet include `boundary_id`.
-- Decide the next approval slice. Good candidates are a small ADR for how future
-  orchestrators receive workspace/admin authority, or a protocol-rule approval
-  evaluator that can approve requests without giving the requesting execution
-  agent self-issuance power.
+- Decide the next approval slice. Good candidates are workspace-key-protected
+  HTTP/admin contracts for creating/listing/disabling auto-approval rules, then
+  a later auto-approve service path that reuses the existing grant request
+  approval and service-issued grant lifecycle. Do not allow the requesting
+  execution agent to create, edit, or invoke approval rules as self-issuance.
 - Keep local config-file auto-reuse and OS keychain integration deferred until
   the local bootstrap UX is stable enough for a separate ADR-backed slice.
 
