@@ -131,19 +131,21 @@ V1 service contract boundary:
 - Added a local operator flow demo that drives the helper through rule creation,
   grant request creation, queue inspection, auto-approval, enforce, and audit
   viewing against a temporary local service.
+- Updated `vinctor-claude-code-hook` so it forwards optional
+  `VINCTOR_BOUNDARY_ID` as `X-Vinctor-Boundary-Id`, allowing hook-originated
+  local audit rows to include boundary context.
+- Added operator-facing approval mode examples for CI, docs edits, staging and
+  production deploys, secret reads, destructive actions, and disabled rules in
+  `docs/operator-policy-authoring/approval-mode-examples.md`.
 
 ## Next
 
-- Decide whether boundary-aware hook audit belongs in the hook repository next:
-  `vinctor-claude-code-hook` currently sends `X-Agent-Key` but does not send
-  `X-Vinctor-Boundary-Id`, so service enforcement works while hook-originated
-  audit rows do not yet include `boundary_id`.
 - Decide whether grant request creation responses should include a
   non-authoritative routing hint, such as `pending_review` or
   `auto_approval_available`, without letting the requesting execution agent
   choose its own approval path.
-- Add operator-facing examples for when to use manual approval, disabled rules,
-  and auto-approval rules for low-risk repeatable tasks.
+- Add equivalent boundary-id audit context support to the Codex hook and Hermes
+  plugin if those repositories do not already forward it.
 - Keep local config-file auto-reuse and OS keychain integration deferred until
   the local bootstrap UX is stable enough for a separate ADR-backed slice.
 

@@ -542,6 +542,7 @@ git diff --check
 - `.github/workflows/ci.yml` - public CI for tests, demo, lint, and whitespace
 - `docs/next-actions.md` - current work state and next tasks
 - `docs/decisions/` - durable design decisions when needed
+- `docs/operator-policy-authoring/` - operator mapping and approval mode examples
 - `src/vinctor_core/` - core authorization logic
 - `src/vinctor_service/` - service-layer application helpers
 - `tests/` - behavior-defining tests

@@ -173,3 +173,10 @@ their own documents.
 Action/resource taxonomy continues to evolve. Operators should treat currently
 configured action/resource pairs as the source of truth until a canonical
 cross-boundary taxonomy is finalized.
+
+## Related Guides
+
+- `examples.md` shows mapping and grant scope examples.
+- `approval-mode-examples.md` shows when to use auto-approval, human/operator
+  review, disabled rules, or rejection.
+- `troubleshooting.md` lists common policy and mapping failures.
