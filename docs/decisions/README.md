@@ -22,3 +22,11 @@ Each decision should include:
 
 Do not use this directory for speculative architecture notes that are not tied
 to implemented behavior.
+
+Current decisions:
+
+- `0001-service-package-in-repository.md`
+- `0002-durable-local-key-storage.md`
+- `0003-grant-lifecycle-jit-semantics.md`
+- `0004-approval-authority-and-auto-approval-rules.md`
+- `0005-grant-request-routing-and-approval-modes.md`

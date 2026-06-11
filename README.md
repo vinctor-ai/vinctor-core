@@ -278,6 +278,15 @@ execution agent that requested authority cannot approve its own request through
 the agent-key route. This is an approval boundary, not a full human approval
 workflow or automated policy engine.
 
+Grant requests should be routed by workspace/admin authority or a future
+orchestrator acting with that authority. Auto-approval is an opt-in path for
+low-risk, repeatable, narrow requests with matching admin-defined rules. Higher
+impact requests, such as production deploys, refunds, migrations,
+customer-impacting operations, destructive actions, broad scopes, long TTLs, or
+production secret access should remain pending for human/operator review or be
+rejected by workspace/admin authority. See
+`docs/decisions/0005-grant-request-routing-and-approval-modes.md`.
+
 Auto-approval rules are workspace/admin-controlled service data. The
 auto-approval path provides in-process helpers for admin-defined rules, a
 dry-run evaluator, workspace-key-protected HTTP/admin contracts for rule

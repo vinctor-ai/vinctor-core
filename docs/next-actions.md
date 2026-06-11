@@ -119,6 +119,11 @@ V1 service contract boundary:
 - Added `grant_request_auto_approved` audit events and a service path demo
   covering request creation, rule match, grant issuance, enforce consumption,
   and audit order.
+- Recorded grant request routing and approval mode semantics in
+  `docs/decisions/0005-grant-request-routing-and-approval-modes.md`:
+  auto-approval is opt-in for low-risk repeatable requests, non-matches remain
+  pending, and higher-risk requests should stay available for human/operator
+  review or workspace/admin rejection.
 
 ## Next
 
@@ -126,13 +131,12 @@ V1 service contract boundary:
   `vinctor-claude-code-hook` currently sends `X-Agent-Key` but does not send
   `X-Vinctor-Boundary-Id`, so service enforcement works while hook-originated
   audit rows do not yet include `boundary_id`.
-- Decide whether grant request creation should remain separate from
-  auto-approval invocation, or whether a future orchestrator/admin service
-  should call auto-approval immediately after request creation. Do not let the
-  requesting execution agent create, edit, or select approval rules as
-  self-issuance.
-- Add operator-facing documentation for when to use manual approval, disabled
-  rules, and auto-approval rules for low-risk repeatable tasks.
+- Decide whether grant request creation responses should include a
+  non-authoritative routing hint, such as `pending_review` or
+  `auto_approval_available`, without letting the requesting execution agent
+  choose its own approval path.
+- Add operator-facing examples for when to use manual approval, disabled rules,
+  and auto-approval rules for low-risk repeatable tasks.
 - Keep local config-file auto-reuse and OS keychain integration deferred until
   the local bootstrap UX is stable enough for a separate ADR-backed slice.
 
