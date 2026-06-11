@@ -124,6 +124,10 @@ V1 service contract boundary:
   auto-approval is opt-in for low-risk repeatable requests, non-matches remain
   pending, and higher-risk requests should stay available for human/operator
   review or workspace/admin rejection.
+- Added `python -m vinctor_service.local_admin` as a local operator helper for
+  grant request queue visibility, manual approve/reject, auto-approve attempts,
+  auto-approval rule management, local agent issuable scope bounds, enforce
+  checks, and recent audit viewing.
 
 ## Next
 

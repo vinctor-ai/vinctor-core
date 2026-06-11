@@ -402,6 +402,38 @@ Re-running without `--workspace-key` and `--agent-key` may create additional
 active local key records. Unknown or revoked keys continue to authenticate as a
 generic `401 authentication_required`.
 
+For local demos, `vinctor_service.local_admin` provides a thin operator helper
+around the local HTTP service and SQLite database. It is intended for prototype
+operation, not as a hosted admin console:
+
+```bash
+.venv/bin/python -m vinctor_service.local_admin \
+  --endpoint "$VINCTOR_ENDPOINT" \
+  --workspace-key "$VINCTOR_WORKSPACE_KEY" \
+  grant-requests list
+
+.venv/bin/python -m vinctor_service.local_admin \
+  --endpoint "$VINCTOR_ENDPOINT" \
+  --agent-key "$VINCTOR_AGENT_KEY" \
+  grant-requests create \
+  --scope write:repo/feature/readme \
+  --ttl-seconds 1800 \
+  --reason "edit the feature readme"
+
+.venv/bin/python -m vinctor_service.local_admin \
+  --endpoint "$VINCTOR_ENDPOINT" \
+  --workspace-key "$VINCTOR_WORKSPACE_KEY" \
+  grant-requests auto-approve grq_...
+
+.venv/bin/python -m vinctor_service.local_admin \
+  --db .vinctor-local.sqlite \
+  audit --limit 10
+```
+
+Use `auto-approval-rules create/list/disable` for rule management, `bounds
+set/show` for local agent issuable scope bounds, and `enforce` to send a local
+permit/deny check without hand-writing curl.
+
 The bootstrap flow is covered by:
 
 ```bash
