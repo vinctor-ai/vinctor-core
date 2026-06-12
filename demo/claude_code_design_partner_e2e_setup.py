@@ -35,6 +35,7 @@ class E2EConfig(NamedTuple):
     deny_action: str = "write"
     deny_resource: str = "repo/design-partner/protected/README.md"
     hook_cli: Path | None = None
+    hook_config_path: Path | None = None
 
 
 class E2EHandle(NamedTuple):
@@ -53,6 +54,7 @@ class E2EHandle(NamedTuple):
     boundary_runtime: str | None
     boundary_type: str | None
     hook_cli: Path | None
+    hook_config_path: Path
 
 
 def prepare_design_partner_e2e(
@@ -63,6 +65,7 @@ def prepare_design_partner_e2e(
     timestamp = now or datetime.now(UTC)
     db_path = config.db_path.expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    hook_config_path = _write_hook_config(config, db_path=db_path)
     conn = sqlite3.connect(db_path, check_same_thread=False)
     try:
         service = SQLiteV1Service(conn)
@@ -86,7 +89,7 @@ def prepare_design_partner_e2e(
             workspace_identity_resolver=lambda raw_key, used_at: (
                 key_repository.resolve_workspace_identity(raw_key, now=used_at)
             ),
-            clock=lambda: timestamp,
+            clock=(lambda: timestamp) if now is not None else None,
             service_mode="local",
         )
     except Exception:
@@ -124,6 +127,7 @@ def prepare_design_partner_e2e(
         boundary_runtime=_optional_string(boundary.get("runtime")),
         boundary_type=_optional_string(boundary.get("boundary_type")),
         hook_cli=config.hook_cli,
+        hook_config_path=hook_config_path,
     )
 
 
@@ -199,6 +203,7 @@ def run_automated_proof(
             "agent_id": handle.agent_id,
             "grant_ref": handle.grant_ref,
             "grant_issued_via": "POST /v1/grants",
+            "hook_config_path": str(handle.hook_config_path),
             "boundary_id": handle.boundary_id,
             "boundary_runtime": handle.boundary_runtime,
             "boundary_type": handle.boundary_type,
@@ -236,12 +241,14 @@ def render_operator_instructions(handle: E2EHandle) -> str:
         f"export VINCTOR_AGENT_KEY={_quote(handle.agent_key)}",
         f"export VINCTOR_GRANT_REF={_quote(handle.grant_ref)}",
         f"export VINCTOR_WORKSPACE_KEY={_quote(handle.workspace_key)}",
+        f"export VINCTOR_CLAUDE_CODE_HOOK_CONFIG={_quote(str(handle.hook_config_path))}",
     ]
     if handle.boundary_id is not None:
         lines.append(f"export VINCTOR_BOUNDARY_ID={_quote(handle.boundary_id)}")
     lines.extend(
         [
             "",
+            f"# Hook config written to: {handle.hook_config_path}",
             "# Add this to the Claude Code workspace settings.json:",
             json.dumps(settings, indent=2, sort_keys=True),
             "",
@@ -271,6 +278,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         deny_action=args.deny_action,
         deny_resource=args.deny_resource,
         hook_cli=args.hook_cli,
+        hook_config_path=args.hook_config,
     )
     if args.serve:
         handle = prepare_design_partner_e2e(config)
@@ -305,12 +313,74 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--grant-ttl-seconds", type=int, default=86_400)
     parser.add_argument("--boundary-name", default="claude-code-2.1.169")
     parser.add_argument("--hook-cli", type=Path)
+    parser.add_argument("--hook-config", type=Path)
     parser.add_argument("--permit-action", default="write")
     parser.add_argument("--permit-resource", default="repo/design-partner/feature/README.md")
     parser.add_argument("--deny-action", default="write")
     parser.add_argument("--deny-resource", default="repo/design-partner/protected/README.md")
     parser.add_argument("--serve", action="store_true")
     return parser
+
+
+def _write_hook_config(config: E2EConfig, *, db_path: Path) -> Path:
+    path = (config.hook_config_path or db_path.parent / "claude-code-hook.json").expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    document = {
+        "version": 1,
+        "rules": _hook_config_rules(config),
+    }
+    path.write_text(
+        json.dumps(document, indent=2, sort_keys=False) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _hook_config_rules(config: E2EConfig) -> list[dict[str, str | int]]:
+    return [
+        {
+            "tool": "Write",
+            "matchType": "glob",
+            "pattern": "**/repo/design-partner/feature/**",
+            "action": "write",
+            "resource": config.permit_resource,
+        },
+        {
+            "tool": "Edit",
+            "matchType": "glob",
+            "pattern": "**/repo/design-partner/feature/**",
+            "action": "write",
+            "resource": config.permit_resource,
+        },
+        {
+            "tool": "Write",
+            "matchType": "glob",
+            "pattern": "**/repo/design-partner/protected/**",
+            "action": "write",
+            "resource": config.deny_resource,
+        },
+        {
+            "tool": "Edit",
+            "matchType": "glob",
+            "pattern": "**/repo/design-partner/protected/**",
+            "action": "write",
+            "resource": config.deny_resource,
+        },
+        {
+            "tool": "Read",
+            "matchType": "glob",
+            "pattern": "**/repo/design-partner/protected/**",
+            "action": "read",
+            "resource": config.deny_resource,
+        },
+        {
+            "tool": "Bash",
+            "matchType": "exact",
+            "pattern": "echo test-ok",
+            "action": "execute",
+            "resource": "ci/test",
+        },
+    ]
 
 
 def _workspace_key(
