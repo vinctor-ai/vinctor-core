@@ -70,6 +70,7 @@ def test_load_config_reads_explicit_mcp_environment() -> None:
             "VINCTOR_MCP_ENDPOINT": "http://127.0.0.1:8765",
             "VINCTOR_MCP_WORKSPACE_KEY": "wsk_operator",
             "VINCTOR_MCP_TIMEOUT": "9",
+            "VINCTOR_MCP_OUTPUT_MODE": "diagnostic",
         }
     )
 
@@ -77,7 +78,19 @@ def test_load_config_reads_explicit_mcp_environment() -> None:
         endpoint="http://127.0.0.1:8765",
         workspace_key="wsk_operator",
         timeout=9,
+        output_mode="diagnostic",
     )
+
+
+def test_load_config_rejects_unknown_output_mode() -> None:
+    with pytest.raises(ValueError, match="VINCTOR_MCP_OUTPUT_MODE"):
+        load_config(
+            {
+                "VINCTOR_MCP_ENDPOINT": "http://127.0.0.1:8765",
+                "VINCTOR_MCP_WORKSPACE_KEY": "wsk_operator",
+                "VINCTOR_MCP_OUTPUT_MODE": "debug",
+            }
+        )
 
 
 def test_create_stdio_server_registers_read_only_tools_with_fastmcp() -> None:

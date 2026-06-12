@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import Any
+from typing import Any, Literal
+
+OutputMode = Literal["safe", "diagnostic"]
 
 STATUS_FIELDS = ("status", "service", "mode")
 BOUNDARY_FIELDS = ("boundary_id", "name", "runtime", "boundary_type", "mode", "status")
-GRANT_FIELDS = (
+GRANT_SAFE_FIELDS = (
     "grant_id",
     "grant_ref",
     "workspace_id",
     "agent_id",
-    "scopes",
     "status",
     "expires_at",
 )
-AUDIT_EVENT_FIELDS = (
+GRANT_DIAGNOSTIC_FIELDS = ("scopes",)
+AUDIT_EVENT_SAFE_FIELDS = (
     "event_id",
     "event_type",
     "decision",
@@ -25,19 +27,17 @@ AUDIT_EVENT_FIELDS = (
     "grant_ref",
     "action",
     "resource",
-    "scope_attempted",
-    "scope_matched",
     "boundary_id",
     "runtime",
     "boundary_type",
     "created_at",
 )
-GRANT_REQUEST_FIELDS = (
+AUDIT_EVENT_DIAGNOSTIC_FIELDS = ("scope_attempted", "scope_matched")
+GRANT_REQUEST_SAFE_FIELDS = (
     "request_id",
     "workspace_id",
     "requester_agent_id",
     "target_agent_id",
-    "requested_scopes",
     "requested_ttl_seconds",
     "status",
     "created_at",
@@ -50,19 +50,30 @@ GRANT_REQUEST_FIELDS = (
     "routing_reason",
     "queue_reason",
 )
-AUTO_APPROVAL_RULE_FIELDS = (
+GRANT_REQUEST_DIAGNOSTIC_FIELDS = ("requested_scopes",)
+AUTO_APPROVAL_RULE_SAFE_FIELDS = (
     "rule_id",
     "workspace_id",
     "name",
     "target_agent_id",
-    "allowed_scopes",
     "max_ttl_seconds",
     "status",
     "created_at",
     "updated_at",
 )
+AUTO_APPROVAL_RULE_DIAGNOSTIC_FIELDS = ("allowed_scopes",)
 LIST_OF_STRING_FIELDS = frozenset({"allowed_scopes", "requested_scopes", "scopes"})
 INTEGER_FIELDS = frozenset({"max_ttl_seconds", "requested_ttl_seconds"})
+
+
+def fields_for_mode(
+    safe_fields: tuple[str, ...],
+    diagnostic_fields: tuple[str, ...],
+    mode: OutputMode,
+) -> tuple[str, ...]:
+    if mode == "diagnostic":
+        return (*safe_fields, *diagnostic_fields)
+    return safe_fields
 
 
 def allowlist_object(data: Mapping[str, Any], fields: Iterable[str]) -> dict[str, Any]:

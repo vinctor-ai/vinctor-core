@@ -305,13 +305,12 @@ def test_get_grant_tool_returns_allowlisted_fields() -> None:
         "grant_ref": "grt_main",
         "workspace_id": "ws_main",
         "agent_id": "agent_release",
-        "scopes": ["write:repo/feature/*"],
         "status": "active",
         "expires_at": "2026-06-11T12:00:00+00:00",
     }
 
 
-def test_list_grants_tool_returns_allowlisted_fields() -> None:
+def test_list_grants_tool_uses_safe_fields_by_default() -> None:
     tools = VinctorReadOnlyTools(FakeClient())
 
     listed = tools.list_grants(agent_id="agent_release", status="active")
@@ -322,15 +321,32 @@ def test_list_grants_tool_returns_allowlisted_fields() -> None:
         "grant_ref": "grt_email",
         "workspace_id": "ws_main",
         "agent_id": "agent_release",
-        "scopes": ["send:email/*"],
         "status": "active",
         "expires_at": "2999-06-11T12:00:00+00:00",
     }
+    assert "scopes" not in grant
     assert "raw_key" not in grant
     assert "key_hash" not in grant
 
 
-def test_audit_tools_return_allowlisted_fields() -> None:
+def test_diagnostic_mode_returns_scope_fields() -> None:
+    tools = VinctorReadOnlyTools(FakeClient(), output_mode="diagnostic")
+
+    grant = tools.get_grant("grt_main")
+    listed_grant = tools.list_grants(agent_id="agent_release", status="active")["grants"][0]
+    event = tools.list_audit_events(limit=5, event_type="action_denied")["audit_events"][0]
+    request = tools.list_grant_requests()["grant_requests"][0]
+    rule = tools.list_auto_approval_rules()["auto_approval_rules"][0]
+
+    assert grant["scopes"] == ["write:repo/feature/*"]
+    assert listed_grant["scopes"] == ["send:email/*"]
+    assert event["scope_attempted"] == "send:email/external"
+    assert event["scope_matched"] is None
+    assert request["requested_scopes"] == ["write:repo/feature/*"]
+    assert rule["allowed_scopes"] == ["write:repo/feature/*"]
+
+
+def test_audit_tools_use_safe_fields_by_default() -> None:
     tools = VinctorReadOnlyTools(FakeClient())
 
     listed = tools.list_audit_events(limit=5, event_type="action_denied")
@@ -346,13 +362,13 @@ def test_audit_tools_return_allowlisted_fields() -> None:
         "grant_ref": "grt_main",
         "action": "send",
         "resource": "email/external",
-        "scope_attempted": "send:email/external",
-        "scope_matched": None,
         "boundary_id": None,
         "runtime": None,
         "boundary_type": None,
         "created_at": "2026-06-11T12:00:00+00:00",
     }
+    assert "scope_attempted" not in event
+    assert "scope_matched" not in event
     assert "event_json" not in event
     assert "raw_command" not in event
     assert "key_hash" not in event
@@ -405,7 +421,7 @@ def test_list_audit_events_passes_agent_id_filter() -> None:
     assert client.seen_agent_id == "agent_release"
 
 
-def test_explain_denial_uses_reason_code_without_raw_payloads() -> None:
+def test_explain_denial_uses_safe_fields_by_default() -> None:
     tools = VinctorReadOnlyTools(FakeClient())
 
     explanation = tools.explain_denial(event_id="evt_deny")
@@ -416,10 +432,6 @@ def test_explain_denial_uses_reason_code_without_raw_payloads() -> None:
         "reason": "action_denied",
         "action": "send",
         "resource": "email/external",
-        "scope_attempted": "send:email/external",
-        "scope_matched": None,
-        "missing_scope": "send:email/external",
-        "would_be_allowed_by": ["grt_email"],
         "boundary_id": "bnd_main",
         "grant_ref": "grt_main",
         "explanation": (
@@ -427,7 +439,22 @@ def test_explain_denial_uses_reason_code_without_raw_payloads() -> None:
             "the requested action/resource."
         ),
     }
+    assert "scope_attempted" not in explanation
+    assert "scope_matched" not in explanation
+    assert "missing_scope" not in explanation
+    assert "would_be_allowed_by" not in explanation
     assert "raw_tool_input" not in explanation
+
+
+def test_explain_denial_diagnostic_mode_includes_authorization_hints() -> None:
+    tools = VinctorReadOnlyTools(FakeClient(), output_mode="diagnostic")
+
+    explanation = tools.explain_denial(event_id="evt_deny")
+
+    assert explanation["scope_attempted"] == "send:email/external"
+    assert explanation["scope_matched"] is None
+    assert explanation["missing_scope"] == "send:email/external"
+    assert explanation["would_be_allowed_by"] == ["grt_email"]
 
 
 def test_explain_denial_keeps_missing_scope_empty_for_non_denial() -> None:
@@ -443,8 +470,8 @@ def test_explain_denial_keeps_missing_scope_empty_for_non_denial() -> None:
     explanation = tools.explain_denial(event_id="evt_permit")
 
     assert explanation["decision"] == "permit"
-    assert explanation["missing_scope"] is None
-    assert explanation["would_be_allowed_by"] == []
+    assert "missing_scope" not in explanation
+    assert "would_be_allowed_by" not in explanation
     assert explanation["explanation"] == "This audit event is not a denial."
 
 
@@ -459,7 +486,6 @@ def test_grant_request_tools_return_allowlisted_fields() -> None:
         "workspace_id": "ws_main",
         "requester_agent_id": "agent_release",
         "target_agent_id": "agent_release",
-        "requested_scopes": ["write:repo/feature/*"],
         "requested_ttl_seconds": 300,
         "status": "pending",
         "created_at": "2026-06-11T12:00:00+00:00",
@@ -473,6 +499,7 @@ def test_grant_request_tools_return_allowlisted_fields() -> None:
         "queue_reason": "no_matching_auto_approval_rule",
     }
     assert tools.get_grant_request("grq_other")["request_id"] == "grq_other"
+    assert "requested_scopes" not in request
     assert "reason" not in request
     assert "task_id" not in request
     assert "session_id" not in request
@@ -493,12 +520,12 @@ def test_auto_approval_rule_tool_returns_allowlisted_fields() -> None:
         "workspace_id": "ws_main",
         "name": "CI auto approval",
         "target_agent_id": "agent_release",
-        "allowed_scopes": ["write:repo/feature/*"],
         "max_ttl_seconds": 3600,
         "status": "active",
         "created_at": "2026-06-11T12:00:00+00:00",
         "updated_at": None,
     }
+    assert "allowed_scopes" not in rule
     assert "created_by" not in rule
     assert "updated_by" not in rule
     assert "raw_command" not in rule

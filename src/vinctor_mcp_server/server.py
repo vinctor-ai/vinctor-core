@@ -23,7 +23,7 @@ def create_stdio_server(
     )
     server_cls = fastmcp_cls or _load_fastmcp()
     mcp = _create_fastmcp(server_cls, "vinctor-mcp-server", version("vinctor-core"))
-    register_read_only_tools(mcp, resolved_client)
+    register_read_only_tools(mcp, resolved_client, output_mode=resolved_config.output_mode)
     return mcp
 
 

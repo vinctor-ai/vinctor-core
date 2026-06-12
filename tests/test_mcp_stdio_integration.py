@@ -138,13 +138,17 @@ def _server_params(port: int) -> StdioServerParameters:
     )
 
 
-def _server_params_with_timeout(port: int, timeout: int) -> StdioServerParameters:
+def _server_params_with_env(port: int, extra_env: dict[str, str]) -> StdioServerParameters:
     params = _server_params(port)
     return StdioServerParameters(
         command=params.command,
         args=params.args,
-        env={**(params.env or {}), "VINCTOR_MCP_TIMEOUT": str(timeout)},
+        env={**(params.env or {}), **extra_env},
     )
+
+
+def _server_params_with_timeout(port: int, timeout: int) -> StdioServerParameters:
+    return _server_params_with_env(port, {"VINCTOR_MCP_TIMEOUT": str(timeout)})
 
 
 @contextmanager
@@ -234,7 +238,7 @@ def test_real_stdio_tool_calls_return_allowlisted_output_only() -> None:
             )
         )
         assert grant["grant_ref"] == "grt_demo"
-        assert grant["scopes"] == ["write:repo/demo/*"]
+        assert "scopes" not in grant
 
         grants = _tool_output(
             await asyncio.wait_for(
@@ -249,6 +253,7 @@ def test_real_stdio_tool_calls_return_allowlisted_output_only() -> None:
             "grt_demo",
             "grt_email",
         ]
+        assert all("scopes" not in grant for grant in grants["grants"])
 
         listed = _tool_output(
             await asyncio.wait_for(
@@ -264,8 +269,8 @@ def test_real_stdio_tool_calls_return_allowlisted_output_only() -> None:
             )
         )
         assert explained["decision"] == "deny"
-        assert explained["missing_scope"] == "send:email/external"
-        assert explained["would_be_allowed_by"] == ["grt_email"]
+        assert "missing_scope" not in explained
+        assert "would_be_allowed_by" not in explained
 
         grant_requests = _tool_output(
             await asyncio.wait_for(session.call_tool("vinctor_list_grant_requests", {}), timeout=20)
@@ -288,6 +293,43 @@ def test_real_stdio_tool_calls_return_allowlisted_output_only() -> None:
         _enforce(port, "send", "email/external")  # one denial
         _enforce(port, "write", "repo/demo/readme")  # one permit
         asyncio.run(_with_session(port, body))
+
+
+def test_real_stdio_diagnostic_mode_returns_authorization_hints() -> None:
+    async def body(session: ClientSession) -> None:
+        grant = _tool_output(
+            await asyncio.wait_for(
+                session.call_tool("vinctor_get_grant", {"grant_ref": "grt_demo"}), timeout=20
+            )
+        )
+        assert grant["scopes"] == ["write:repo/demo/*"]
+
+        listed = _tool_output(
+            await asyncio.wait_for(
+                session.call_tool("vinctor_list_audit_events", {"limit": 5}), timeout=20
+            )
+        )
+        denial = next(e for e in listed["audit_events"] if e["decision"] == "deny")
+        assert denial["scope_attempted"] == "send:email/external"
+
+        explained = _tool_output(
+            await asyncio.wait_for(
+                session.call_tool("vinctor_explain_denial", {"event_id": denial["event_id"]}),
+                timeout=20,
+            )
+        )
+        assert explained["missing_scope"] == "send:email/external"
+        assert explained["would_be_allowed_by"] == ["grt_email"]
+
+    async def with_diagnostic_session(port: int) -> None:
+        params = _server_params_with_env(port, {"VINCTOR_MCP_OUTPUT_MODE": "diagnostic"})
+        async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+            await asyncio.wait_for(session.initialize(), timeout=20)
+            await body(session)
+
+    with _running_service() as port:
+        _enforce(port, "send", "email/external")
+        asyncio.run(with_diagnostic_session(port))
 
 
 def test_real_stdio_reports_vinctor_package_version() -> None:

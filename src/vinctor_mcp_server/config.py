@@ -4,12 +4,15 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from vinctor_mcp_server.output_policy import OutputMode
+
 
 @dataclass(frozen=True)
 class VinctorMcpConfig:
     endpoint: str
     workspace_key: str
     timeout: int = 5
+    output_mode: OutputMode = "safe"
 
 
 def load_config(env: Mapping[str, str] | None = None) -> VinctorMcpConfig:
@@ -24,6 +27,7 @@ def load_config(env: Mapping[str, str] | None = None) -> VinctorMcpConfig:
         endpoint=endpoint,
         workspace_key=workspace_key,
         timeout=_parse_timeout(values.get("VINCTOR_MCP_TIMEOUT", "5")),
+        output_mode=_parse_output_mode(values.get("VINCTOR_MCP_OUTPUT_MODE", "safe")),
     )
 
 
@@ -35,3 +39,9 @@ def _parse_timeout(value: str) -> int:
     if timeout <= 0:
         raise ValueError("VINCTOR_MCP_TIMEOUT must be a positive integer")
     return timeout
+
+
+def _parse_output_mode(value: str) -> OutputMode:
+    if value not in {"safe", "diagnostic"}:
+        raise ValueError("VINCTOR_MCP_OUTPUT_MODE must be safe or diagnostic")
+    return value

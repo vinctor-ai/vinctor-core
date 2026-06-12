@@ -5,13 +5,19 @@ from typing import Any, Protocol
 
 from vinctor_core.scope import match_scope
 from vinctor_mcp_server.output_policy import (
-    AUDIT_EVENT_FIELDS,
-    AUTO_APPROVAL_RULE_FIELDS,
+    AUDIT_EVENT_DIAGNOSTIC_FIELDS,
+    AUDIT_EVENT_SAFE_FIELDS,
+    AUTO_APPROVAL_RULE_DIAGNOSTIC_FIELDS,
+    AUTO_APPROVAL_RULE_SAFE_FIELDS,
     BOUNDARY_FIELDS,
-    GRANT_FIELDS,
-    GRANT_REQUEST_FIELDS,
+    GRANT_DIAGNOSTIC_FIELDS,
+    GRANT_REQUEST_DIAGNOSTIC_FIELDS,
+    GRANT_REQUEST_SAFE_FIELDS,
+    GRANT_SAFE_FIELDS,
     STATUS_FIELDS,
+    OutputMode,
     allowlist_object,
+    fields_for_mode,
 )
 
 
@@ -56,8 +62,14 @@ class ToolRegistrar(Protocol):
 
 
 class VinctorReadOnlyTools:
-    def __init__(self, client: ReadOnlyVinctorClient) -> None:
+    def __init__(
+        self,
+        client: ReadOnlyVinctorClient,
+        *,
+        output_mode: OutputMode = "safe",
+    ) -> None:
         self._client = client
+        self._output_mode = output_mode
 
     def status(self) -> dict[str, Any]:
         return allowlist_object(self._client.status(), STATUS_FIELDS)
@@ -79,7 +91,7 @@ class VinctorReadOnlyTools:
         return allowlist_object(self._client.get_boundary(boundary_id), BOUNDARY_FIELDS)
 
     def get_grant(self, grant_ref: str) -> dict[str, Any]:
-        return allowlist_object(self._client.get_grant(grant_ref), GRANT_FIELDS)
+        return allowlist_object(self._client.get_grant(grant_ref), self._grant_fields())
 
     def list_grants(
         self,
@@ -92,7 +104,7 @@ class VinctorReadOnlyTools:
             grants = []
         return {
             "grants": [
-                allowlist_object(grant, GRANT_FIELDS)
+                allowlist_object(grant, self._grant_fields())
                 for grant in grants
                 if isinstance(grant, dict)
             ]
@@ -120,14 +132,14 @@ class VinctorReadOnlyTools:
             events = []
         return {
             "audit_events": [
-                allowlist_object(event, AUDIT_EVENT_FIELDS)
+                allowlist_object(event, self._audit_fields())
                 for event in events
                 if isinstance(event, dict)
             ]
         }
 
     def get_audit_event(self, event_id: str) -> dict[str, Any]:
-        return allowlist_object(self._client.get_audit_event(event_id), AUDIT_EVENT_FIELDS)
+        return allowlist_object(self._client.get_audit_event(event_id), self._audit_fields())
 
     def list_grant_requests(self) -> dict[str, Any]:
         body = self._client.list_grant_requests()
@@ -136,7 +148,7 @@ class VinctorReadOnlyTools:
             requests = []
         return {
             "grant_requests": [
-                allowlist_object(request, GRANT_REQUEST_FIELDS)
+                allowlist_object(request, self._grant_request_fields())
                 for request in requests
                 if isinstance(request, dict)
             ]
@@ -145,7 +157,7 @@ class VinctorReadOnlyTools:
     def get_grant_request(self, request_id: str) -> dict[str, Any]:
         return allowlist_object(
             self._client.get_grant_request(request_id),
-            GRANT_REQUEST_FIELDS,
+            self._grant_request_fields(),
         )
 
     def list_auto_approval_rules(self) -> dict[str, Any]:
@@ -155,7 +167,7 @@ class VinctorReadOnlyTools:
             rules = []
         return {
             "auto_approval_rules": [
-                allowlist_object(rule, AUTO_APPROVAL_RULE_FIELDS)
+                allowlist_object(rule, self._auto_approval_rule_fields())
                 for rule in rules
                 if isinstance(rule, dict)
             ]
@@ -163,22 +175,30 @@ class VinctorReadOnlyTools:
 
     def explain_denial(self, event_id: str) -> dict[str, Any]:
         event = self.get_audit_event(event_id)
-        return {
+        body = {
             "event_id": event.get("event_id"),
             "decision": event.get("decision"),
             "reason": event.get("reason"),
             "action": event.get("action"),
             "resource": event.get("resource"),
-            "scope_attempted": event.get("scope_attempted"),
-            "scope_matched": event.get("scope_matched"),
-            "missing_scope": _missing_scope(event),
-            "would_be_allowed_by": self._would_be_allowed_by(event),
             "boundary_id": event.get("boundary_id"),
             "grant_ref": event.get("grant_ref"),
             "explanation": _denial_explanation(event),
         }
+        if self._output_mode == "diagnostic":
+            body.update(
+                {
+                    "scope_attempted": event.get("scope_attempted"),
+                    "scope_matched": event.get("scope_matched"),
+                    "missing_scope": _missing_scope(event),
+                    "would_be_allowed_by": self._would_be_allowed_by(event),
+                }
+            )
+        return body
 
     def _would_be_allowed_by(self, event: dict[str, Any]) -> list[str]:
+        if self._output_mode != "diagnostic":
+            return []
         if event.get("decision") != "deny":
             return []
         action = event.get("action")
@@ -204,12 +224,42 @@ class VinctorReadOnlyTools:
                 allowed_by.append(grant_ref)
         return allowed_by
 
+    def _grant_fields(self) -> tuple[str, ...]:
+        return fields_for_mode(
+            GRANT_SAFE_FIELDS,
+            GRANT_DIAGNOSTIC_FIELDS,
+            self._output_mode,
+        )
+
+    def _audit_fields(self) -> tuple[str, ...]:
+        return fields_for_mode(
+            AUDIT_EVENT_SAFE_FIELDS,
+            AUDIT_EVENT_DIAGNOSTIC_FIELDS,
+            self._output_mode,
+        )
+
+    def _grant_request_fields(self) -> tuple[str, ...]:
+        return fields_for_mode(
+            GRANT_REQUEST_SAFE_FIELDS,
+            GRANT_REQUEST_DIAGNOSTIC_FIELDS,
+            self._output_mode,
+        )
+
+    def _auto_approval_rule_fields(self) -> tuple[str, ...]:
+        return fields_for_mode(
+            AUTO_APPROVAL_RULE_SAFE_FIELDS,
+            AUTO_APPROVAL_RULE_DIAGNOSTIC_FIELDS,
+            self._output_mode,
+        )
+
 
 def register_read_only_tools(
     mcp: ToolRegistrar,
     client: ReadOnlyVinctorClient,
+    *,
+    output_mode: OutputMode = "safe",
 ) -> VinctorReadOnlyTools:
-    tools = VinctorReadOnlyTools(client)
+    tools = VinctorReadOnlyTools(client, output_mode=output_mode)
     mcp.tool(
         name="vinctor_status",
         description=(

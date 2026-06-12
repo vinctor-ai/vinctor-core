@@ -56,6 +56,7 @@ Run over stdio:
 export VINCTOR_MCP_ENDPOINT="http://127.0.0.1:8765"
 export VINCTOR_MCP_WORKSPACE_KEY="wsk_..."
 export VINCTOR_MCP_TIMEOUT="5"
+export VINCTOR_MCP_OUTPUT_MODE="safe"
 vinctor-mcp-server
 ```
 
@@ -69,7 +70,8 @@ Example `.mcp.json` command:
       "env": {
         "VINCTOR_MCP_ENDPOINT": "http://127.0.0.1:8765",
         "VINCTOR_MCP_WORKSPACE_KEY": "wsk_...",
-        "VINCTOR_MCP_TIMEOUT": "5"
+        "VINCTOR_MCP_TIMEOUT": "5",
+        "VINCTOR_MCP_OUTPUT_MODE": "safe"
       }
     }
   }
@@ -88,6 +90,16 @@ MCP client tokens through to `vinctor-service`.
 
 All MCP tool outputs are model-visible. Every tool response is rebuilt from an
 explicit allowlist before it is returned.
+
+`VINCTOR_MCP_OUTPUT_MODE` controls how much authorization detail the MCP server
+returns:
+
+- `safe` (default): omits scope lists and denial remediation hints.
+- `diagnostic`: includes scope-bearing fields and explicit denial hints for
+  operator debugging.
+
+Use `diagnostic` only when the MCP client is trusted to see workspace/admin
+authorization details.
 
 Allowed service status fields:
 
@@ -110,13 +122,16 @@ Allowed grant fields:
 - `grant_ref`
 - `workspace_id`
 - `agent_id`
-- `scopes`
 - `status`
 - `expires_at`
 
+Diagnostic-only grant fields:
+
+- `scopes`
+
 `vinctor_list_grants` exposes grant scopes to the MCP client as model-visible
-operator data. Use it only with workspace/admin credentials and the same output
-allowlist as single-grant lookup.
+operator data only in `diagnostic` mode. Use diagnostic mode only with
+workspace/admin credentials and trusted MCP clients.
 
 Allowed audit event fields:
 
@@ -130,12 +145,15 @@ Allowed audit event fields:
 - `grant_ref`
 - `action`
 - `resource`
-- `scope_attempted`
-- `scope_matched`
 - `boundary_id`
 - `runtime`
 - `boundary_type`
 - `created_at`
+
+Diagnostic-only audit event fields:
+
+- `scope_attempted`
+- `scope_matched`
 
 Allowed grant request fields:
 
@@ -143,7 +161,6 @@ Allowed grant request fields:
 - `workspace_id`
 - `requester_agent_id`
 - `target_agent_id`
-- `requested_scopes`
 - `requested_ttl_seconds`
 - `status`
 - `created_at`
@@ -156,6 +173,10 @@ Allowed grant request fields:
 - `routing_reason`
 - `queue_reason`
 
+Diagnostic-only grant request fields:
+
+- `requested_scopes`
+
 Grant request outputs intentionally omit free-text `reason`, task/session/repo/
 worktree metadata, and `decided_by`.
 
@@ -165,11 +186,14 @@ Allowed auto-approval rule fields:
 - `workspace_id`
 - `name`
 - `target_agent_id`
-- `allowed_scopes`
 - `max_ttl_seconds`
 - `status`
 - `created_at`
 - `updated_at`
+
+Diagnostic-only auto-approval rule fields:
+
+- `allowed_scopes`
 
 Rule outputs intentionally omit `created_by` and `updated_by`.
 
@@ -183,9 +207,10 @@ Tool outputs must not expose raw audit payloads, raw prompts, raw tool input,
 raw commands, raw keys, key hashes, local database paths, or other service
 internals.
 
-`vinctor_explain_denial` may include `missing_scope` and
+In `diagnostic` mode, `vinctor_explain_denial` may include `missing_scope` and
 `would_be_allowed_by`. `would_be_allowed_by` contains only grant refs for active,
 unexpired grants in the workspace that would match the denied action/resource.
+In `safe` mode, these fields are omitted.
 
 ## Service Dependencies
 
