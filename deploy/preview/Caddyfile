@@ -1,0 +1,7 @@
+# Preview-grade TLS termination for a single-node Vinctor deployment.
+# For localhost, Caddy uses a local CA. For a public hostname, Caddy attempts
+# normal ACME certificate issuance. Keep vinctor-service behind this proxy.
+
+{$VINCTOR_PREVIEW_HOSTNAME:localhost} {
+	reverse_proxy vinctor:8765
+}
