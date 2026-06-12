@@ -40,6 +40,28 @@ def test_claude_code_design_partner_setup_uses_service_grant_api(tmp_path: Path)
     assert result["audit_event_types"][-2:] == ["action_permitted", "action_denied"]
     assert result["boundary_runtime"] == "claude-code"
     assert result["boundary_type"] == "pretooluse"
+    assert result["hook_config_path"] == str(tmp_path / "claude-code-hook.json")
+
+    hook_config = (tmp_path / "claude-code-hook.json").read_text(encoding="utf-8")
+    assert '"tool": "Write"' in hook_config
+    assert '"tool": "Edit"' in hook_config
+    assert '"tool": "Bash"' in hook_config
+    assert '"pattern": "**/repo/design-partner/feature/**"' in hook_config
+    assert '"pattern": "echo test-ok"' in hook_config
+    assert '"resource": "repo/design-partner/feature/README.md"' in hook_config
+
+    handle = module.prepare_design_partner_e2e(
+        module.E2EConfig(db_path=tmp_path / "serve.sqlite", port=0),
+        now=NOW,
+    )
+    try:
+        instructions = module.render_operator_instructions(handle)
+    finally:
+        module.close_design_partner_e2e(handle)
+
+    assert "VINCTOR_CLAUDE_CODE_HOOK_CONFIG" in instructions
+    assert str(tmp_path / "claude-code-hook.json") in instructions
+    assert "Hook config written to:" in instructions
 
 
 def test_claude_code_design_partner_doc_keeps_claims_narrow() -> None:
@@ -57,6 +79,12 @@ def test_claude_code_design_partner_doc_keeps_claims_narrow() -> None:
     assert 'VINCTOR_MCP_OUTPUT_MODE="diagnostic"' in text
     assert "missing_scope" in text
     assert "would_be_allowed_by" in text
+    assert "VINCTOR_CLAUDE_CODE_HOOK_CONFIG" in text
+    assert ".venv/bin/python" in text
+    assert "without the hook config" in text
+    assert "unmapped -> ask" in text
+    assert "new file" in text
+    assert "fixed test clock" in text
     assert "This is not an official Claude Code integration" in text
     assert "This is not a production readiness claim" in text
 

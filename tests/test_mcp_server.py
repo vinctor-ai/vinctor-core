@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from collections.abc import Callable
 from importlib.metadata import version
+from pathlib import Path
 
 import pytest
 
@@ -118,3 +122,24 @@ def test_create_stdio_server_registers_read_only_tools_with_fastmcp() -> None:
         "vinctor_list_grants",
         "vinctor_status",
     ]
+
+
+def test_server_module_entrypoint_invokes_main() -> None:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("VINCTOR_MCP_") and key != "VINCTOR_AGENT_KEY"
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-m", "vinctor_mcp_server.server"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "VINCTOR_MCP_ENDPOINT" in result.stderr

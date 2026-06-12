@@ -51,3 +51,7 @@ def _create_fastmcp(server_cls: type[Any], name: str, server_version: str) -> An
     if low_level_server is not None and hasattr(low_level_server, "version"):
         low_level_server.version = server_version
     return mcp
+
+
+if __name__ == "__main__":
+    main()

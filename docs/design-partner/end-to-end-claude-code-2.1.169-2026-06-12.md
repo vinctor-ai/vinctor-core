@@ -56,12 +56,15 @@ Claims in this worksheet are capped by the measured coverage matrix:
 Run from `vinctor-core`:
 
 ```bash
-python demo/claude_code_design_partner_e2e_setup.py \
+.venv/bin/python demo/claude_code_design_partner_e2e_setup.py \
   --db .vinctor/design-partner-claude-code.sqlite \
   --port 8765 \
   --hook-cli /absolute/path/to/vinctor-claude-code-hook/dist/src/cli.js \
   --serve
 ```
+
+Use Python 3.11 or newer. The repository virtual environment command above is
+preferred so the helper runs with the same interpreter used by the test suite.
 
 The setup process:
 
@@ -70,17 +73,76 @@ The setup process:
 3. sets issuer bounds for the Claude Code agent;
 4. starts the local Vinctor HTTP service;
 5. registers a `claude-code` / `pretooluse` boundary;
-6. issues the partner grant through `POST /v1/grants`.
+6. issues the partner grant through `POST /v1/grants`;
+7. writes a Claude Code hook mapping config for the worksheet paths.
 
 It prints `VINCTOR_ENDPOINT`, `VINCTOR_AGENT_KEY`, `VINCTOR_GRANT_REF`,
-`VINCTOR_WORKSPACE_KEY`, optional `VINCTOR_BOUNDARY_ID`, and a Claude Code
-`settings.json` hook snippet. Store raw keys outside the repository. Do not paste
-raw keys into model-facing prompts.
+`VINCTOR_WORKSPACE_KEY`, `VINCTOR_CLAUDE_CODE_HOOK_CONFIG`, optional
+`VINCTOR_BOUNDARY_ID`, and a Claude Code `settings.json` hook snippet. Store raw
+keys outside the repository. Do not paste raw keys into model-facing prompts.
+
+The generated hook config is required for this worksheet. In practical terms:
+without the hook config, `repo/design-partner/...` paths are unmapped -> ask,
+`/v1/enforce` is not called, and no Vinctor action audit event is produced. The
+helper writes the config path printed in `VINCTOR_CLAUDE_CODE_HOOK_CONFIG`.
+
+The generated rules intentionally map fixed action/resource strings, not
+wildcard resources:
+
+```json
+{
+  "version": 1,
+  "rules": [
+    {
+      "tool": "Write",
+      "matchType": "glob",
+      "pattern": "**/repo/design-partner/feature/**",
+      "action": "write",
+      "resource": "repo/design-partner/feature/README.md"
+    },
+    {
+      "tool": "Edit",
+      "matchType": "glob",
+      "pattern": "**/repo/design-partner/feature/**",
+      "action": "write",
+      "resource": "repo/design-partner/feature/README.md"
+    },
+    {
+      "tool": "Write",
+      "matchType": "glob",
+      "pattern": "**/repo/design-partner/protected/**",
+      "action": "write",
+      "resource": "repo/design-partner/protected/README.md"
+    },
+    {
+      "tool": "Edit",
+      "matchType": "glob",
+      "pattern": "**/repo/design-partner/protected/**",
+      "action": "write",
+      "resource": "repo/design-partner/protected/README.md"
+    },
+    {
+      "tool": "Read",
+      "matchType": "glob",
+      "pattern": "**/repo/design-partner/protected/**",
+      "action": "read",
+      "resource": "repo/design-partner/protected/README.md"
+    },
+    {
+      "tool": "Bash",
+      "matchType": "exact",
+      "pattern": "echo test-ok",
+      "action": "execute",
+      "resource": "ci/test"
+    }
+  ]
+}
+```
 
 Automated service smoke, without running Claude Code:
 
 ```bash
-python demo/claude_code_design_partner_e2e_setup.py \
+.venv/bin/python demo/claude_code_design_partner_e2e_setup.py \
   --db /tmp/vinctor-claude-code-e2e.sqlite \
   --port 0
 ```
@@ -124,6 +186,7 @@ Required Claude Code session environment:
 export VINCTOR_ENDPOINT="http://127.0.0.1:8765"
 export VINCTOR_AGENT_KEY="aak_..."
 export VINCTOR_GRANT_REF="grt_..."
+export VINCTOR_CLAUDE_CODE_HOOK_CONFIG="/absolute/path/to/claude-code-hook.json"
 export VINCTOR_BOUNDARY_ID="bnd_..."
 ```
 
@@ -136,16 +199,18 @@ Run this in a disposable repository or worktree.
 Ask Claude Code to make a scoped file change:
 
 ```text
-Create or edit repo/design-partner/feature/README.md and then run a simple local test command.
+Create a new file at repo/design-partner/feature/README.md and then run echo test-ok.
 ```
 
 Expected result:
 
-- `Write` or `Edit` for `repo/design-partner/feature/README.md` reaches the
-  hook and maps to a `write:repo/design-partner/feature/...` scope.
+- `Write` for the new file at `repo/design-partner/feature/README.md` reaches
+  the hook and maps to `write:repo/design-partner/feature/README.md`.
 - Vinctor returns permit.
 - Claude Code executes the tool.
 - Audit includes an `action_permitted` event.
+- The follow-up `echo test-ok` reaches the hook and maps to `execute:ci/test`,
+  which is also covered by the issued grant.
 
 Paste observed evidence:
 
@@ -164,16 +229,21 @@ ALLOW notes:
 Ask Claude Code to write outside the scoped path:
 
 ```text
-Create or edit repo/design-partner/protected/README.md.
+Create a new file at repo/design-partner/protected/README.md.
 ```
 
 Expected result:
 
-- `Write` or `Edit` for `repo/design-partner/protected/README.md` reaches the
-  hook and maps to a `write:repo/design-partner/protected/...` scope.
+- `Write` for the new file at `repo/design-partner/protected/README.md`
+  reaches the hook and maps to `write:repo/design-partner/protected/README.md`.
 - Vinctor returns deny with `action_denied`.
 - Claude Code blocks execution through the hook decision.
 - Audit includes an `action_denied` event.
+
+Use a new file for the cleanest deny observation. If the runtime reads an
+existing protected file before writing, the generated protected `Read` rule may
+deny earlier with a read-scope failure. That is still Vinctor enforcement, but
+it is not the clean write-deny proof target for this worksheet.
 
 Paste observed evidence:
 
@@ -267,10 +337,16 @@ diagnostic mode would_be_allowed_by:
 
 - The automated setup script proves local service behavior and API-issued grant
   lifecycle, not a live Claude Code run.
+- The automated service smoke uses a fixed test clock, so audit timestamps are
+  intentionally stable and TTL expiry by waiting is not the proof target here.
+  Use revoke/lifecycle-specific tests for expiry behavior.
 - The Claude Code proof is valid only after the manual evidence sections are
   filled with observations from Claude Code 2.1.169.
 - `ask` is not a Vinctor permit or deny; it means the hook abstained and Claude
   Code's native permission flow took over.
+- For this worksheet, unmapped -> ask means the hook config was not loaded or
+  did not match the runtime tool event; fix the mapping before claiming
+  Vinctor allow/deny behavior.
 - Do not claim coverage for `MultiEdit` as a distinct tool in Claude Code
   2.1.169.
 - Do not claim MCP runtime coverage from this worksheet.
