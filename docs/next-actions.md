@@ -247,6 +247,88 @@ V1 service contract boundary:
 - Add stronger local secret storage such as OS keychain integration only after
   a separate design slice. Current env-file support is explicit test/dev UX.
 
+### MCP Phase 2 - Approval / Grant Administration
+
+Status: Future work. Not implemented.
+
+Goal: Extend the MCP server from read-only inspection into a privileged approval
+and grant administration interface.
+
+Requirements:
+
+- Maintain the current architecture:
+  - MCP remains a control-plane interface.
+  - `vinctor-service` remains the authorization authority.
+  - `enforce()` remains the runtime enforcement boundary.
+- Do not replace `enforce()`.
+- Do not execute protected actions.
+- Do not mint grants locally.
+- Do not store authorization state in MCP.
+- Do not allow self-approval by execution agents.
+
+Proposed MCP tools:
+
+- Approvals:
+  - `vinctor.approvals.list_pending`
+  - `vinctor.approvals.get`
+  - `vinctor.approvals.approve`
+  - `vinctor.approvals.reject`
+- Grant administration:
+  - `vinctor.grants.list_active`
+  - `vinctor.grants.revoke`
+  - `vinctor.grants.issue` (service-authorized only)
+
+Security requirements:
+
+- Separate admin credentials from runtime credentials.
+- Approval actor must be auditable.
+- All approval actions generate audit events.
+- Service-issued grants remain the only valid grants.
+- Execution agents must not be able to approve their own requests.
+- Approval actions must be scoped and revocable.
+
+Deliverable: Operator-facing approval workflow integrated with
+`vinctor-service` while preserving the current runtime authorization
+architecture.
+
+### MCP Phase 3 - Operational UX and Authorization Visibility
+
+Status: Future work. Not implemented.
+
+Goal: Improve operator understanding of runtime authorization state without
+expanding MCP into an execution platform.
+
+Potential additions:
+
+- Boundary visibility:
+  - `vinctor.boundaries.explain`
+  - boundary-to-policy mapping explanation
+  - boundary-to-grant relationship inspection
+- Authorization visibility:
+  - denial reason explanation
+  - grant usage inspection
+  - grant lifecycle inspection
+  - active authorization state summaries
+- Audit navigation:
+  - richer audit filtering
+  - boundary-centric audit views
+  - grant-centric audit views
+- Future memory/context integration, if introduced later:
+  - memory authorization visibility
+  - context authorization visibility
+  - memory boundary explanation
+
+Important:
+
+- MCP should remain an inspection and administration interface.
+- Do not convert MCP into a policy engine.
+- Do not convert MCP into a runtime gateway.
+- Do not convert MCP into a generic agent platform.
+- Do not move authorization logic out of `vinctor-service`.
+
+Deliverable: Improved operational visibility, debugging, and explainability for
+Vinctor authorization state while preserving existing enforcement boundaries.
+
 ## Open Questions
 
 - Should `unresolved` remain service-layer only, or become a future core outcome?
