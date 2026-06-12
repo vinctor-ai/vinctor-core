@@ -36,6 +36,9 @@ and runtime operations.
 - explicit configuration through CLI flags and a small set of environment variables
 - optional Docker/Compose files for local self-hosting experiments
 
+For a concrete design-partner preview layout with Caddy TLS termination, see
+[Single-Node Preview Deployment](preview-runbook.md).
+
 ## What This Does Not Provide
 
 - hosted Vinctor service
