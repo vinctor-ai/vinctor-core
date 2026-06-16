@@ -74,13 +74,38 @@ def delegated_enforce_v1_contract(
 ) -> V1EnforceResponse:
     """Resolve an on-behalf-of enforce request from a PEP (see ADR 0007).
 
-    The PEP authenticates with its own key; the asserted subject workspace must
-    equal the PEP's own workspace, and the grant must belong to the asserted
-    subject. This preserves tenant isolation: a PEP can never authorize a
-    subject or grant in another workspace. The enforcing PEP principal is
-    recorded separately from the subject ``agent_id`` in the audit trail.
+    The PEP authenticates with its own key; the trusted PEP workspace is derived
+    only from that authenticated identity and the grant must belong to the
+    asserted subject *in that trusted workspace*. This makes tenant isolation
+    structural: a PEP can never authorize a subject or grant in another
+    workspace, and the function fails closed when no trusted PEP workspace is
+    supplied (it never falls back to the caller-asserted workspace). The
+    enforcing PEP principal is recorded separately from the subject ``agent_id``
+    in the audit trail.
     """
-    pep_workspace = pep_workspace_id or request.pep_workspace_id or request.workspace_id
+    # Trusted workspace comes ONLY from authenticated sources (the key-derived
+    # identity forwarded by the HTTP handler, or an explicit trusted override).
+    # We never fall back to request.workspace_id, which is caller-asserted and
+    # could otherwise be used to authorize a grant in an arbitrary workspace.
+    trusted_ws = pep_workspace_id or request.pep_workspace_id
+    if not trusted_ws:
+        # Fail closed: without a trusted PEP workspace identity we cannot
+        # establish tenant isolation. Deny before any audit event is written
+        # (mirrors the other pre-audit deny paths).
+        return _pre_audit_error(
+            403,
+            "forbidden",
+            "delegated enforce requires a trusted PEP workspace identity",
+        )
+
+    # A caller-asserted workspace, if present, must match the trusted workspace;
+    # it can never override it.
+    if request.workspace_id and request.workspace_id != trusted_ws:
+        return _pre_audit_error(
+            403,
+            "forbidden",
+            f"grant_ref {request.grant_ref} does not belong to the asserted subject",
+        )
 
     try:
         grant = grant_repository.get_by_ref(request.grant_ref)
@@ -98,13 +123,9 @@ def delegated_enforce_v1_contract(
             f"grant_ref {request.grant_ref} does not exist",
         )
 
-    # Tenant isolation: the asserted subject workspace is forced to the PEP's
-    # own workspace, and the grant must belong to the asserted subject.
-    if (
-        request.workspace_id != pep_workspace
-        or grant.workspace_id != request.workspace_id
-        or grant.agent_id != request.agent_id
-    ):
+    # Tenant isolation: authorize against the TRUSTED workspace, and require the
+    # grant to belong to the asserted subject within it.
+    if grant.workspace_id != trusted_ws or grant.agent_id != request.agent_id:
         return _pre_audit_error(
             403,
             "forbidden",
