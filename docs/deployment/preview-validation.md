@@ -4,6 +4,15 @@ Use this checklist before handing a single-node preview deployment to a design
 partner. Record the command outputs or screenshots in the partner deployment
 notes. Do not record raw keys in shared artifacts.
 
+> FOUNDER-GATED: the build/CI environment has no Docker, so the real
+> `docker compose up` plus full end-to-end smoke against a live container stack
+> CANNOT be run or verified here. The steps below that require Docker (stack
+> start, restart persistence, backup/restore, audit export) are documented for a
+> founder-operated host and must be executed and recorded there. The non-Docker
+> assertions in this repo's test suite (compose wiring, `.env` hygiene, the smoke
+> check against an in-process service, and fail-closed-when-unreachable) are what
+> CI actually proves.
+
 ## Required Evidence
 
 | Check | Evidence to record |
@@ -13,6 +22,7 @@ notes. Do not record raw keys in shared artifacts.
 | Partner grant issued | `/v1/grants` response with `grant_ref` and expected scopes |
 | Permit smoke | smoke script reports `permit_decision=permit` |
 | Deny smoke | smoke script reports `deny_decision=deny` |
+| Fail-closed | smoke script exits non-zero against a down endpoint |
 | Audit smoke | smoke script reports both audit event ids |
 | Restart persistence | smoke script still passes after `docker compose restart vinctor` |
 | Backup/restore | smoke script still passes after backup and restore |
@@ -68,6 +78,22 @@ ALL SINGLE-NODE PREVIEW SMOKE STEPS PASSED
 
 Use `--insecure-tls` only for localhost or internal-CA certificates. Do not use
 it for a public design-partner endpoint.
+
+## 3a. Fail-Closed When Unreachable
+
+Confirm the smoke check denies-by-failure when Vinctor is unreachable, so a down
+service can never be mistaken for a healthy one:
+
+```bash
+python deploy/preview/smoke.py \
+  --endpoint http://127.0.0.1:1 \
+  --agent-key unused --workspace-key unused --grant-ref unused
+echo "exit=$?"
+```
+
+Expected: a `preview smoke failed:` line on stderr and `exit=1`. Record the
+non-zero exit. See "Fail-Closed When Vinctor Is Unreachable" in
+[preview-runbook.md](preview-runbook.md).
 
 ## 4. Restart Persistence
 
@@ -132,3 +158,9 @@ This validation proves only a preview-grade single-node deployment. It does not
 prove production readiness, hosted service behavior, high availability,
 operator role separation, managed credential delivery, or official runtime
 integration support.
+
+The Docker-dependent steps (stack start, restart persistence, backup/restore,
+audit export) are FOUNDER-GATED: there is no Docker in the build/CI environment,
+so they are not exercised here. Only the in-repo tests are automatically proven:
+compose wiring, `.env` raw-key hygiene, the smoke check against an in-process
+service, and the fail-closed-when-unreachable behavior.
