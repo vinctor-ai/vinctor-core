@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import json
+import socket
+import time
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
+from threading import Thread
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -267,4 +272,89 @@ def test_network_failure_fails_closed_without_exposing_credentials() -> None:
     # propagates (no result returned), the connection is closed, and the
     # workspace key never appears in the surfaced error.
     assert conn.closed is True
+    assert "wsk_demo" not in str(error.value)
+
+
+# --- Real-socket fail-closed regressions (dogfood: a hung/unreachable upstream
+# must never hang the caller). These exercise the *actual* default connection
+# (real HTTPConnection honoring the configured timeout), not the fake factory,
+# so they lock in the socket-level behavior the dogfood observed.
+
+
+def _free_dead_port() -> int:
+    """Bind a socket to grab a port, then release it so nothing listens there."""
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+@contextmanager
+def _blackhole_listener() -> Iterator[int]:
+    """A TCP listener that accepts connections but never sends a response,
+    forcing the client into a read timeout (a hung upstream)."""
+    stop = False
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen()
+    server.settimeout(0.1)
+    held: list[socket.socket] = []
+
+    def run() -> None:
+        while not stop:
+            try:
+                conn, _ = server.accept()
+            except (TimeoutError, OSError):
+                continue
+            held.append(conn)  # keep the connection open but stay silent
+
+    thread = Thread(target=run, daemon=True)
+    thread.start()
+    try:
+        yield server.getsockname()[1]
+    finally:
+        stop = True
+        for conn in held:
+            conn.close()
+        server.close()
+        thread.join(timeout=5)
+
+
+def test_dead_port_fails_closed_within_timeout() -> None:
+    """A connection to a port with no listener fails closed (raises, no result)
+    rather than hanging, and the workspace key never leaks in the error."""
+    client = VinctorServiceClient(
+        endpoint=f"http://127.0.0.1:{_free_dead_port()}",
+        workspace_key="wsk_demo",
+        timeout=2,
+    )
+
+    start = time.monotonic()
+    with pytest.raises(OSError) as error:  # ConnectionRefused / timeout family
+        client.get_grant("grt_demo")
+    elapsed = time.monotonic() - start
+
+    # Fails closed promptly (well within the timeout budget) and never returns.
+    assert elapsed < 5
+    assert "wsk_demo" not in str(error.value)
+
+
+def test_hung_upstream_fails_closed_within_timeout() -> None:
+    """A blackhole upstream that accepts but never responds must trip the
+    read timeout and fail closed within the timeout budget — no hang."""
+    with _blackhole_listener() as port:
+        client = VinctorServiceClient(
+            endpoint=f"http://127.0.0.1:{port}",
+            workspace_key="wsk_demo",
+            timeout=1,
+        )
+
+        start = time.monotonic()
+        with pytest.raises((TimeoutError, OSError)) as error:
+            client.get_grant("grt_demo")
+        elapsed = time.monotonic() - start
+
+    # The 1s read timeout fires; the caller fails closed without hanging
+    # indefinitely, and the workspace key never appears in the error.
+    assert 0.5 <= elapsed < 10
     assert "wsk_demo" not in str(error.value)

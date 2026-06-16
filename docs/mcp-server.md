@@ -231,3 +231,45 @@ The MCP server calls only read-only service APIs:
 
 The audit endpoints are workspace-key protected and return the same allowlisted
 audit fields as the MCP server.
+
+## Fail-Closed on Unreachable or Hung Upstream
+
+The MCP service client (`VinctorServiceClient`) constructs every connection with
+the configured `VINCTOR_MCP_TIMEOUT` (default 5s). When `vinctor-service` is
+unreachable or hangs, the client fails closed: it raises rather than returning a
+partial or fabricated result, the connection is always closed, and the
+workspace key never appears in the surfaced error.
+
+Two failure shapes are covered by regression tests in
+`tests/test_mcp_service_client.py`:
+
+- Dead port (nothing listening): the connect attempt fails closed promptly,
+  within the timeout budget.
+- Hung upstream (a blackhole socket that accepts but never responds): the read
+  timeout fires and the call fails closed within the timeout budget, with no
+  indefinite hang.
+
+These regressions exercise the real default `HTTPConnection` (honoring the
+timeout), not a stubbed connection factory, locking in the dogfood-observed
+behavior that a stalled upstream must never hang the caller. A heavier
+end-to-end variant over real stdio lives in
+`tests/test_mcp_stdio_integration.py`
+(`test_real_stdio_hanging_service_fails_closed_with_timeout`).
+
+## Change Record
+
+Context: a dogfood run observed that a stalled/unreachable `vinctor-service`
+upstream could hang the MCP caller. The read-only MCP completeness work
+(`vinctor_list_grants`, `GET /v1/grants` list, `would_be_allowed_by` in
+`vinctor_explain_denial`, and the `audit export --format jsonl` operator
+command) was already shipped; the remaining gap was a fail-closed regression at
+the client's real socket level.
+
+What this change does: adds two real-socket regression tests for the MCP service
+client — a dead port (nothing listening) and a blackhole socket (accepts, never
+responds) — asserting the client fails closed within the timeout budget without
+hanging and without leaking the workspace key. Documents the fail-closed
+timeout invariant here.
+
+Next steps: pydantic validation-error string sanitization remains a separate
+deferred hardening slice (SDK-entangled) and is intentionally out of scope here.
