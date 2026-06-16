@@ -667,6 +667,7 @@ git diff --check
 - `docs/cli-design.md` - local prototype CLI design and migration plan
 - `docs/local-hook-runbook.md` - local service to runtime hook walkthrough
 - `docs/git-boundary-demo-scenario.md` - repo-scope boundary demo scenario
+- `docs/threat-model.md` - per-phase threat model: what each phase does and does not defend
 - `docs/decisions/` - durable design decisions when needed
 - `docs/operator-policy-authoring/` - operator mapping and approval mode examples
 - `src/vinctor_core/` - core authorization logic
