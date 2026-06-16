@@ -15,6 +15,7 @@ from vinctor_service import (
     AgentIdentity,
     GrantRequestCreateRequest,
     InMemoryV1Service,
+    PepIdentity,
     WorkspaceIdentity,
     create_v1_http_server,
 )
@@ -62,17 +63,25 @@ def body(
     return {"grant_ref": grant_ref, "action": action, "resource": resource}
 
 
+def pep_identities() -> dict[str, PepIdentity]:
+    return {
+        "pep_key_main": PepIdentity(workspace_id="ws_main", pep_id="pep_git_host"),
+    }
+
+
 @contextmanager
 def running_server(
     service_instance: InMemoryV1Service,
     *,
     workspace_keys: dict[str, WorkspaceIdentity] | None = None,
+    pep_keys: dict[str, PepIdentity] | None = None,
 ) -> Iterator[ThreadingHTTPServer]:
     server = create_v1_http_server(
         ("127.0.0.1", 0),
         service=service_instance,
         agent_identities=identities(),
         workspace_identities=workspace_keys,
+        pep_identities=pep_keys,
         clock=lambda: NOW,
     )
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -173,6 +182,73 @@ def test_local_http_service_keeps_v1_body_strict() -> None:
 
     assert status == 400
     assert response["error"] == "invalid_request"
+    assert svc.audit_events == ()
+
+
+def delegated_body(
+    *,
+    workspace_id: str = "ws_main",
+    agent_id: str = "agent_release",
+    grant_ref: str = "grt_main",
+    action: str = "write",
+    resource: str = "repo/feature/readme",
+) -> dict[str, str]:
+    return {
+        "workspace_id": workspace_id,
+        "agent_id": agent_id,
+        "grant_ref": grant_ref,
+        "action": action,
+        "resource": resource,
+    }
+
+
+def test_local_http_delegated_enforce_permits_via_pep_key() -> None:
+    svc = service()
+
+    with running_server(svc, pep_keys=pep_identities()) as server:
+        status, response = post_json(
+            server,
+            payload=delegated_body(),
+            headers={"X-PEP-Key": "pep_key_main"},
+            path="/v1/enforce/delegated",
+        )
+
+    assert status == 200
+    assert response["decision"] == "permit"
+    assert svc.audit_events[0].enforcing_principal == "pep_git_host"
+
+
+def test_local_http_delegated_enforce_rejects_agent_key() -> None:
+    svc = service()
+
+    # An agent key on the delegated path does not resolve to a PEP identity.
+    with running_server(svc, pep_keys=pep_identities()) as server:
+        status, response = post_json(
+            server,
+            payload=delegated_body(),
+            headers={"X-Agent-Key": "agent_key_main"},
+            path="/v1/enforce/delegated",
+        )
+
+    assert status == 401
+    assert response["error"] == "authentication_required"
+    assert svc.audit_events == ()
+
+
+def test_local_http_plain_enforce_rejects_pep_key() -> None:
+    svc = service()
+
+    # A PEP key cannot drive the agent-authenticated /v1/enforce path.
+    with running_server(svc, pep_keys=pep_identities()) as server:
+        status, response = post_json(
+            server,
+            payload=body(),
+            headers={"X-PEP-Key": "pep_key_main"},
+            path="/v1/enforce",
+        )
+
+    assert status == 401
+    assert response["error"] == "authentication_required"
     assert svc.audit_events == ()
 
 

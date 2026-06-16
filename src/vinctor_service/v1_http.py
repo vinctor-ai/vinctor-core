@@ -5,13 +5,29 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from vinctor_service.models import V1EnforceRequest, V1EnforceResponse
+from vinctor_service.models import (
+    V1DelegatedEnforceRequest,
+    V1EnforceRequest,
+    V1EnforceResponse,
+)
 
 
 @dataclass(frozen=True)
 class AgentIdentity:
     workspace_id: str
     agent_id: str
+
+
+@dataclass(frozen=True)
+class PepIdentity:
+    """A Policy Enforcement Point (resource server) principal.
+
+    A PEP authenticates with its own key and may ask Vinctor about a third-party
+    subject. ``pep_id`` is the enforcing principal; it is never an ``agent_id``.
+    """
+
+    workspace_id: str
+    pep_id: str
 
 
 @dataclass(frozen=True)
@@ -24,7 +40,17 @@ class V1EnforceService(Protocol):
     def enforce(self, request: V1EnforceRequest, *, now: datetime) -> V1EnforceResponse: ...
 
 
+class V1DelegatedEnforceService(Protocol):
+    def delegated_enforce(
+        self,
+        request: V1DelegatedEnforceRequest,
+        *,
+        now: datetime,
+    ) -> V1EnforceResponse: ...
+
+
 AgentIdentityResolver = Callable[[str, datetime], AgentIdentity | None]
+PepIdentityResolver = Callable[[str, datetime], PepIdentity | None]
 
 
 def handle_v1_enforce_http(
@@ -64,6 +90,45 @@ def handle_v1_enforce_http(
     return _http_response_from_enforce(service.enforce(request, now=now))
 
 
+def handle_v1_delegated_enforce_http(
+    *,
+    headers: Mapping[str, str],
+    body: object,
+    pep_identities: Mapping[str, PepIdentity] | None = None,
+    pep_identity_resolver: PepIdentityResolver | None = None,
+    service: V1DelegatedEnforceService,
+    now: datetime,
+) -> V1HttpResponse:
+    normalized_headers = {key.lower(): value for key, value in headers.items()}
+    pep_key = normalized_headers.get("x-pep-key")
+    if pep_key is None:
+        return _error(401, "authentication_required", "valid X-PEP-Key header is required")
+    identity = _resolve_pep_identity(
+        pep_key,
+        pep_identities=pep_identities,
+        pep_identity_resolver=pep_identity_resolver,
+        now=now,
+    )
+    if identity is None:
+        return _error(401, "authentication_required", "valid X-PEP-Key header is required")
+
+    parsed = _parse_delegated_enforce_body(body)
+    if isinstance(parsed, V1HttpResponse):
+        return parsed
+
+    request = V1DelegatedEnforceRequest(
+        pep_id=identity.pep_id,
+        workspace_id=parsed["workspace_id"],
+        agent_id=parsed["agent_id"],
+        grant_ref=parsed["grant_ref"],
+        action=parsed["action"],
+        resource=parsed["resource"],
+        boundary_id=normalized_headers.get("x-vinctor-boundary-id"),
+        pep_workspace_id=identity.workspace_id,
+    )
+    return _http_response_from_enforce(service.delegated_enforce(request, now=now))
+
+
 def _resolve_agent_identity(
     agent_key: str,
     *,
@@ -76,11 +141,37 @@ def _resolve_agent_identity(
     return (agent_identities or {}).get(agent_key)
 
 
+def _resolve_pep_identity(
+    pep_key: str,
+    *,
+    pep_identities: Mapping[str, PepIdentity] | None,
+    pep_identity_resolver: PepIdentityResolver | None,
+    now: datetime,
+) -> PepIdentity | None:
+    if pep_identity_resolver is not None:
+        return pep_identity_resolver(pep_key, now)
+    return (pep_identities or {}).get(pep_key)
+
+
 def _parse_enforce_body(body: object) -> dict[str, str] | V1HttpResponse:
+    return _parse_string_body(body, required_fields={"grant_ref", "action", "resource"})
+
+
+def _parse_delegated_enforce_body(body: object) -> dict[str, str] | V1HttpResponse:
+    return _parse_string_body(
+        body,
+        required_fields={"workspace_id", "agent_id", "grant_ref", "action", "resource"},
+    )
+
+
+def _parse_string_body(
+    body: object,
+    *,
+    required_fields: set[str],
+) -> dict[str, str] | V1HttpResponse:
     if not isinstance(body, dict):
         return _error(400, "invalid_request", "request body must be a JSON object")
 
-    required_fields = {"grant_ref", "action", "resource"}
     body_fields = set(body)
     missing = sorted(required_fields - body_fields)
     extra = sorted(body_fields - required_fields)

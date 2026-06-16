@@ -43,6 +43,7 @@ from vinctor_service.models import (
     GrantRequestCreateRequest,
     GrantRequestCreateResult,
     GrantRequestDecisionResult,
+    V1DelegatedEnforceRequest,
     V1EnforceRequest,
     V1EnforceResponse,
 )
@@ -51,7 +52,7 @@ from vinctor_service.repositories import (
     InMemoryGrantRepository,
     InMemoryGrantRequestRepository,
 )
-from vinctor_service.v1_enforce import enforce_v1_contract
+from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 
 
 @dataclass
@@ -331,6 +332,20 @@ class InMemoryV1Service:
 
     def enforce(self, request: V1EnforceRequest, *, now: datetime) -> V1EnforceResponse:
         return enforce_v1_contract(
+            request,
+            grant_repository=self.grant_repository,
+            now=now,
+            audit_writer=self.audit_writer,
+            boundary_registry=self.boundary_registry,
+        )
+
+    def delegated_enforce(
+        self,
+        request: V1DelegatedEnforceRequest,
+        *,
+        now: datetime,
+    ) -> V1EnforceResponse:
+        return delegated_enforce_v1_contract(
             request,
             grant_repository=self.grant_repository,
             now=now,

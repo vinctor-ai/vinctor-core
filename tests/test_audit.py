@@ -194,3 +194,40 @@ def test_audit_event_preserves_scope_validation_reason() -> None:
     assert event.resource == "deploy/staging"
     assert event.scope_attempted == "publish:deploy/staging"
     assert event.scope_matched is None
+
+
+def test_audit_event_enforcing_principal_defaults_to_none() -> None:
+    decision = evaluate_enforce(
+        EnforceInput(
+            grant=active_grant(),
+            action="execute",
+            resource="deploy/staging",
+            now=NOW,
+        )
+    )
+
+    event = build_audit_event(AuditEventInput(decision=decision))
+
+    # Direct /v1/enforce: the agent enforces for itself, no separate principal.
+    assert event.enforcing_principal is None
+    assert "enforcing_principal" not in event.to_dict()
+
+
+def test_audit_event_records_enforcing_principal_when_set() -> None:
+    decision = evaluate_enforce(
+        EnforceInput(
+            grant=active_grant(),
+            action="execute",
+            resource="deploy/staging",
+            now=NOW,
+        )
+    )
+
+    event = build_audit_event(
+        AuditEventInput(decision=decision, enforcing_principal="pep_git_host")
+    )
+
+    # Delegated path: the PEP principal is recorded separately from the subject.
+    assert event.enforcing_principal == "pep_git_host"
+    assert event.agent_id == "agent_release"
+    assert event.to_dict()["enforcing_principal"] == "pep_git_host"

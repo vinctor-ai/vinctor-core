@@ -26,8 +26,12 @@ from vinctor_service.grant_request_http import (
 from vinctor_service.v1_http import (
     AgentIdentity,
     AgentIdentityResolver,
+    PepIdentity,
+    PepIdentityResolver,
+    V1DelegatedEnforceService,
     V1EnforceService,
     V1HttpResponse,
+    handle_v1_delegated_enforce_http,
     handle_v1_enforce_http,
 )
 
@@ -40,8 +44,10 @@ def create_v1_http_server(
     service: V1EnforceService,
     agent_identities: Mapping[str, AgentIdentity],
     workspace_identities: Mapping[str, WorkspaceIdentity] | None = None,
+    pep_identities: Mapping[str, PepIdentity] | None = None,
     agent_identity_resolver: AgentIdentityResolver | None = None,
     workspace_identity_resolver: WorkspaceIdentityResolver | None = None,
+    pep_identity_resolver: PepIdentityResolver | None = None,
     clock: Clock | None = None,
     service_mode: str = "local",
 ) -> ThreadingHTTPServer:
@@ -49,8 +55,10 @@ def create_v1_http_server(
         service=service,
         agent_identities=agent_identities,
         workspace_identities=workspace_identities,
+        pep_identities=pep_identities,
         agent_identity_resolver=agent_identity_resolver,
         workspace_identity_resolver=workspace_identity_resolver,
+        pep_identity_resolver=pep_identity_resolver,
         clock=clock,
         service_mode=service_mode,
     )
@@ -62,13 +70,16 @@ def create_v1_http_handler(
     service: V1EnforceService,
     agent_identities: Mapping[str, AgentIdentity],
     workspace_identities: Mapping[str, WorkspaceIdentity] | None = None,
+    pep_identities: Mapping[str, PepIdentity] | None = None,
     agent_identity_resolver: AgentIdentityResolver | None = None,
     workspace_identity_resolver: WorkspaceIdentityResolver | None = None,
+    pep_identity_resolver: PepIdentityResolver | None = None,
     clock: Clock | None = None,
     service_mode: str = "local",
 ) -> type[BaseHTTPRequestHandler]:
     agent_keys = dict(agent_identities)
     workspace_keys = dict(workspace_identities or {})
+    pep_keys = dict(pep_identities or {})
     now = clock or _utc_now
 
     class V1Handler(BaseHTTPRequestHandler):
@@ -97,6 +108,9 @@ def create_v1_http_handler(
         path = parsed_path.path
         if path == "/healthz":
             _handle_health_request(handler, method)
+            return
+        if path == "/v1/enforce/delegated":
+            _handle_delegated_enforce_request(handler, method)
             return
         if path == "/v1/enforce":
             _handle_enforce_request(handler, method)
@@ -178,6 +192,38 @@ def create_v1_http_handler(
             agent_identities=agent_keys,
             agent_identity_resolver=agent_identity_resolver,
             service=service,
+            now=now(),
+        )
+        _send_json(handler, response)
+
+    def _handle_delegated_enforce_request(
+        handler: BaseHTTPRequestHandler,
+        method: str,
+    ) -> None:
+        if method != "POST":
+            _send_json(
+                handler,
+                V1HttpResponse(
+                    status_code=405,
+                    body={
+                        "error": "method_not_allowed",
+                        "reason": "POST is required for /v1/enforce/delegated",
+                    },
+                ),
+            )
+            return
+
+        parsed = _read_json_body(handler)
+        if isinstance(parsed, V1HttpResponse):
+            _send_json(handler, parsed)
+            return
+
+        response = handle_v1_delegated_enforce_http(
+            headers=dict(handler.headers.items()),
+            body=parsed,
+            pep_identities=pep_keys,
+            pep_identity_resolver=pep_identity_resolver,
+            service=cast(V1DelegatedEnforceService, service),
             now=now(),
         )
         _send_json(handler, response)

@@ -12,6 +12,7 @@ class AuditEventInput:
     decision: DecisionResult
     event_id: str | None = None
     created_at: datetime | None = None
+    enforcing_principal: str | None = None
 
 
 def build_audit_event(audit_input: AuditEventInput) -> AuditEvent:
@@ -36,6 +37,7 @@ def build_audit_event(audit_input: AuditEventInput) -> AuditEvent:
         runtime=boundary.runtime if boundary else None,
         boundary_type=boundary.boundary_type if boundary else None,
         created_at=audit_input.created_at or datetime.now(UTC),
+        enforcing_principal=audit_input.enforcing_principal,
     )
 
 
