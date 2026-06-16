@@ -264,6 +264,7 @@ _BAD_REQUEST_REASONS = {
     "invalid_workspace_id",
     "invalid_agent_id",
     "invalid_ttl",
+    "ttl_exceeds_max",
     "missing_requested_scopes",
     "invalid_requested_scope",
     "invalid_issuable_scope_bound",

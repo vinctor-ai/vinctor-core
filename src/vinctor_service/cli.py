@@ -214,6 +214,7 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
     set_bounds = bounds_commands.add_parser("set")
     set_bounds.add_argument("target_agent_id", nargs="?")
     set_bounds.add_argument("--scope", action="append", dest="scopes", required=True)
+    set_bounds.add_argument("--max-ttl", dest="max_ttl")
     show_bounds = bounds_commands.add_parser("show")
     show_bounds.add_argument("target_agent_id", nargs="?")
 
@@ -584,18 +585,30 @@ def _operator_bounds(args: argparse.Namespace, *, stdout: TextIO) -> None:
     service = _sqlite_service(args.db)
     agent_id = args.target_agent_id or args.agent_id
     if args.bounds_command == "set":
-        service.set_agent_issuable_scope_bounds(
-            workspace_id=args.workspace_id,
-            agent_id=agent_id,
-            scopes=tuple(args.scopes),
-            now=datetime.now(UTC),
+        max_ttl_seconds = (
+            _parse_duration_seconds(args.max_ttl) if args.max_ttl is not None else None
         )
-        body = {"workspace_id": args.workspace_id, "agent_id": agent_id, "scopes": args.scopes}
+        try:
+            service.set_agent_issuable_scope_bounds(
+                workspace_id=args.workspace_id,
+                agent_id=agent_id,
+                scopes=tuple(args.scopes),
+                max_ttl_seconds=max_ttl_seconds,
+                now=datetime.now(UTC),
+            )
+        except ValueError as error:
+            raise CliError(str(error)) from error
+        body = {
+            "workspace_id": args.workspace_id,
+            "agent_id": agent_id,
+            "scopes": args.scopes,
+            "max_ttl_seconds": max_ttl_seconds,
+        }
         _emit(
             args,
             body,
             f"set bounds workspace={args.workspace_id} agent={agent_id} "
-            f"scopes={','.join(args.scopes)}",
+            f"scopes={','.join(args.scopes)} max_ttl={max_ttl_seconds if max_ttl_seconds else '-'}",
             stdout=stdout,
         )
         return
@@ -604,13 +617,19 @@ def _operator_bounds(args: argparse.Namespace, *, stdout: TextIO) -> None:
             workspace_id=args.workspace_id,
             agent_id=agent_id,
         )
+        max_ttl_seconds = service.scope_bounds_repository.get_max_ttl_seconds(
+            workspace_id=args.workspace_id,
+            agent_id=agent_id,
+        )
         body = {
             "workspace_id": args.workspace_id,
             "agent_id": agent_id,
             "scopes": list(scopes or ()),
+            "max_ttl_seconds": max_ttl_seconds,
         }
         text = (
-            f"bounds workspace={args.workspace_id} agent={agent_id} scopes={','.join(scopes)}"
+            f"bounds workspace={args.workspace_id} agent={agent_id} "
+            f"scopes={','.join(scopes)} max_ttl={max_ttl_seconds if max_ttl_seconds else '-'}"
             if scopes
             else f"no bounds workspace={args.workspace_id} agent={agent_id}"
         )

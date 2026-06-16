@@ -660,6 +660,52 @@ def test_vinctor_cli_keys_rotate_agent(tmp_path: Path) -> None:
     assert rotated["agent_id"] == "agent_runner"
 
 
+def test_vinctor_cli_bounds_set_with_max_ttl_and_show(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+
+    set_result = _run(
+        [
+            *common,
+            "operator",
+            "bounds",
+            "set",
+            "agent_runner",
+            "--scope",
+            "execute:ci/test",
+            "--max-ttl",
+            "30m",
+        ]
+    )
+    shown = _run([*common, "operator", "bounds", "show", "agent_runner"])
+
+    assert set_result["scopes"] == ["execute:ci/test"]
+    assert set_result["max_ttl_seconds"] == 1800
+    assert shown["scopes"] == ["execute:ci/test"]
+    assert shown["max_ttl_seconds"] == 1800
+
+
+def test_vinctor_cli_bounds_set_without_max_ttl(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+
+    set_result = _run(
+        [
+            *common,
+            "operator",
+            "bounds",
+            "set",
+            "agent_runner",
+            "--scope",
+            "execute:ci/test",
+        ]
+    )
+    shown = _run([*common, "operator", "bounds", "show", "agent_runner"])
+
+    assert set_result["max_ttl_seconds"] is None
+    assert shown["max_ttl_seconds"] is None
+
+
 def _seed_storage_db(db_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     try:
