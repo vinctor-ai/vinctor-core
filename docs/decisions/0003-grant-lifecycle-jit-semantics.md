@@ -59,6 +59,28 @@ The current grant issuance lifecycle should support TTL as a first-class field
 and keep revocation support. It should not hardcode a single interpretation of
 "JIT = one use".
 
+### TTL issuance discipline
+
+Time-bounding is enforced, not merely advisory, while keeping grants
+non-single-use:
+
+- A short default TTL is applied when a grant is issued without an explicit
+  positive `ttl_seconds`. The default is `DEFAULT_TTL_SECONDS` (30 minutes),
+  which matches the lower end of the task-grant range above.
+- A hard ceiling (`MAX_TTL_SECONDS_CEILING`, 30 days) bounds every issued grant
+  regardless of per-agent configuration. Requests above the ceiling are rejected
+  with reason `ttl_exceeds_max`.
+- Per-agent issuable bounds may carry an optional `max_ttl_seconds` cap
+  alongside the issuable scope set. When set, issuance rejects any request whose
+  applied TTL exceeds the cap with reason `ttl_exceeds_issuable_max`. When unset,
+  no per-agent cap applies and only the hard ceiling bounds the TTL.
+- `ttl_seconds` validation stays fail-closed: negative values are rejected with
+  `invalid_ttl`; zero / missing falls back to the short default.
+
+This discipline tightens *how long* authority lasts. It does not introduce
+single-use semantics, a use-count, or invalidation after first use. Grants
+remain valid for the work they were issued for until they expire or are revoked.
+
 ## Terminology
 
 Use:
@@ -88,6 +110,9 @@ before this surface becomes durable product contract.
 ## Consequences
 
 - `ttl_seconds` and persisted `expires_at` remain central to grant issuance.
+- Grant issuance applies a short default TTL, a hard TTL ceiling, and an
+  optional per-agent `max_ttl_seconds` cap; rejections are surfaced as
+  `invalid_ttl`, `ttl_exceeds_max`, or `ttl_exceeds_issuable_max`.
 - Hooks remain enforce-only and continue to consume already-issued
   `grant_ref` values.
 - Lifecycle audit events currently reuse the `permit`/`deny` decision vocabulary.

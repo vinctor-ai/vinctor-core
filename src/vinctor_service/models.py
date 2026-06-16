@@ -70,7 +70,7 @@ class GrantIssueRequest:
     workspace_id: str
     target_agent_id: str
     requested_scopes: tuple[str, ...]
-    ttl_seconds: int
+    ttl_seconds: int = 0
     grant_id: str | None = None
     grant_ref: str | None = None
 

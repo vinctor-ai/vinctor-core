@@ -139,12 +139,14 @@ class InMemoryV1Service:
         workspace_id: str,
         agent_id: str,
         scopes: tuple[str, ...],
+        max_ttl_seconds: int | None = None,
         now: datetime,
     ) -> None:
         self.scope_bounds_repository.set_bounds(
             workspace_id=workspace_id,
             agent_id=agent_id,
             scopes=scopes,
+            max_ttl_seconds=max_ttl_seconds,
             now=now,
         )
 

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from vinctor_service import GrantIssueRequest, SQLiteV1Service, V1EnforceRequest
+from vinctor_service.grants import DEFAULT_TTL_SECONDS
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -170,6 +171,158 @@ def test_revoke_marks_grant_revoked_and_writes_audit(tmp_path: Path) -> None:
         ("grant_issued", "permit"),
         ("grant_revoked", "deny"),
     ]
+    conn.close()
+
+
+def test_missing_ttl_defaults_to_short_ttl(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_runner",
+        scopes=("execute:ci/test",),
+        now=NOW,
+    )
+
+    issued = service.issue_grant(
+        GrantIssueRequest(
+            workspace_id="ws_main",
+            target_agent_id="agent_runner",
+            requested_scopes=("execute:ci/test",),
+            grant_id="grnt_issued",
+            grant_ref="grt_issued",
+        ),
+        now=NOW,
+    )
+
+    assert issued.status == "issued"
+    assert issued.grant is not None
+    assert issued.grant.expires_at == NOW + timedelta(seconds=DEFAULT_TTL_SECONDS)
+
+    # The grant_issued audit event references the grant whose persisted expiry
+    # reflects the applied (defaulted) TTL, not the omitted requested TTL.
+    assert audit_rows(conn)[0][0] == "grant_issued"
+    persisted = service.lookup_grant(grant_ref="grt_issued", workspace_id="ws_main")
+    assert persisted is not None
+    assert persisted.expires_at == NOW + timedelta(seconds=DEFAULT_TTL_SECONDS)
+    conn.close()
+
+
+def test_ttl_within_agent_max_ttl_is_issued(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_runner",
+        scopes=("execute:ci/test",),
+        max_ttl_seconds=3600,
+        now=NOW,
+    )
+
+    issued = service.issue_grant(issue_request(ttl_seconds=1800), now=NOW)
+
+    assert issued.status == "issued"
+    assert issued.grant is not None
+    assert issued.grant.expires_at == NOW + timedelta(seconds=1800)
+    conn.close()
+
+
+def test_ttl_exceeding_agent_max_ttl_is_rejected(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_runner",
+        scopes=("execute:ci/test",),
+        max_ttl_seconds=1800,
+        now=NOW,
+    )
+
+    result = service.issue_grant(issue_request(ttl_seconds=3600), now=NOW)
+
+    assert result.status == "rejected"
+    assert result.reason == "ttl_exceeds_issuable_max"
+    assert service.lookup_grant(grant_ref="grt_issued", workspace_id="ws_main") is None
+    assert audit_rows(conn) == []
+    conn.close()
+
+
+def test_ttl_at_agent_max_ttl_boundary_is_issued(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_runner",
+        scopes=("execute:ci/test",),
+        max_ttl_seconds=1800,
+        now=NOW,
+    )
+
+    result = service.issue_grant(issue_request(ttl_seconds=1800), now=NOW)
+
+    assert result.status == "issued"
+    conn.close()
+
+
+def test_max_ttl_persists_and_is_shown_in_bounds(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_runner",
+        scopes=("execute:ci/test",),
+        max_ttl_seconds=1800,
+        now=NOW,
+    )
+
+    assert (
+        service.scope_bounds_repository.get_max_ttl_seconds(
+            workspace_id="ws_main",
+            agent_id="agent_runner",
+        )
+        == 1800
+    )
+    conn.close()
+
+
+def test_no_max_ttl_bound_allows_ttl_up_to_ceiling(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_runner",
+        scopes=("execute:ci/test",),
+        now=NOW,
+    )
+
+    issued = service.issue_grant(issue_request(ttl_seconds=7200), now=NOW)
+
+    assert issued.status == "issued"
+    assert (
+        service.scope_bounds_repository.get_max_ttl_seconds(
+            workspace_id="ws_main",
+            agent_id="agent_runner",
+        )
+        is None
+    )
+    conn.close()
+
+
+def test_ttl_exceeding_hard_ceiling_is_rejected(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_runner",
+        scopes=("execute:ci/test",),
+        now=NOW,
+    )
+
+    result = service.issue_grant(issue_request(ttl_seconds=10**9), now=NOW)
+
+    assert result.status == "rejected"
+    assert result.reason == "ttl_exceeds_max"
+    assert audit_rows(conn) == []
     conn.close()
 
 

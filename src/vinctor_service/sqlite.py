@@ -117,6 +117,7 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             workspace_id TEXT NOT NULL,
             agent_id TEXT NOT NULL,
             scopes_json TEXT NOT NULL,
+            max_ttl_seconds INTEGER,
             updated_at TEXT NOT NULL,
             PRIMARY KEY(workspace_id, agent_id)
         );
@@ -171,6 +172,7 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         """
     )
     _ensure_grant_request_metadata_columns(conn)
+    _ensure_scope_bounds_max_ttl_column(conn)
     conn.execute(
         """
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
@@ -231,6 +233,17 @@ def _ensure_grant_request_metadata_columns(conn: sqlite3.Connection) -> None:
     for name, column_type in columns.items():
         if name not in existing_columns:
             conn.execute(f"ALTER TABLE grant_requests ADD COLUMN {name} {column_type}")
+
+
+def _ensure_scope_bounds_max_ttl_column(conn: sqlite3.Connection) -> None:
+    existing_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(agent_issuable_scope_bounds)").fetchall()
+    }
+    if "max_ttl_seconds" not in existing_columns:
+        conn.execute(
+            "ALTER TABLE agent_issuable_scope_bounds ADD COLUMN max_ttl_seconds INTEGER"
+        )
 
 
 def get_sqlite_schema_versions(conn: sqlite3.Connection) -> tuple[int, ...]:
@@ -332,6 +345,19 @@ class SQLiteAgentIssuableScopeBoundsRepository:
             return None
         return tuple(json.loads(row[0]))
 
+    def get_max_ttl_seconds(self, *, workspace_id: str, agent_id: str) -> int | None:
+        row = self._conn.execute(
+            """
+            SELECT max_ttl_seconds
+            FROM agent_issuable_scope_bounds
+            WHERE workspace_id = ? AND agent_id = ?
+            """,
+            (workspace_id, agent_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return row[0]
+
     def list_bounds_for_workspace(self, workspace_id: str) -> ScopeBoundsListing:
         rows = self._conn.execute(
             """
@@ -350,23 +376,26 @@ class SQLiteAgentIssuableScopeBoundsRepository:
         workspace_id: str,
         agent_id: str,
         scopes: tuple[str, ...],
+        max_ttl_seconds: int | None = None,
         now: datetime,
     ) -> None:
-        validate_issuable_scope_bounds(scopes)
+        validate_issuable_scope_bounds(scopes, max_ttl_seconds=max_ttl_seconds)
         with self._conn:
             self._conn.execute(
                 """
                 INSERT INTO agent_issuable_scope_bounds (
-                    workspace_id, agent_id, scopes_json, updated_at
-                ) VALUES (?, ?, ?, ?)
+                    workspace_id, agent_id, scopes_json, max_ttl_seconds, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
                     scopes_json = excluded.scopes_json,
+                    max_ttl_seconds = excluded.max_ttl_seconds,
                     updated_at = excluded.updated_at
                 """,
                 (
                     workspace_id,
                     agent_id,
                     json.dumps(list(scopes)),
+                    max_ttl_seconds,
                     now.isoformat(),
                 ),
             )
@@ -722,12 +751,14 @@ class SQLiteV1Service:
         workspace_id: str,
         agent_id: str,
         scopes: tuple[str, ...],
+        max_ttl_seconds: int | None = None,
         now: datetime,
     ) -> None:
         self.scope_bounds_repository.set_bounds(
             workspace_id=workspace_id,
             agent_id=agent_id,
             scopes=scopes,
+            max_ttl_seconds=max_ttl_seconds,
             now=now,
         )
 
