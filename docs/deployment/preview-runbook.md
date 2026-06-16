@@ -91,6 +91,28 @@ For local `localhost` testing, Caddy uses a local certificate authority. Use
 operator commands inside the service container. Raw keys are printed once; store
 them outside the repository immediately.
 
+> WARNING: `operator keys rotate` is destructive on re-run. Each invocation
+> mints a fresh key and revokes the previously active key of the same type
+> (workspace) or the same agent. Run the bootstrap `rotate` commands below
+> EXACTLY ONCE. Re-running `rotate` after you have already handed a key to a
+> partner will revoke that key and silently break the partner runtime. Treat any
+> later `rotate` as an intentional rotation (see "Key Rotation And Revocation"),
+> not as a repeatable bootstrap step.
+
+Before running `rotate`, check whether this database is already provisioned. If
+an active workspace key (and an active agent key for `agent_partner`) already
+exists, bootstrap is already done and you must NOT run `rotate` again:
+
+```bash
+docker compose exec vinctor \
+  vinctor --db /data/vinctor.sqlite --workspace-id ws_partner \
+  operator keys list
+```
+
+A fresh database prints `no keys`. A provisioned database lists records with
+`status=active`. Only proceed with the `rotate` commands when no active key of
+the type you intend to mint exists.
+
 ```bash
 docker compose exec vinctor \
   vinctor --db /data/vinctor.sqlite --workspace-id ws_partner \
@@ -190,6 +212,33 @@ python deploy/preview/smoke.py \
 
 Use `--insecure-tls` only for localhost or internal-CA preview testing.
 
+## Fail-Closed When Vinctor Is Unreachable
+
+The preview posture is fail-closed: if the Vinctor service is down, or Caddy
+cannot reach the backend, the partner runtime must not silently behave as if
+every action were permitted. Authorization the runtime cannot obtain is denied,
+not assumed.
+
+The smoke check encodes this. If the endpoint refuses connections, times out, or
+returns a non-`ok` health body, `smoke.py` exits non-zero and prints the failure
+to stderr instead of reporting success. Verify it yourself by pointing the smoke
+check at a closed port:
+
+```bash
+python deploy/preview/smoke.py \
+  --endpoint http://127.0.0.1:1 \
+  --agent-key unused --workspace-key unused --grant-ref unused
+echo "exit=$?"
+```
+
+Expected: a `preview smoke failed:` line on stderr and `exit=1`. A success line
+or `exit=0` here would mean the smoke check is not fail-closed; stop and fix it
+before relying on the deployment.
+
+Operationally, this means: keep Caddy's healthcheck-gated `depends_on` in place
+so traffic is not proxied to an unhealthy backend, and ensure the partner
+runtime treats a Vinctor enforce error as a deny, never as a default-permit.
+
 ## Backup And Restore
 
 Create a consistent snapshot:
@@ -255,7 +304,10 @@ docker compose exec vinctor \
   operator keys rotate agent --agent-id agent_partner
 ```
 
-The replacement raw key is printed once.
+The replacement raw key is printed once. Rotation here is intentional: it
+revokes the partner's current key, so re-hand the new raw key to the partner
+runtime out-of-band immediately. This is the same command used at bootstrap, so
+never re-run the bootstrap `rotate` steps unless you mean to rotate.
 
 ## Deferred GA Work
 
@@ -268,3 +320,30 @@ Before any GA deployment, revisit at least:
 - production identity, operator roles, and access review
 - metrics, alerting, and SIEM integration
 - release artifact publishing and upgrade policy
+
+## Maintenance Notes
+
+CONTEXT: The preview stack (compose + Caddy + smoke) and this runbook already
+existed for a single early design partner. Two operational footguns and one
+verification-scope gap needed closing.
+
+WHAT THIS CHANGE DOES:
+
+- Documents that bootstrap `operator keys rotate` is destructive on re-run (it
+  revokes the prior active key) and must be run exactly once, with an
+  `operator keys list` pre-check to detect an already-provisioned database.
+- Documents the fail-closed posture when Vinctor is unreachable and adds a
+  reproducible smoke-against-closed-port check; backs it with two tests in
+  `tests/test_preview_deployment.py` asserting `run_smoke` raises and the CLI
+  exits non-zero against a down endpoint.
+- Records (here and in preview-validation.md) that real `docker compose up` plus
+  full end-to-end smoke is FOUNDER-GATED: there is no Docker in the build/CI
+  environment, so only the in-repo non-Docker tests are automatically proven.
+
+NEXT STEPS:
+
+- Founder-operated host: run the Docker-dependent validation steps and record
+  evidence per preview-validation.md.
+- Optional: have the partner runtime assert it treats any Vinctor enforce error
+  as a deny (default-deny), not a default-permit, and capture that in its own
+  integration check.

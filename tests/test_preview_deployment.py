@@ -101,6 +101,47 @@ def test_preview_smoke_checks_health_enforce_and_audit(tmp_path: Path) -> None:
     assert result["deny_audit_event_id"] is not None
 
 
+def test_preview_smoke_fails_closed_when_service_unreachable() -> None:
+    smoke = _load_smoke_module()
+    config = smoke.SmokeConfig(
+        endpoint="http://127.0.0.1:1",
+        agent_key="unused",
+        workspace_key="unused",
+        grant_ref="unused",
+        permit_action="write",
+        permit_resource="repo/preview/readme",
+        deny_action="write",
+        deny_resource="repo/other/readme",
+        timeout_seconds=2.0,
+    )
+
+    try:
+        smoke.run_smoke(config)
+    except smoke.SmokeError:
+        pass
+    else:
+        raise AssertionError("smoke must fail closed when the service is unreachable")
+
+
+def test_preview_smoke_cli_exits_nonzero_when_service_unreachable() -> None:
+    smoke = _load_smoke_module()
+    exit_code = smoke.main(
+        [
+            "--endpoint",
+            "http://127.0.0.1:1",
+            "--agent-key",
+            "unused",
+            "--workspace-key",
+            "unused",
+            "--grant-ref",
+            "unused",
+            "--timeout",
+            "2",
+        ]
+    )
+    assert exit_code == 1
+
+
 def _load_smoke_module() -> ModuleType:
     path = PREVIEW_DIR / "smoke.py"
     spec = importlib.util.spec_from_file_location("vinctor_preview_smoke", path)
