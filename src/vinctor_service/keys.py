@@ -8,13 +8,14 @@ from secrets import token_urlsafe
 from typing import Literal
 
 from vinctor_service.boundary_http import WorkspaceIdentity
-from vinctor_service.v1_http import AgentIdentity
+from vinctor_service.v1_http import AgentIdentity, PepIdentity
 
-KeyType = Literal["workspace", "agent"]
+KeyType = Literal["workspace", "agent", "resource_server"]
 KeyStatus = Literal["active", "revoked"]
 
 WORKSPACE_KEY_PREFIX = "wsk_"
 AGENT_KEY_PREFIX = "aak_"
+PEP_KEY_PREFIX = "pep_"
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,27 @@ class SQLiteLocalKeyRepository:
         )
         return CreatedLocalKey(raw_key=key, record=record)
 
+    def create_pep_key(
+        self,
+        *,
+        workspace_id: str,
+        pep_id: str,
+        raw_key: str | None = None,
+        now: datetime | None = None,
+        key_id: str | None = None,
+    ) -> CreatedLocalKey:
+        key = raw_key or _new_key(PEP_KEY_PREFIX)
+        _validate_prefix(key, PEP_KEY_PREFIX)
+        record = self._create_key(
+            key_type="resource_server",
+            workspace_id=workspace_id,
+            agent_id=pep_id,
+            raw_key=key,
+            now=now,
+            key_id=key_id,
+        )
+        return CreatedLocalKey(raw_key=key, record=record)
+
     def ensure_workspace_key(
         self,
         *,
@@ -126,6 +148,31 @@ class SQLiteLocalKeyRepository:
         return self.create_agent_key(
             workspace_id=workspace_id,
             agent_id=agent_id,
+            raw_key=raw_key,
+            now=now,
+        ).record
+
+    def ensure_pep_key(
+        self,
+        *,
+        workspace_id: str,
+        pep_id: str,
+        raw_key: str,
+        now: datetime | None = None,
+    ) -> LocalKeyRecord:
+        _validate_prefix(raw_key, PEP_KEY_PREFIX)
+        existing = self.get_by_raw_key(raw_key, touch=False)
+        if existing is not None:
+            _require_compatible(
+                existing,
+                key_type="resource_server",
+                workspace_id=workspace_id,
+                agent_id=pep_id,
+            )
+            return existing
+        return self.create_pep_key(
+            workspace_id=workspace_id,
+            pep_id=pep_id,
             raw_key=raw_key,
             now=now,
         ).record
@@ -199,6 +246,22 @@ class SQLiteLocalKeyRepository:
         ):
             return None
         return AgentIdentity(workspace_id=record.workspace_id, agent_id=record.agent_id)
+
+    def resolve_pep_identity(
+        self,
+        raw_key: str,
+        *,
+        now: datetime | None = None,
+    ) -> PepIdentity | None:
+        record = self.get_by_raw_key(raw_key, now=now)
+        if (
+            record is None
+            or record.status != "active"
+            or record.key_type != "resource_server"
+            or record.agent_id is None
+        ):
+            return None
+        return PepIdentity(workspace_id=record.workspace_id, pep_id=record.agent_id)
 
     def revoke_key(
         self,

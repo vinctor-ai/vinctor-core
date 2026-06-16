@@ -8,6 +8,7 @@ import pytest
 
 from vinctor_service.keys import (
     AGENT_KEY_PREFIX,
+    PEP_KEY_PREFIX,
     WORKSPACE_KEY_PREFIX,
     SQLiteLocalKeyRepository,
     mask_key,
@@ -149,6 +150,99 @@ def test_local_key_repository_ensure_reuses_active_key(tmp_path: Path) -> None:
         workspace_id="ws_main",
         agent_id="agent_release",
         raw_key="aak_test_secret",
+        now=NOW,
+    )
+
+    assert first == second
+    assert len(repository.list_for_workspace("ws_main")) == 1
+    conn.close()
+
+
+def test_local_key_repository_resolves_pep_identity(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    repository = SQLiteLocalKeyRepository(conn)
+    repository.create_pep_key(
+        workspace_id="ws_main",
+        pep_id="pep_git_host",
+        raw_key="pep_test_secret",
+        now=NOW,
+        key_id="lkey_pep",
+    )
+
+    identity = repository.resolve_pep_identity("pep_test_secret", now=NOW)
+    record = repository.get_by_id("lkey_pep")
+
+    assert identity is not None
+    assert identity.workspace_id == "ws_main"
+    assert identity.pep_id == "pep_git_host"
+    assert record is not None
+    assert record.key_type == "resource_server"
+
+
+def test_local_key_repository_does_not_cross_pep_and_agent(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    repository = SQLiteLocalKeyRepository(conn)
+    repository.create_agent_key(
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        raw_key="aak_test_secret",
+        now=NOW,
+    )
+    repository.create_pep_key(
+        workspace_id="ws_main",
+        pep_id="pep_git_host",
+        raw_key="pep_test_secret",
+        now=NOW,
+    )
+
+    # An agent key cannot be used as a PEP, and a PEP key cannot be used as an agent.
+    assert repository.resolve_pep_identity("aak_test_secret", now=NOW) is None
+    assert repository.resolve_agent_identity("pep_test_secret", now=NOW) is None
+    assert repository.resolve_workspace_identity("pep_test_secret", now=NOW) is None
+
+
+def test_local_key_repository_revokes_pep_key(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    repository = SQLiteLocalKeyRepository(conn)
+    created = repository.create_pep_key(
+        workspace_id="ws_main",
+        pep_id="pep_git_host",
+        raw_key="pep_test_secret",
+        now=NOW,
+    )
+
+    repository.revoke_key(created.record.key_id, now=NOW + timedelta(seconds=1))
+
+    assert repository.resolve_pep_identity("pep_test_secret", now=NOW) is None
+
+
+def test_local_key_repository_rejects_invalid_pep_prefix(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    repository = SQLiteLocalKeyRepository(conn)
+
+    with pytest.raises(ValueError, match=f"key must start with {PEP_KEY_PREFIX}"):
+        repository.create_pep_key(
+            workspace_id="ws_main",
+            pep_id="pep_git_host",
+            raw_key="aak_wrong_type",
+            now=NOW,
+        )
+
+
+def test_local_key_repository_ensure_pep_reuses_active_key(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    repository = SQLiteLocalKeyRepository(conn)
+
+    first = repository.ensure_pep_key(
+        workspace_id="ws_main",
+        pep_id="pep_git_host",
+        raw_key="pep_test_secret",
+        now=NOW,
+    )
+    second = repository.ensure_pep_key(
+        workspace_id="ws_main",
+        pep_id="pep_git_host",
+        raw_key="pep_test_secret",
         now=NOW,
     )
 

@@ -32,6 +32,7 @@ from vinctor_service.grants import (
 from vinctor_service.in_memory import InMemoryV1Service
 from vinctor_service.keys import (
     AGENT_KEY_PREFIX,
+    PEP_KEY_PREFIX,
     WORKSPACE_KEY_PREFIX,
     CreatedLocalKey,
     LocalKeyRecord,
@@ -51,6 +52,7 @@ from vinctor_service.models import (
     GrantRequestCreateResult,
     GrantRequestDecisionResult,
     GrantRequestRoutingHint,
+    V1DelegatedEnforceRequest,
     V1EnforceRequest,
     V1EnforceResponse,
 )
@@ -81,8 +83,14 @@ from vinctor_service.sqlite import (
     init_sqlite_schema,
     insert_grant,
 )
-from vinctor_service.v1_enforce import enforce_v1_contract
-from vinctor_service.v1_http import AgentIdentity, V1HttpResponse, handle_v1_enforce_http
+from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
+from vinctor_service.v1_http import (
+    AgentIdentity,
+    PepIdentity,
+    V1HttpResponse,
+    handle_v1_delegated_enforce_http,
+    handle_v1_enforce_http,
+)
 
 __all__ = [
     "AgentIdentity",
@@ -112,6 +120,8 @@ __all__ = [
     "InMemoryGrantRequestRepository",
     "InMemoryV1Service",
     "LocalKeyRecord",
+    "PEP_KEY_PREFIX",
+    "PepIdentity",
     "SQLiteAgentIssuableScopeBoundsRepository",
     "SQLiteAuditWriter",
     "SQLiteAutoApprovalRuleRepository",
@@ -122,6 +132,7 @@ __all__ = [
     "SQLiteV1Service",
     "ServiceRuntimeConfig",
     "ServiceRuntimeHandle",
+    "V1DelegatedEnforceRequest",
     "V1EnforceRequest",
     "V1EnforceResponse",
     "V1HttpResponse",
@@ -134,11 +145,13 @@ __all__ = [
     "create_grant_request",
     "create_v1_http_handler",
     "create_v1_http_server",
+    "delegated_enforce_v1_contract",
     "enforce_v1_contract",
     "evaluate_auto_approval",
     "get_sqlite_schema_versions",
     "handle_v1_boundaries_http",
     "handle_v1_auto_approval_rules_http",
+    "handle_v1_delegated_enforce_http",
     "handle_v1_enforce_http",
     "handle_v1_grant_requests_http",
     "handle_v1_grants_http",

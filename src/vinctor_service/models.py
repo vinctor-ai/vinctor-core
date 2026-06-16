@@ -54,6 +54,26 @@ class V1EnforceRequest:
 
 
 @dataclass(frozen=True)
+class V1DelegatedEnforceRequest:
+    """An on-behalf-of enforce request from a Policy Enforcement Point (PEP).
+
+    The PEP authenticates with its own key (``pep_id`` / ``pep_workspace_id``)
+    and asserts the subject it is asking about (``workspace_id`` / ``agent_id``).
+    See ADR 0007. The subject identity proof model is an open decision; this
+    request only carries the asserted subject, not a proof of it.
+    """
+
+    pep_id: str
+    workspace_id: str
+    agent_id: str
+    grant_ref: str
+    action: str
+    resource: str
+    boundary_id: str | None = None
+    pep_workspace_id: str | None = None
+
+
+@dataclass(frozen=True)
 class V1EnforceResponse:
     status_code: int
     decision: Decision | None = None

@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from vinctor_core import BoundaryRegistrationInput, Grant, register_boundary
-from vinctor_service import SQLiteV1Service, V1EnforceRequest
+from vinctor_service import SQLiteV1Service, V1DelegatedEnforceRequest, V1EnforceRequest
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -242,6 +242,62 @@ def test_sqlite_v1_service_manages_boundaries(tmp_path: Path) -> None:
     assert enabled.status == "active"
     assert service.list_boundaries("ws_main") == (enabled,)
     assert service.list_boundaries("ws_other") == ()
+    conn.close()
+
+
+def test_sqlite_v1_service_delegated_enforce_persists_enforcing_principal(
+    tmp_path: Path,
+) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.insert_grant(grant())
+
+    response = service.delegated_enforce(
+        V1DelegatedEnforceRequest(
+            pep_id="pep_git_host",
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            grant_ref="grt_main",
+            action="write",
+            resource="repo/feature/readme",
+            pep_workspace_id="ws_main",
+        ),
+        now=NOW,
+    )
+
+    assert response.status_code == 200
+    assert response.decision == "permit"
+    # The PEP principal round-trips through JSON-persisted audit storage.
+    persisted = service.get_audit_event(response.audit_event_id or "")
+    assert persisted is not None
+    assert persisted.agent_id == "agent_release"
+    assert persisted.enforcing_principal == "pep_git_host"
+    conn.close()
+
+
+def test_sqlite_v1_service_delegated_enforce_blocks_cross_workspace(
+    tmp_path: Path,
+) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.insert_grant(grant(workspace_id="ws_other"))
+
+    response = service.delegated_enforce(
+        V1DelegatedEnforceRequest(
+            pep_id="pep_git_host",
+            workspace_id="ws_other",
+            agent_id="agent_release",
+            grant_ref="grt_main",
+            action="write",
+            resource="repo/feature/readme",
+            pep_workspace_id="ws_main",
+        ),
+        now=NOW,
+    )
+
+    assert response.status_code == 403
+    assert response.error == "forbidden"
+    assert audit_count(conn) == 0
     conn.close()
 
 

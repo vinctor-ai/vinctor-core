@@ -131,9 +131,10 @@ class AuditEvent:
     runtime: str | None
     boundary_type: str | None
     created_at: datetime
+    enforcing_principal: str | None = None
 
     def to_dict(self) -> dict[str, str | None]:
-        return {
+        event = {
             "event_id": self.event_id,
             "event_type": self.event_type,
             "decision": self.decision,
@@ -151,3 +152,6 @@ class AuditEvent:
             "boundary_type": self.boundary_type,
             "created_at": self.created_at.isoformat(),
         }
+        if self.enforcing_principal is not None:
+            event["enforcing_principal"] = self.enforcing_principal
+        return event
