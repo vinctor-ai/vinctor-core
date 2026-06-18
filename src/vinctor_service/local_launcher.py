@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -160,7 +161,18 @@ def render_env_exports(
 
 
 def serve_local_service(config: LocalLaunchConfig) -> NoReturn:
-    handle = prepare_local_service(config)
+    try:
+        handle = prepare_local_service(config)
+    except OSError as error:
+        if error.errno == errno.EADDRINUSE:
+            from vinctor_service.cli import EXIT_SERVICE, CliError
+
+            raise CliError(
+                f"port {config.port} already in use — pass --port <n> "
+                "(or --port 0 for any free port)",
+                code=EXIT_SERVICE,
+            ) from error
+        raise
     print(render_env_exports(handle), flush=True)
     print("# Local Vinctor service listening. Press Ctrl+C to stop.", flush=True)
     try:
@@ -398,7 +410,7 @@ def _raw_key(created: CreatedLocalKey) -> str:
 def _restart_command_lines(handle: LocalServiceHandle) -> list[str]:
     lines = [
         "# Restart with explicit keys:",
-        "# .venv/bin/python -m vinctor_service.local_launcher \\",
+        "# vinctor local start \\",
         f"#   --db {_quote(str(handle.db_path))} \\",
         '#   --workspace-key "$VINCTOR_WORKSPACE_KEY" \\',
         '#   --agent-key "$VINCTOR_AGENT_KEY" \\',
@@ -407,6 +419,7 @@ def _restart_command_lines(handle: LocalServiceHandle) -> list[str]:
     if handle.boundary is not None:
         lines[-1] += " \\"
         lines.append(f"#   --boundary-name {_quote(handle.boundary.name)}")
+    lines.append("# fallback: python -m vinctor_service.local_launcher ...")
     return lines
 
 

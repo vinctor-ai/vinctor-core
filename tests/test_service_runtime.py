@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from http.client import HTTPConnection
@@ -8,12 +9,16 @@ from pathlib import Path
 from threading import Thread
 from typing import Any
 
+import pytest
+
+from vinctor_service.cli import EXIT_SERVICE, CliError
 from vinctor_service.local_launcher import LocalLaunchConfig, prepare_local_service
 from vinctor_service.service_config import ServiceRuntimeConfig
 from vinctor_service.service_runtime import (
     ServiceRuntimeHandle,
     prepare_service_runtime,
     render_service_runtime_banner,
+    serve_service_runtime,
 )
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
@@ -135,6 +140,28 @@ def test_service_runtime_preserves_existing_enforce_routes(tmp_path: Path) -> No
         assert deny["error"] == "action_denied"
     finally:
         handle.close()
+
+
+def test_serve_service_runtime_raises_cli_error_on_busy_port(tmp_path: Path) -> None:
+    busy = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    busy.bind(("127.0.0.1", 0))
+    busy.listen(1)
+    port = busy.getsockname()[1]
+    try:
+        with pytest.raises(CliError) as exc_info:
+            serve_service_runtime(
+                ServiceRuntimeConfig(
+                    sqlite_db_path=tmp_path / "vinctor.sqlite",
+                    port=port,
+                    service_mode="self_hosted",
+                )
+            )
+    finally:
+        busy.close()
+
+    assert exc_info.value.code == EXIT_SERVICE
+    assert f"port {port} already in use" in str(exc_info.value)
+    assert "--port" in str(exc_info.value)
 
 
 def test_service_runtime_banner_describes_operational_shape(tmp_path: Path) -> None:
