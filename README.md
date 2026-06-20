@@ -1,6 +1,9 @@
 # vinctor-core
 
-Deterministic authorization core for mediated AI-agent actions.
+Deterministic authorization core for mediated AI-agent actions. The core answers
+one question — *should this agent action be allowed under its grant?* — and
+returns a reviewable `permit`/`deny`, staying independent of any runtime,
+database, or HTTP stack.
 
 > Status: early prototype. APIs and package boundaries may change.
 
@@ -11,6 +14,9 @@ Install the package in editable mode:
 ```bash
 .venv/bin/python -m pip install -e ".[dev]"
 ```
+
+Add the `mcp` extra (`pip install -e ".[dev,mcp]"`) if you also want the
+read-only MCP control plane (`docs/mcp-server.md`).
 
 Run a complete service-style demo:
 
@@ -141,12 +147,10 @@ vinctor \
 
 ## Purpose
 
-`vinctor-core` starts with the core authorization logic used to decide whether a
-mediated AI-agent action should be permitted under a scoped grant.
-
-This repository starts with the deterministic authorization core and now also
-contains a thin `vinctor_service` application layer. Service-layer packages must
-remain layered above the core. The core focuses on deterministic decision
+`vinctor-core` holds the authorization logic that decides whether a mediated
+AI-agent action should be permitted under a scoped grant. The repository pairs
+that deterministic core with a thin `vinctor_service` application layer, which
+must stay layered above the core. The core focuses on deterministic decision
 behavior that can be tested, reviewed, and reused by service layers and runtime
 boundary adapters.
 

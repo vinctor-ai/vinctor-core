@@ -1,7 +1,8 @@
 # Vinctor MCP Server
 
 The Vinctor MCP server is a read-only control-plane interface over
-`vinctor-service`.
+`vinctor-service`. Use it to inspect what Vinctor knows and decided — grants,
+boundaries, and audit events — without ever changing enforcement state.
 
 It is not part of the runtime enforcement path:
 
