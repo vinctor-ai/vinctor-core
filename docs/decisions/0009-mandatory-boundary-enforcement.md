@@ -4,9 +4,16 @@ Date: 2026-06-21
 
 ## Status
 
-**Proposed — OPEN DECISION, requires founder sign-off before implementation.**
-No code ships from this ADR. It records a control gap surfaced by the 2026-06-21
-boundary fail-closed dogfood and a recommended direction.
+**Accepted** (founder sign-off 2026-06-21). Direction **B** — an opt-in,
+operator-controlled `require_boundary` setting (per workspace/agent, default
+**off**); when set, an `/v1/enforce` request for that scope with an absent or
+unusable boundary **fails closed** (`boundary_required`) — is adopted.
+
+The implementing slice (exact storage shape — whether the flag is
+workspace-level, agent-level, or both — the `boundary_required` deny reason, and
+the operator surface to set the flag) is deferred to that slice. Until it lands,
+Vinctor's behavior is unchanged and no mandatory-boundary claim is made.
+Surfaced by the 2026-06-21 boundary fail-closed dogfood.
 
 ## Context
 
