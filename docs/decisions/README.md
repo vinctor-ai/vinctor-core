@@ -31,3 +31,5 @@ Current decisions:
 - `0004-approval-authority-and-auto-approval-rules.md`
 - `0005-grant-request-routing-and-approval-modes.md`
 - `0006-local-bootstrap-ux-and-key-reuse.md`
+- `0007-delegated-enforce-and-pep-identity.md`
+- `0008-auditing-pre-grant-evaluation-rejections.md`
