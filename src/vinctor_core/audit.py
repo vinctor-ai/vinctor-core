@@ -13,6 +13,8 @@ class AuditEventInput:
     event_id: str | None = None
     created_at: datetime | None = None
     enforcing_principal: str | None = None
+    identity_proven: bool = False
+    token_id: str | None = None
 
 
 def build_audit_event(audit_input: AuditEventInput) -> AuditEvent:
@@ -38,6 +40,8 @@ def build_audit_event(audit_input: AuditEventInput) -> AuditEvent:
         boundary_type=boundary.boundary_type if boundary else None,
         created_at=audit_input.created_at or datetime.now(UTC),
         enforcing_principal=audit_input.enforcing_principal,
+        identity_proven=audit_input.identity_proven,
+        token_id=audit_input.token_id,
     )
 
 
@@ -46,6 +50,7 @@ def build_audit_event(audit_input: AuditEventInput) -> AuditEvent:
 EVENT_ACCESS_REJECTED = "access_rejected"
 EVENT_AUTH_FAILED = "auth_failed"
 EVENT_GRANT_ISSUE_REJECTED = "grant_issue_rejected"
+EVENT_SUBJECT_TOKEN_MINTED = "subject_token_minted"
 
 # Coarse `reason_code` enum for rejection events. Intentionally low-cardinality
 # so the audit trail carries the security signal without leaking specifics.
@@ -54,6 +59,7 @@ REASON_AUTH_FAILED = "auth_failed"
 REASON_SCOPE_OUTSIDE_ISSUABLE_BOUNDS = "scope_outside_issuable_bounds"
 REASON_ISSUABLE_BOUNDS_NOT_FOUND = "issuable_bounds_not_found"
 REASON_TTL_EXCEEDS_ISSUABLE_MAX = "ttl_exceeds_issuable_max"
+REASON_SUBJECT_TOKEN_INVALID = "subject_token_invalid"
 
 
 def build_rejection_audit_event(

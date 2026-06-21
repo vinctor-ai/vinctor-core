@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +24,7 @@ from vinctor_service.grant_request_http import (
     GrantRequestService,
     handle_v1_grant_requests_http,
 )
+from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_MAX_TTL_SECONDS
 from vinctor_service.v1_http import (
     AgentIdentity,
     AgentIdentityResolver,
@@ -31,8 +33,10 @@ from vinctor_service.v1_http import (
     V1DelegatedEnforceService,
     V1EnforceService,
     V1HttpResponse,
+    V1TokenService,
     handle_v1_delegated_enforce_http,
     handle_v1_enforce_http,
+    handle_v1_tokens_http,
 )
 
 Clock = Callable[[], datetime]
@@ -114,6 +118,9 @@ def create_v1_http_handler(
             return
         if path == "/v1/enforce":
             _handle_enforce_request(handler, method)
+            return
+        if path == "/v1/tokens":
+            _handle_tokens_request(handler, method)
             return
         if path == "/v1/boundaries" or path.startswith("/v1/boundaries/"):
             _handle_boundary_request(handler, method, path)
@@ -225,6 +232,44 @@ def create_v1_http_handler(
             pep_identity_resolver=pep_identity_resolver,
             service=cast(V1DelegatedEnforceService, service),
             now=now(),
+        )
+        _send_json(handler, response)
+
+    def _handle_tokens_request(
+        handler: BaseHTTPRequestHandler,
+        method: str,
+    ) -> None:
+        if method != "POST":
+            _send_json(
+                handler,
+                V1HttpResponse(
+                    status_code=405,
+                    body={
+                        "error": "method_not_allowed",
+                        "reason": "POST is required for /v1/tokens",
+                    },
+                ),
+            )
+            return
+
+        parsed = _read_json_body(handler)
+        if isinstance(parsed, V1HttpResponse):
+            _send_json(handler, parsed)
+            return
+
+        response = handle_v1_tokens_http(
+            headers=dict(handler.headers.items()),
+            body=parsed,
+            agent_identities=agent_keys,
+            agent_identity_resolver=agent_identity_resolver,
+            service=cast(V1TokenService, service),
+            now=now(),
+            max_ttl=int(
+                os.environ.get(
+                    "VINCTOR_SUBJECT_TOKEN_MAX_TTL_SECONDS",
+                    DEFAULT_SUBJECT_TOKEN_MAX_TTL_SECONDS,
+                )
+            ),
         )
         _send_json(handler, response)
 

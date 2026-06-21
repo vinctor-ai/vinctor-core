@@ -52,6 +52,7 @@ from vinctor_service.models import (
     GrantRequestCreateResult,
     GrantRequestDecisionResult,
     GrantRequestRoutingHint,
+    SubjectToken,
     V1DelegatedEnforceRequest,
     V1EnforceRequest,
     V1EnforceResponse,
@@ -64,6 +65,8 @@ from vinctor_service.repositories import (
     InMemoryAutoApprovalRuleRepository,
     InMemoryGrantRepository,
     InMemoryGrantRequestRepository,
+    InMemorySubjectTokenRepository,
+    SubjectTokenRepository,
 )
 from vinctor_service.service_config import ServiceRuntimeConfig, load_service_runtime_config
 from vinctor_service.service_runtime import (
@@ -78,18 +81,22 @@ from vinctor_service.sqlite import (
     SQLiteBoundaryRegistry,
     SQLiteGrantRepository,
     SQLiteGrantRequestRepository,
+    SQLiteSubjectTokenRepository,
     SQLiteV1Service,
     get_sqlite_schema_versions,
     init_sqlite_schema,
     insert_grant,
 )
+from vinctor_service.subject_tokens import SubjectTokenMintResult
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 from vinctor_service.v1_http import (
     AgentIdentity,
     PepIdentity,
     V1HttpResponse,
+    V1TokenService,
     handle_v1_delegated_enforce_http,
     handle_v1_enforce_http,
+    handle_v1_tokens_http,
 )
 
 __all__ = [
@@ -118,6 +125,7 @@ __all__ = [
     "InMemoryAuditWriter",
     "InMemoryGrantRepository",
     "InMemoryGrantRequestRepository",
+    "InMemorySubjectTokenRepository",
     "InMemoryV1Service",
     "LocalKeyRecord",
     "PEP_KEY_PREFIX",
@@ -129,13 +137,18 @@ __all__ = [
     "SQLiteGrantRepository",
     "SQLiteGrantRequestRepository",
     "SQLiteLocalKeyRepository",
+    "SQLiteSubjectTokenRepository",
     "SQLiteV1Service",
     "ServiceRuntimeConfig",
     "ServiceRuntimeHandle",
+    "SubjectToken",
+    "SubjectTokenMintResult",
+    "SubjectTokenRepository",
     "V1DelegatedEnforceRequest",
     "V1EnforceRequest",
     "V1EnforceResponse",
     "V1HttpResponse",
+    "V1TokenService",
     "WORKSPACE_KEY_PREFIX",
     "WorkspaceIdentity",
     "approve_grant_request",
@@ -155,6 +168,7 @@ __all__ = [
     "handle_v1_enforce_http",
     "handle_v1_grant_requests_http",
     "handle_v1_grants_http",
+    "handle_v1_tokens_http",
     "init_sqlite_schema",
     "insert_grant",
     "issue_grant",

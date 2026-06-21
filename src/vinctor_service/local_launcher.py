@@ -104,6 +104,9 @@ def prepare_local_service(
                 raw_key,
                 now=used_at,
             ),
+            pep_identity_resolver=lambda raw_key, used_at: key_repository.resolve_pep_identity(
+                raw_key, now=used_at
+            ),
             clock=(lambda: timestamp) if now is not None else None,
         )
     except Exception:

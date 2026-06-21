@@ -5,6 +5,7 @@ from datetime import datetime
 
 from vinctor_core.audit import (
     REASON_AGENT_GRANT_MISMATCH,
+    REASON_SUBJECT_TOKEN_INVALID,
     AuditEventInput,
     build_audit_event,
     build_rejection_audit_event,
@@ -19,12 +20,13 @@ from vinctor_core.models import (
 )
 from vinctor_core.scope import is_valid_requested_action, is_valid_requested_resource
 from vinctor_service.audit import AuditWriter
+from vinctor_service.keys import _hash_key
 from vinctor_service.models import (
     V1DelegatedEnforceRequest,
     V1EnforceRequest,
     V1EnforceResponse,
 )
-from vinctor_service.repositories import GrantRepository
+from vinctor_service.repositories import GrantRepository, SubjectTokenRepository
 
 
 def enforce_v1_contract(
@@ -87,6 +89,7 @@ def delegated_enforce_v1_contract(
     audit_writer: AuditWriter,
     boundary_registry: BoundaryLookup | None = None,
     pep_workspace_id: str | None = None,
+    subject_token_repository: SubjectTokenRepository | None = None,
 ) -> V1EnforceResponse:
     """Resolve an on-behalf-of enforce request from a PEP (see ADR 0007).
 
@@ -170,6 +173,62 @@ def delegated_enforce_v1_contract(
             f"grant_ref {request.grant_ref} does not belong to the asserted subject",
         )
 
+    # ADR 0007 Model 2: proven-identity path. The token (if present) must agree
+    # with the asserted body AND the resolved grant; any failure fails closed.
+    # This block runs only after the grant is resolved and owned by the asserted
+    # subject. Its lookup has its own try/except returning 403 -- never 503, and
+    # it never falls back to the legacy asserted (unproven) path on error.
+    identity_proven = False
+    proven_token_id = None
+    if request.subject_token is not None:
+        try:
+            token = (
+                subject_token_repository.get_by_hash(_hash_key(request.subject_token))
+                if subject_token_repository is not None
+                else None
+            )
+        except Exception:
+            token = None
+        if token is None:
+            _record_rejection(
+                audit_writer,
+                reason_code=REASON_SUBJECT_TOKEN_INVALID,
+                workspace_id=trusted_ws,
+                agent_id=request.agent_id,
+                action=request.action,
+                resource=request.resource,
+                boundary_id=request.boundary_id,
+                now=now,
+                enforcing_principal=request.pep_id,
+            )
+            return _pre_audit_error(403, "forbidden", "subject token is not valid")
+        # audience (target pep_id) + identity tuple (body and grant) + expiry
+        if (
+            token.expires_at <= now
+            or token.audience != request.pep_id
+            or token.workspace_id != trusted_ws
+            or token.agent_id != request.agent_id
+            or token.workspace_id != request.workspace_id
+            or token.grant_ref != request.grant_ref
+            or token.agent_id != grant.agent_id
+            or token.workspace_id != grant.workspace_id
+            or token.grant_ref != grant.grant_ref
+        ):
+            _record_rejection(
+                audit_writer,
+                reason_code=REASON_SUBJECT_TOKEN_INVALID,
+                workspace_id=trusted_ws,
+                agent_id=request.agent_id,
+                action=request.action,
+                resource=request.resource,
+                boundary_id=request.boundary_id,
+                now=now,
+                enforcing_principal=request.pep_id,
+            )
+            return _pre_audit_error(403, "forbidden", "subject token is not valid")
+        identity_proven = True
+        proven_token_id = token.token_id
+
     return _evaluate_and_record(
         grant=grant,
         action=request.action,
@@ -179,6 +238,8 @@ def delegated_enforce_v1_contract(
         audit_writer=audit_writer,
         boundary_registry=boundary_registry,
         enforcing_principal=request.pep_id,
+        identity_proven=identity_proven,
+        token_id=proven_token_id,
     )
 
 
@@ -192,6 +253,8 @@ def _evaluate_and_record(
     audit_writer: AuditWriter,
     boundary_registry: BoundaryLookup | None,
     enforcing_principal: str | None = None,
+    identity_proven: bool = False,
+    token_id: str | None = None,
 ) -> V1EnforceResponse:
     if not is_valid_requested_action(action):
         return _pre_audit_error(
@@ -222,6 +285,8 @@ def _evaluate_and_record(
             decision=decision,
             created_at=now,
             enforcing_principal=enforcing_principal,
+            identity_proven=identity_proven,
+            token_id=token_id,
         )
     )
 

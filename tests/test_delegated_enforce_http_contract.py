@@ -149,3 +149,43 @@ def test_delegated_http_rejects_missing_subject_field() -> None:
     assert response.status_code == 400
     assert response.body["error"] == "invalid_request"
     assert svc.audit_events == ()
+
+
+def _mint_raw(svc, *, audience="pep_git_host"):
+    result = svc.mint_subject_token(
+        workspace_id="ws_main", agent_id="agent_release", grant_ref="grt_main",
+        audience=audience, ttl_seconds=300, now=NOW,
+    )
+    return result.token, result.token_id
+
+
+def test_http_proven_permit_records_identity_proven() -> None:
+    svc = service()
+    raw, token_id = _mint_raw(svc)
+    response = call(svc, headers={"X-PEP-Key": "pep_key_main", "X-Subject-Token": raw})
+    assert response.status_code == 200
+    proven = next(e for e in svc.audit_events if e.event_type != "subject_token_minted")
+    assert proven.identity_proven is True
+    assert proven.token_id == token_id
+    assert raw not in str(response.body)
+
+
+def test_http_audience_mismatch_fails_closed() -> None:
+    svc = service()
+    raw, _ = _mint_raw(svc, audience="pep_other_host")
+    response = call(svc, headers={"X-PEP-Key": "pep_key_main", "X-Subject-Token": raw})
+    assert response.status_code == 403
+
+
+def test_http_missing_pep_key_with_token_still_401_first() -> None:
+    svc = service()
+    raw, _ = _mint_raw(svc)
+    response = call(svc, headers={"X-Subject-Token": raw})  # no X-PEP-Key
+    assert response.status_code == 401
+
+
+def test_http_no_token_is_unproven_regression() -> None:
+    svc = service()
+    response = call(svc, headers={"X-PEP-Key": "pep_key_main"})
+    assert response.status_code == 200
+    assert svc.audit_events[0].identity_proven is False

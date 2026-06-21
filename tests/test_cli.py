@@ -85,6 +85,29 @@ def test_vinctor_cli_agent_request_operator_evaluate_and_enforce(
         _stop_service(handle)
 
 
+def test_vinctor_cli_agent_token_mint(tmp_path: Path) -> None:
+    handle = _start_service(tmp_path, scopes=("write:repo/feature/*",))
+    try:
+        common = _common_args(handle, json_output=True)
+        result = _run(
+            [
+                *common,
+                "agent",
+                "token",
+                "mint",
+                "--grant-ref",
+                handle.grant_ref,
+                "--audience",
+                "pep_git_host",
+            ]
+        )
+        assert result["token"].startswith("vat_")
+        assert result["token_id"].startswith("vtk_")
+        assert "expires_at" in result
+    finally:
+        _stop_service(handle)
+
+
 def test_vinctor_cli_manual_review_flow_and_audit_filter(tmp_path: Path) -> None:
     handle = _start_service(tmp_path, scopes=("write:repo/vinctor-core/*",))
     try:
@@ -374,8 +397,8 @@ auto_approval_rules:
         "rules_updated": 0,
         "workspace_id": "ws_demo",
     }
-    assert service_info["schema_versions"] == [1, 2]
-    assert service_info["schema_version"] == 2
+    assert service_info["schema_versions"] == [1, 2, 3]
+    assert service_info["schema_version"] == 3
     assert exported["agent_bounds"] == 1
     assert exported["auto_approval_rules"] == 1
     assert bounds == ("execute:ci/test", "write:repo/vinctor-core/*")
@@ -444,11 +467,11 @@ def test_vinctor_cli_storage_backup_and_reset(tmp_path: Path) -> None:
 
     assert backup["output_path"] == str(backup_path)
     assert backup["bytes"] > 0
-    assert backup["schema_versions"] == [1, 2]
+    assert backup["schema_versions"] == [1, 2, 3]
     assert reset == {
         "db_path": str(db_path),
         "reset": True,
-        "schema_versions": [1, 2],
+        "schema_versions": [1, 2, 3],
     }
 
     backup_conn = sqlite3.connect(backup_path)
@@ -520,8 +543,8 @@ def test_vinctor_cli_service_info_reports_schema(tmp_path: Path) -> None:
 
     assert info["mode"] == "local"
     assert info["db_path"] == str(db_path)
-    assert info["schema_version"] == 2
-    assert info["schema_versions"] == [1, 2]
+    assert info["schema_version"] == 3
+    assert info["schema_versions"] == [1, 2, 3]
     assert info["key_storage_mode"] == "sqlite_hashes"
     assert "host" in info
     assert "port" in info
@@ -557,7 +580,7 @@ def test_vinctor_cli_storage_restore_roundtrip(tmp_path: Path) -> None:
         "db_path": str(db_path),
         "input_path": str(backup_path),
         "restored": True,
-        "schema_versions": [1, 2],
+        "schema_versions": [1, 2, 3],
     }
     conn = sqlite3.connect(db_path)
     try:
@@ -635,7 +658,7 @@ def test_vinctor_cli_storage_migrate_reports_versions(tmp_path: Path) -> None:
 
     migrate = _run(["--json", "--db", str(db_path), "operator", "storage", "migrate"])
 
-    assert migrate == {"db_path": str(db_path), "schema_versions": [1, 2]}
+    assert migrate == {"db_path": str(db_path), "schema_versions": [1, 2, 3]}
     conn = sqlite3.connect(db_path)
     try:
         grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(

@@ -10,6 +10,10 @@ from vinctor_service.models import (
     V1EnforceRequest,
     V1EnforceResponse,
 )
+from vinctor_service.service_config import (
+    DEFAULT_SUBJECT_TOKEN_MAX_TTL_SECONDS,
+    DEFAULT_SUBJECT_TOKEN_TTL_SECONDS,
+)
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,23 @@ class V1DelegatedEnforceService(Protocol):
         *,
         now: datetime,
     ) -> V1EnforceResponse: ...
+
+    def record_auth_failure(
+        self, *, surface: str, boundary_id: str | None, now: datetime
+    ) -> None: ...
+
+
+class V1TokenService(Protocol):
+    def mint_subject_token(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        grant_ref: str,
+        audience: str,
+        ttl_seconds: int,
+        now: datetime,
+    ) -> Any: ...
 
     def record_auth_failure(
         self, *, surface: str, boundary_id: str | None, now: datetime
@@ -141,8 +162,81 @@ def handle_v1_delegated_enforce_http(
         resource=parsed["resource"],
         boundary_id=normalized_headers.get("x-vinctor-boundary-id"),
         pep_workspace_id=identity.workspace_id,
+        subject_token=normalized_headers.get("x-subject-token"),
     )
     return _http_response_from_enforce(service.delegated_enforce(request, now=now))
+
+
+def handle_v1_tokens_http(
+    *,
+    headers: Mapping[str, str],
+    body: object,
+    agent_identities: Mapping[str, AgentIdentity] | None = None,
+    agent_identity_resolver: AgentIdentityResolver | None = None,
+    service: V1TokenService,
+    now: datetime,
+    max_ttl: int = DEFAULT_SUBJECT_TOKEN_MAX_TTL_SECONDS,
+) -> V1HttpResponse:
+    normalized_headers = {key.lower(): value for key, value in headers.items()}
+    agent_key = normalized_headers.get("x-agent-key")
+    identity = (
+        _resolve_agent_identity(
+            agent_key,
+            agent_identities=agent_identities,
+            agent_identity_resolver=agent_identity_resolver,
+            now=now,
+        )
+        if agent_key is not None
+        else None
+    )
+    if identity is None:
+        service.record_auth_failure(surface="tokens", boundary_id=None, now=now)
+        return _error(401, "authentication_required", "valid X-Agent-Key header is required")
+
+    parsed = _parse_tokens_body(body, max_ttl=max_ttl)
+    if isinstance(parsed, V1HttpResponse):
+        return parsed
+
+    result = service.mint_subject_token(
+        workspace_id=identity.workspace_id,
+        agent_id=identity.agent_id,
+        grant_ref=parsed["grant_ref"],
+        audience=parsed["audience"],
+        ttl_seconds=parsed["ttl_seconds"],
+        now=now,
+    )
+    if result.status != "minted":
+        return _error(403, "forbidden", "subject token could not be issued")
+    return V1HttpResponse(
+        status_code=201,
+        body={
+            "token": result.token,
+            "token_id": result.token_id,
+            "expires_at": result.expires_at.isoformat(),
+        },
+    )
+
+
+def _parse_tokens_body(body: object, *, max_ttl: int) -> dict[str, Any] | V1HttpResponse:
+    if not isinstance(body, dict):
+        return _error(400, "invalid_request", "request body must be a JSON object")
+    extra = sorted(set(body) - {"grant_ref", "audience", "ttl_seconds"})
+    if extra:
+        return _error(400, "invalid_request", f"unexpected field: {extra[0]}")
+    for field in ("grant_ref", "audience"):
+        value = body.get(field)
+        if not isinstance(value, str) or value == "":
+            return _error(400, "invalid_request", f"{field} must be a non-empty string")
+    ttl = body.get("ttl_seconds", DEFAULT_SUBJECT_TOKEN_TTL_SECONDS)
+    if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl <= 0:
+        return _error(400, "invalid_request", "ttl_seconds must be a positive integer")
+    if ttl > max_ttl:
+        return _error(400, "invalid_request", f"ttl_seconds exceeds maximum {max_ttl}")
+    return {
+        "grant_ref": body["grant_ref"],
+        "audience": body["audience"],
+        "ttl_seconds": ttl,
+    }
 
 
 def _resolve_agent_identity(

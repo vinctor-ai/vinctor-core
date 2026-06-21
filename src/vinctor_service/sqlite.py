@@ -44,10 +44,12 @@ from vinctor_service.models import (
     GrantRequestCreateRequest,
     GrantRequestCreateResult,
     GrantRequestDecisionResult,
+    SubjectToken,
     V1DelegatedEnforceRequest,
     V1EnforceRequest,
     V1EnforceResponse,
 )
+from vinctor_service.subject_tokens import mint_subject_token
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 
 
@@ -171,6 +173,21 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_auto_approval_rules_workspace
         ON auto_approval_rules(workspace_id);
+
+        CREATE TABLE IF NOT EXISTS subject_tokens (
+            token_id TEXT PRIMARY KEY,
+            token_hash TEXT NOT NULL UNIQUE,
+            workspace_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            grant_ref TEXT NOT NULL,
+            audience TEXT NOT NULL,
+            issued_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            created_by TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_subject_tokens_hash
+        ON subject_tokens(token_hash);
         """
     )
     _ensure_grant_request_metadata_columns(conn)
@@ -188,6 +205,13 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         VALUES (?, ?)
         """,
         (2, datetime.now(UTC).isoformat()),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (3, datetime.now(UTC).isoformat()),
     )
     conn.commit()
 
@@ -510,6 +534,47 @@ class SQLiteGrantRequestRepository:
             )
 
 
+class SQLiteSubjectTokenRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def insert(self, token: SubjectToken) -> None:
+        if self.get_by_hash(token.token_hash) is not None:
+            raise ValueError(f"duplicate subject token_hash: {token.token_hash}")
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO subject_tokens (
+                    token_id, token_hash, workspace_id, agent_id, grant_ref,
+                    audience, issued_at, expires_at, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    token.token_id,
+                    token.token_hash,
+                    token.workspace_id,
+                    token.agent_id,
+                    token.grant_ref,
+                    token.audience,
+                    token.issued_at.isoformat(),
+                    token.expires_at.isoformat(),
+                    token.created_by,
+                ),
+            )
+
+    def get_by_hash(self, token_hash: str) -> SubjectToken | None:
+        row = self._conn.execute(
+            """
+            SELECT token_id, token_hash, workspace_id, agent_id, grant_ref,
+                   audience, issued_at, expires_at, created_by
+            FROM subject_tokens
+            WHERE token_hash = ?
+            """,
+            (token_hash,),
+        ).fetchone()
+        return _subject_token_from_row(row)
+
+
 class SQLiteAutoApprovalRuleRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
@@ -730,6 +795,7 @@ class SQLiteV1Service:
     scope_bounds_repository: SQLiteAgentIssuableScopeBoundsRepository = field(init=False)
     grant_request_repository: SQLiteGrantRequestRepository = field(init=False)
     auto_approval_rule_repository: SQLiteAutoApprovalRuleRepository = field(init=False)
+    subject_token_repository: SQLiteSubjectTokenRepository = field(init=False)
     _auth_failures: AuthFailureAuditThrottle = field(init=False)
 
     def __post_init__(self) -> None:
@@ -742,6 +808,7 @@ class SQLiteV1Service:
         self.scope_bounds_repository = SQLiteAgentIssuableScopeBoundsRepository(self.conn)
         self.grant_request_repository = SQLiteGrantRequestRepository(self.conn)
         self.auto_approval_rule_repository = SQLiteAutoApprovalRuleRepository(self.conn)
+        self.subject_token_repository = SQLiteSubjectTokenRepository(self.conn)
 
     def insert_grant(self, grant: Grant) -> None:
         insert_grant(self.conn, grant)
@@ -827,6 +894,17 @@ class SQLiteV1Service:
             request_repository=self.grant_request_repository,
             audit_writer=self.audit_writer,
             now=now,
+        )
+
+    def mint_subject_token(
+        self, *, workspace_id, agent_id, grant_ref, audience, ttl_seconds, now
+    ):
+        return mint_subject_token(
+            grant_repository=self.grant_repository,
+            subject_token_repository=self.subject_token_repository,
+            audit_writer=self.audit_writer,
+            workspace_id=workspace_id, agent_id=agent_id, grant_ref=grant_ref,
+            audience=audience, ttl_seconds=ttl_seconds, now=now,
         )
 
     def lookup_grant_request(
@@ -1032,6 +1110,7 @@ class SQLiteV1Service:
             now=now,
             audit_writer=self.audit_writer,
             boundary_registry=self.boundary_registry,
+            subject_token_repository=self.subject_token_repository,
         )
 
 
@@ -1121,6 +1200,22 @@ def _grant_request_from_row(row: sqlite3.Row | tuple | None) -> GrantRequest | N
     )
 
 
+def _subject_token_from_row(row: sqlite3.Row | tuple | None) -> SubjectToken | None:
+    if row is None:
+        return None
+    return SubjectToken(
+        token_id=row[0],
+        token_hash=row[1],
+        workspace_id=row[2],
+        agent_id=row[3],
+        grant_ref=row[4],
+        audience=row[5],
+        issued_at=datetime.fromisoformat(row[6]),
+        expires_at=datetime.fromisoformat(row[7]),
+        created_by=row[8],
+    )
+
+
 def _auto_approval_rule_values(rule: AutoApprovalRule) -> tuple[object, ...]:
     return (
         rule.rule_id,
@@ -1177,4 +1272,6 @@ def _audit_event_from_json(value: str) -> AuditEvent:
         boundary_type=data["boundary_type"],
         created_at=datetime.fromisoformat(data["created_at"]),
         enforcing_principal=data.get("enforcing_principal"),
+        identity_proven=data.get("identity_proven", False),
+        token_id=data.get("token_id"),
     )

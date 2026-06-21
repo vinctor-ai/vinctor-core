@@ -275,6 +275,85 @@ def test_sqlite_v1_service_delegated_enforce_persists_enforcing_principal(
     conn.close()
 
 
+def test_sqlite_v1_service_delegated_enforce_persists_proven_identity(
+    tmp_path: Path,
+) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.insert_grant(grant())
+
+    minted = service.mint_subject_token(
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        grant_ref="grt_main",
+        audience="pep_git_host",
+        ttl_seconds=300,
+        now=NOW,
+    )
+    assert minted.status == "minted"
+
+    response = service.delegated_enforce(
+        V1DelegatedEnforceRequest(
+            pep_id="pep_git_host",
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            grant_ref="grt_main",
+            action="write",
+            resource="repo/feature/readme",
+            pep_workspace_id="ws_main",
+            subject_token=minted.token,
+        ),
+        now=NOW,
+    )
+
+    assert response.status_code == 200
+    assert response.decision == "permit"
+    # The proven-identity flags round-trip through JSON-persisted audit storage.
+    persisted = service.get_audit_event(response.audit_event_id or "")
+    assert persisted is not None
+    assert persisted.identity_proven is True
+    assert persisted.token_id == minted.token_id
+    conn.close()
+
+
+def test_sqlite_audit_writer_round_trips_identity_proven_and_token_id(
+    tmp_path: Path,
+) -> None:
+    from vinctor_core.models import AuditEvent
+    from vinctor_service.sqlite import SQLiteAuditWriter, init_sqlite_schema
+
+    conn = connect_db(tmp_path)
+    init_sqlite_schema(conn)
+    writer = SQLiteAuditWriter(conn)
+    event = AuditEvent(
+        event_id="evt_proven",
+        event_type="action_permitted",
+        decision="permit",
+        reason="scope_matched",
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        grant_id="grnt_main",
+        grant_ref="grt_main",
+        action="write",
+        resource="repo/feature/readme",
+        scope_attempted="write:repo/feature/readme",
+        scope_matched="write:repo/feature/*",
+        boundary_id=None,
+        runtime=None,
+        boundary_type=None,
+        created_at=NOW,
+        identity_proven=True,
+        token_id="vtk_x",
+    )
+    writer.write(event)
+
+    persisted = writer.get("evt_proven")
+    assert persisted is not None
+    assert persisted.identity_proven is True
+    assert persisted.token_id == "vtk_x"
+    conn.close()
+
+
 def test_sqlite_v1_service_delegated_enforce_blocks_cross_workspace(
     tmp_path: Path,
 ) -> None:

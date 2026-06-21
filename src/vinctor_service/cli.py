@@ -33,7 +33,12 @@ from vinctor_service.policy_files import (
     export_policy_document,
     write_policy_file,
 )
-from vinctor_service.service_config import LOG_LEVELS, SERVICE_MODES, load_service_runtime_config
+from vinctor_service.service_config import (
+    DEFAULT_SUBJECT_TOKEN_TTL_SECONDS,
+    LOG_LEVELS,
+    SERVICE_MODES,
+    load_service_runtime_config,
+)
 from vinctor_service.service_runtime import serve_service_runtime
 from vinctor_service.sqlite import SQLiteV1Service
 from vinctor_service.storage_ops import (
@@ -176,6 +181,13 @@ def _add_agent_commands(roles: argparse._SubParsersAction) -> None:
     enforce.add_argument("--grant-ref", dest="enforce_grant_ref")
     enforce.add_argument("--action", required=True)
     enforce.add_argument("--resource", required=True)
+
+    token = commands.add_parser("token")
+    token_commands = token.add_subparsers(dest="token_command", required=True)
+    mint = token_commands.add_parser("mint")
+    mint.add_argument("--grant-ref", dest="token_grant_ref", required=True)
+    mint.add_argument("--audience", required=True)
+    mint.add_argument("--ttl")
 
 
 def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
@@ -392,6 +404,34 @@ def _agent(args: argparse.Namespace, *, stdout: TextIO) -> None:
             f"audit_event_id={body.get('audit_event_id')}"
         )
         _emit(args, body, summary, stdout=stdout)
+        return
+
+    if args.agent_command == "token" and args.token_command == "mint":
+        status, body = _request_json(
+            args.endpoint,
+            "POST",
+            "/v1/tokens",
+            headers={"X-Agent-Key": _required(args.agent_key, "agent key")},
+            body={
+                "grant_ref": _required(args.token_grant_ref, "grant ref"),
+                "audience": _required(args.audience, "audience"),
+                "ttl_seconds": (
+                    _parse_duration_seconds(args.ttl)
+                    if args.ttl
+                    else DEFAULT_SUBJECT_TOKEN_TTL_SECONDS
+                ),
+            },
+        )
+        _raise_for_status(status, body)
+        text = "\n".join(
+            [
+                f"minted subject token token_id={body['token_id']} "
+                f"expires_at={body['expires_at']}",
+                f"token={body['token']}",
+                "# Store this raw token now; it cannot be recovered from SQLite.",
+            ]
+        )
+        _emit(args, body, text, stdout=stdout)
         return
 
     raise CliError("unknown agent command")

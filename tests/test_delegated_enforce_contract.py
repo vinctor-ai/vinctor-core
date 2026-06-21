@@ -1,12 +1,18 @@
 from datetime import UTC, datetime, timedelta
 
 from vinctor_core import Grant
-from vinctor_core.audit import EVENT_ACCESS_REJECTED, REASON_AGENT_GRANT_MISMATCH
+from vinctor_core.audit import (
+    EVENT_ACCESS_REJECTED,
+    REASON_AGENT_GRANT_MISMATCH,
+    REASON_SUBJECT_TOKEN_INVALID,
+)
 from vinctor_service import (
     InMemoryAuditWriter,
     InMemoryGrantRepository,
 )
-from vinctor_service.models import V1DelegatedEnforceRequest
+from vinctor_service.keys import _hash_key, _new_key
+from vinctor_service.models import SubjectToken, V1DelegatedEnforceRequest
+from vinctor_service.repositories import InMemorySubjectTokenRepository
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
@@ -42,6 +48,7 @@ def request(
     resource: str = "repo/feature/readme",
     boundary_id: str | None = None,
     pep_workspace_id: str | None = "ws_main",
+    subject_token: str | None = None,
 ) -> V1DelegatedEnforceRequest:
     # ``pep_workspace_id`` mirrors what the HTTP handler always forces from the
     # authenticated PEP key (see handle_v1_delegated_enforce_http). It defaults
@@ -56,6 +63,7 @@ def request(
         resource=resource,
         boundary_id=boundary_id,
         pep_workspace_id=pep_workspace_id,
+        subject_token=subject_token,
     )
 
 
@@ -239,3 +247,115 @@ def test_delegated_enforce_does_not_disclose_grant_ref_in_response() -> None:
 
     assert "grt_main" not in (response.reason or "")
     assert "grt_main" not in (response.error or "")
+
+
+def _raw_and_repo(
+    *,
+    audience="pep_git_host",
+    workspace_id="ws_main",
+    agent_id="agent_release",
+    grant_ref="grt_main",
+    expires_at=None,
+):
+    raw = _new_key("vat_")
+    token = SubjectToken(
+        token_id=_new_key("vtk_"),
+        token_hash=_hash_key(raw),
+        workspace_id=workspace_id,
+        agent_id=agent_id,
+        grant_ref=grant_ref,
+        audience=audience,
+        issued_at=NOW,
+        expires_at=expires_at or (NOW + timedelta(seconds=300)),
+        created_by=agent_id,
+    )
+    repo = InMemorySubjectTokenRepository((token,))
+    return raw, token, repo
+
+
+def test_proven_path_permits_and_marks_identity_proven() -> None:
+    audit = InMemoryAuditWriter()
+    raw, token, repo = _raw_and_repo()
+    response = delegated_enforce_v1_contract(
+        request(subject_token=raw),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=audit,
+        subject_token_repository=repo,
+    )
+    assert response.decision == "permit"
+    assert audit.events[0].identity_proven is True
+    assert audit.events[0].token_id == token.token_id
+
+
+def test_expired_token_fails_closed() -> None:
+    audit = InMemoryAuditWriter()
+    raw, _, repo = _raw_and_repo(expires_at=NOW - timedelta(seconds=1))
+    response = delegated_enforce_v1_contract(
+        request(subject_token=raw),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=audit,
+        subject_token_repository=repo,
+    )
+    assert response.status_code == 403
+    assert response.error == "forbidden"
+    assert audit.events[0].reason_code == REASON_SUBJECT_TOKEN_INVALID
+
+
+def test_audience_mismatch_fails_closed() -> None:
+    audit = InMemoryAuditWriter()
+    raw, _, repo = _raw_and_repo(audience="pep_other_host")
+    response = delegated_enforce_v1_contract(
+        request(subject_token=raw),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=audit,
+        subject_token_repository=repo,
+    )
+    assert response.status_code == 403
+
+
+def test_token_subject_mismatch_with_body_fails_closed() -> None:
+    audit = InMemoryAuditWriter()
+    # token says agent_other, body says agent_release
+    raw, _, repo = _raw_and_repo(agent_id="agent_other")
+    response = delegated_enforce_v1_contract(
+        request(subject_token=raw),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=audit,
+        subject_token_repository=repo,
+    )
+    assert response.status_code == 403
+
+
+def test_token_store_error_fails_closed_not_503() -> None:
+    class Boom:
+        def get_by_hash(self, token_hash):
+            raise RuntimeError("store down")
+
+    audit = InMemoryAuditWriter()
+    raw, _, _ = _raw_and_repo()
+    response = delegated_enforce_v1_contract(
+        request(subject_token=raw),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=audit,
+        subject_token_repository=Boom(),
+    )
+    assert response.status_code == 403  # NOT 503, NOT a permit
+
+
+def test_no_token_legacy_path_unchanged() -> None:
+    audit = InMemoryAuditWriter()
+    response = delegated_enforce_v1_contract(
+        request(),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=audit,
+        subject_token_repository=InMemorySubjectTokenRepository(),
+    )
+    assert response.decision == "permit"
+    assert audit.events[0].identity_proven is False
+    assert "identity_proven" not in audit.events[0].to_dict()

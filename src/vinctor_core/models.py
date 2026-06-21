@@ -138,6 +138,9 @@ class AuditEvent:
     occurrence_count: int | None = None
     first_seen_at: datetime | None = None
     last_seen_at: datetime | None = None
+    # ADR 0007 Model 2 identity-proof (set only on a proven delegated decision).
+    identity_proven: bool = False
+    token_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         event: dict[str, object] = {
@@ -168,4 +171,8 @@ class AuditEvent:
             event["first_seen_at"] = self.first_seen_at.isoformat()
         if self.last_seen_at is not None:
             event["last_seen_at"] = self.last_seen_at.isoformat()
+        if self.identity_proven:
+            event["identity_proven"] = True
+        if self.token_id is not None:
+            event["token_id"] = self.token_id
         return event

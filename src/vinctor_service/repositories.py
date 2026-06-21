@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from vinctor_core.models import Grant
-from vinctor_service.models import AutoApprovalRule, GrantRequest
+from vinctor_service.models import AutoApprovalRule, GrantRequest, SubjectToken
 
 
 class GrantRepository(Protocol):
@@ -42,6 +42,12 @@ class AutoApprovalRuleRepository(Protocol):
     def list_rules_for_workspace(self, workspace_id: str) -> tuple[AutoApprovalRule, ...]: ...
 
     def update_rule(self, rule: AutoApprovalRule) -> None: ...
+
+
+class SubjectTokenRepository(Protocol):
+    def insert(self, token: SubjectToken) -> None: ...
+
+    def get_by_hash(self, token_hash: str) -> SubjectToken | None: ...
 
 
 class InMemoryGrantRepository:
@@ -140,3 +146,21 @@ class InMemoryAutoApprovalRuleRepository:
         if rule.rule_id not in self._rules_by_id:
             raise ValueError(f"unknown auto-approval rule_id: {rule.rule_id}")
         self._rules_by_id[rule.rule_id] = rule
+
+
+class InMemorySubjectTokenRepository:
+    def __init__(self, tokens: tuple[SubjectToken, ...] = ()) -> None:
+        tokens_by_hash: dict[str, SubjectToken] = {}
+        for token in tokens:
+            if token.token_hash in tokens_by_hash:
+                raise ValueError(f"duplicate subject token_hash: {token.token_hash}")
+            tokens_by_hash[token.token_hash] = token
+        self._tokens_by_hash = tokens_by_hash
+
+    def insert(self, token: SubjectToken) -> None:
+        if token.token_hash in self._tokens_by_hash:
+            raise ValueError(f"duplicate subject token_hash: {token.token_hash}")
+        self._tokens_by_hash[token.token_hash] = token
+
+    def get_by_hash(self, token_hash: str) -> SubjectToken | None:
+        return self._tokens_by_hash.get(token_hash)

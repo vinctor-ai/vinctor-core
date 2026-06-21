@@ -71,6 +71,7 @@ class V1DelegatedEnforceRequest:
     resource: str
     boundary_id: str | None = None
     pep_workspace_id: str | None = None
+    subject_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -182,3 +183,16 @@ class AutoApprovalEvaluationResult:
     reason: str
     request: GrantRequest
     rule: AutoApprovalRule | None = None
+
+
+@dataclass(frozen=True)
+class SubjectToken:
+    token_id: str  # public id, prefix vtk_
+    token_hash: str  # SHA-256 of the raw vat_ token; raw is never stored
+    workspace_id: str
+    agent_id: str
+    grant_ref: str
+    audience: str  # target pep_id
+    issued_at: datetime
+    expires_at: datetime
+    created_by: str  # minting agent

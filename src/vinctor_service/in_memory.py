@@ -51,6 +51,7 @@ from vinctor_service.repositories import (
     InMemoryAutoApprovalRuleRepository,
     InMemoryGrantRepository,
     InMemoryGrantRequestRepository,
+    InMemorySubjectTokenRepository,
 )
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 
@@ -68,6 +69,7 @@ class InMemoryV1Service:
         self.grant_repository = InMemoryGrantRepository(self.grants)
         self.grant_request_repository = InMemoryGrantRequestRepository()
         self.auto_approval_rule_repository = InMemoryAutoApprovalRuleRepository()
+        self.subject_token_repository = InMemorySubjectTokenRepository()
         self.scope_bounds_repository = InMemoryAgentIssuableScopeBoundsRepository(
             self.initial_issuable_scope_bounds
         )
@@ -220,6 +222,19 @@ class InMemoryV1Service:
             now=now,
         )
 
+    def mint_subject_token(
+        self, *, workspace_id, agent_id, grant_ref, audience, ttl_seconds, now
+    ):
+        from vinctor_service.subject_tokens import mint_subject_token
+
+        return mint_subject_token(
+            grant_repository=self.grant_repository,
+            subject_token_repository=self.subject_token_repository,
+            audit_writer=self.audit_writer,
+            workspace_id=workspace_id, agent_id=agent_id, grant_ref=grant_ref,
+            audience=audience, ttl_seconds=ttl_seconds, now=now,
+        )
+
     def lookup_grant_request(
         self,
         *,
@@ -357,4 +372,5 @@ class InMemoryV1Service:
             now=now,
             audit_writer=self.audit_writer,
             boundary_registry=self.boundary_registry,
+            subject_token_repository=self.subject_token_repository,
         )

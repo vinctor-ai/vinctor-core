@@ -16,6 +16,22 @@ served runtime). This makes the mechanism usable for local evaluation; it still
 makes **no** claim of proven on-behalf-of identity — that (identity proof,
 models 1/2/3 below) remains the OPEN DECISION.
 
+**Identity-proof decision (2026-06-21): RESOLVED — Model 2 selected (founder
+sign-off) and implemented.** The subject is proven by a Vinctor-issued,
+grant-bound, audience-scoped, short-lived token (`vat_`): the agent mints one for
+its own grant (`POST /v1/tokens`, `vinctor agent token mint`) and the PEP presents
+it via the additive optional `X-Subject-Token` header on `/v1/enforce/delegated`.
+When present and valid (token resolves by hash, not expired, audience = the
+authenticated PEP, and the token/body/grant agree on the full
+`(agent_id, workspace_id, grant_ref)` tuple), the decision is audited
+`identity_proven=true` with the `token_id`; any failure fails closed (403, never
+503, never a fall-through to the unproven path). The legacy no-token path is
+unchanged and still makes no proof claim. Models 1 and 3 are not pursued.
+mTLS/DPoP proof-of-possession remains the intended hardening (a forward-compatible
+extension point, not in this slice). Design:
+`docs/superpowers/specs/2026-06-21-adr0007-subject-token-identity-proof-design.md`;
+plan: `docs/superpowers/plans/2026-06-21-adr0007-subject-tokens.md`.
+
 ## Context
 
 `src/vinctor_core/enforce.py:evaluate_enforce` is identity-agnostic: it answers

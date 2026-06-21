@@ -235,6 +235,43 @@ def test_audit_event_records_enforcing_principal_when_set() -> None:
     assert event.to_dict()["enforcing_principal"] == "pep_git_host"
 
 
+def test_audit_event_identity_proven_defaults_absent_from_to_dict() -> None:
+    decision = evaluate_enforce(
+        EnforceInput(
+            grant=active_grant(),
+            action="execute",
+            resource="deploy/staging",
+            now=NOW,
+        )
+    )
+
+    event = build_audit_event(AuditEventInput(decision=decision))
+
+    assert event.identity_proven is False
+    assert event.token_id is None
+    assert "identity_proven" not in event.to_dict()
+    assert "token_id" not in event.to_dict()
+
+
+def test_audit_event_records_identity_proven_and_token_id() -> None:
+    decision = evaluate_enforce(
+        EnforceInput(
+            grant=active_grant(),
+            action="execute",
+            resource="deploy/staging",
+            now=NOW,
+        )
+    )
+
+    event = build_audit_event(
+        AuditEventInput(decision=decision, identity_proven=True, token_id="vtk_x")
+    )
+
+    assert event.identity_proven is True
+    assert event.to_dict()["identity_proven"] is True
+    assert event.to_dict()["token_id"] == "vtk_x"
+
+
 def test_auth_failure_throttle_emits_timely_event_then_suppresses_window() -> None:
     writer = InMemoryAuditWriter()
     throttle = AuthFailureAuditThrottle(window_seconds=60)
