@@ -669,6 +669,7 @@ git diff --check
 - `.github/workflows/ci.yml` - public CI for tests, demo, lint, and whitespace
 - `docs/next-actions.md` - current work state and next tasks
 - `docs/cli-design.md` - local prototype CLI design and migration plan
+- `docs/cli-reference.md` - per-value CLI command reference, organized by config value (--help-derived)
 - `docs/local-hook-runbook.md` - local service to runtime hook walkthrough
 - `docs/git-boundary-demo-scenario.md` - repo-scope boundary demo scenario
 - `docs/threat-model.md` - per-phase threat model: what each phase does and does not defend
