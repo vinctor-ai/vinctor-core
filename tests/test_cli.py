@@ -527,8 +527,14 @@ def test_vinctor_cli_storage_restore_requires_yes(tmp_path: Path) -> None:
     _seed_storage_db(db_path)
     _run(
         [
-            "--json", "--db", str(db_path),
-            "operator", "storage", "backup", "--output", str(backup_path),
+            "--json",
+            "--db",
+            str(db_path),
+            "operator",
+            "storage",
+            "backup",
+            "--output",
+            str(backup_path),
         ]
     )
 
@@ -552,8 +558,14 @@ def test_vinctor_cli_storage_restore_rejects_invalid_input(tmp_path: Path) -> No
     stderr = StringIO()
     status = run_vinctor(
         [
-            "--db", str(db_path), "operator", "storage", "restore",
-            "--input", str(bad_input), "--yes",
+            "--db",
+            str(db_path),
+            "operator",
+            "storage",
+            "restore",
+            "--input",
+            str(bad_input),
+            "--yes",
         ],
         stdout=stdout,
         stderr=stderr,
@@ -621,8 +633,14 @@ def test_vinctor_cli_keys_revoke_unknown_errors(tmp_path: Path) -> None:
     stderr = StringIO()
     status = run_vinctor(
         [
-            "--db", str(db_path), "--workspace-id", "ws_demo",
-            "operator", "keys", "revoke", "lkey_nope",
+            "--db",
+            str(db_path),
+            "--workspace-id",
+            "ws_demo",
+            "operator",
+            "keys",
+            "revoke",
+            "lkey_nope",
         ],
         stdout=stdout,
         stderr=stderr,
@@ -658,6 +676,17 @@ def test_vinctor_cli_keys_rotate_agent(tmp_path: Path) -> None:
     assert rotated["raw_key"].startswith("aak_")
     assert rotated["key_type"] == "agent"
     assert rotated["agent_id"] == "agent_runner"
+
+
+def test_vinctor_cli_keys_rotate_pep(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+
+    rotated = _run([*common, "operator", "keys", "rotate", "pep", "--pep-id", "pep_runner"])
+    assert rotated["raw_key"].startswith("pep_")
+    assert rotated["key_type"] == "resource_server"
+    assert rotated["agent_id"] == "pep_runner"
 
 
 def test_vinctor_cli_bounds_set_with_max_ttl_and_show(tmp_path: Path) -> None:

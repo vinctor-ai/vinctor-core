@@ -6,10 +6,16 @@ from pathlib import Path
 
 from vinctor_service.key_ops import (
     rotate_agent_key,
+    rotate_pep_key,
     rotate_workspace_key,
     serialize_key_record,
 )
-from vinctor_service.keys import AGENT_KEY_PREFIX, WORKSPACE_KEY_PREFIX, SQLiteLocalKeyRepository
+from vinctor_service.keys import (
+    AGENT_KEY_PREFIX,
+    PEP_KEY_PREFIX,
+    WORKSPACE_KEY_PREFIX,
+    SQLiteLocalKeyRepository,
+)
 from vinctor_service.sqlite import SQLiteV1Service
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
@@ -69,4 +75,19 @@ def test_rotate_workspace_key_does_not_revoke_agent_keys(tmp_path: Path) -> None
 
     rotate_workspace_key(repo, workspace_id="ws_demo", now=NOW)
 
+    assert repo.get_by_id(agent_key.record.key_id).status == "active"
+
+
+def test_rotate_pep_key_only_revokes_same_pep(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "vinctor.sqlite")
+    pep_old = repo.create_pep_key(workspace_id="ws_demo", pep_id="pep_a", now=NOW)
+    other_pep = repo.create_pep_key(workspace_id="ws_demo", pep_id="pep_b", now=NOW)
+    agent_key = repo.create_agent_key(workspace_id="ws_demo", agent_id="agent_a", now=NOW)
+
+    result = rotate_pep_key(repo, workspace_id="ws_demo", pep_id="pep_a", now=NOW)
+
+    assert result.raw_key.startswith(PEP_KEY_PREFIX)
+    assert pep_old.record.key_id in result.revoked_key_ids
+    assert repo.get_by_id(pep_old.record.key_id).status == "revoked"
+    assert repo.get_by_id(other_pep.record.key_id).status == "active"
     assert repo.get_by_id(agent_key.record.key_id).status == "active"

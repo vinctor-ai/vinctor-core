@@ -8,6 +8,14 @@ Accepted for the forward-compatible mechanism. The agent-identity-proof model
 (see "Recommendation: agent identity proof") is an **OPEN DECISION** that
 requires founder sign-off before any production posture is claimed.
 
+**Runtime wiring (2026-06-21):** the mechanism is now wired into the local
+runtime — `vinctor operator keys rotate pep --pep-id <id>` provisions a PEP key,
+and `vinctor service serve` resolves PEP keys for `/v1/enforce/delegated`
+(previously the contract was implemented and tested but not reachable through the
+served runtime). This makes the mechanism usable for local evaluation; it still
+makes **no** claim of proven on-behalf-of identity — that (identity proof,
+models 1/2/3 below) remains the OPEN DECISION.
+
 ## Context
 
 `src/vinctor_core/enforce.py:evaluate_enforce` is identity-agnostic: it answers

@@ -139,6 +139,25 @@ For creating multiple agents and the manual end-to-end setup, see the
 
 ---
 
+## PEP key (`pep_…`) and delegated enforce
+
+A PEP (Policy Enforcement Point / resource-server) key lets a resource server ask
+Vinctor to authorize a tool call **on behalf of** a subject agent, via
+`/v1/enforce/delegated`. See
+[ADR 0007](decisions/0007-delegated-enforce-and-pep-identity.md).
+
+- **Created by** `vinctor operator keys rotate pep --pep-id <id>` (prints `pep_…`
+  once). Workspace-scoped.
+- **Consumed via** the `X-PEP-Key` header on `POST /v1/enforce/delegated`, whose
+  body asserts the subject (`workspace_id`, `agent_id`, `grant_ref`, `action`,
+  `resource`). The asserted `workspace_id` is forced to the PEP key's own
+  workspace, so a PEP can never authorize across workspaces.
+- The mechanism authorizes against the asserted grant; it does **not** by itself
+  prove the call originates from the asserted agent — identity proof is an open
+  decision (ADR 0007).
+
+---
+
 ## Grant (grant ref `grt_…`, grant id, scopes, TTL)
 
 A grant is the scoped, time-boxed permission set each tool call is checked against.
@@ -310,7 +329,7 @@ recoverable** — capture them when shown. Rotate with `operator keys rotate`.
 | `operator audit` | `list`, `export` |
 | `operator policy` | `apply`, `export` |
 | `operator storage` | `backup`, `reset`, `restore`, `migrate` |
-| `operator keys` | `list`, `revoke`, `rotate {workspace,agent}` |
+| `operator keys` | `list`, `revoke`, `rotate {workspace,agent,pep}` |
 | `operator service` | `info` |
 | `demo` | `check`, `service` |
 

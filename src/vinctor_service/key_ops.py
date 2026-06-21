@@ -77,6 +77,33 @@ def rotate_agent_key(
     )
 
 
+def rotate_pep_key(
+    repository: SQLiteLocalKeyRepository,
+    *,
+    workspace_id: str,
+    pep_id: str,
+    now: datetime,
+) -> RotationResult:
+    """Mint a new PEP (resource-server) key and revoke prior keys for that PEP."""
+    created = repository.create_pep_key(
+        workspace_id=workspace_id,
+        pep_id=pep_id,
+        now=now,
+    )
+    revoked = _revoke_prior(
+        repository,
+        workspace_id=workspace_id,
+        new_key_id=created.record.key_id,
+        keep=lambda record: record.key_type == "resource_server" and record.agent_id == pep_id,
+        now=now,
+    )
+    return RotationResult(
+        raw_key=created.raw_key,
+        new_key_id=created.record.key_id,
+        revoked_key_ids=revoked,
+    )
+
+
 def _revoke_prior(
     repository: SQLiteLocalKeyRepository,
     *,

@@ -15,7 +15,12 @@ from typing import NoReturn, TextIO
 from urllib.parse import urlsplit
 
 from vinctor_core.models import Grant
-from vinctor_service.key_ops import rotate_agent_key, rotate_workspace_key, serialize_key_record
+from vinctor_service.key_ops import (
+    rotate_agent_key,
+    rotate_pep_key,
+    rotate_workspace_key,
+    serialize_key_record,
+)
 from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.local_launcher import (
     DEFAULT_SCOPE,
@@ -263,6 +268,8 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
     rotate_targets.add_parser("workspace")
     rotate_agent = rotate_targets.add_parser("agent")
     rotate_agent.add_argument("--agent-id", required=True)
+    rotate_pep = rotate_targets.add_parser("pep")
+    rotate_pep.add_argument("--pep-id", required=True)
 
 
 def _add_demo_commands(roles: argparse._SubParsersAction) -> None:
@@ -496,9 +503,7 @@ def _operator_requests(args: argparse.Namespace, *, stdout: TextIO) -> None:
         _raise_for_status(status, body)
         grant = body.get("grant")
         grant_ref = (
-            grant.get("grant_ref")
-            if isinstance(grant, dict)
-            else body.get("issued_grant_ref")
+            grant.get("grant_ref") if isinstance(grant, dict) else body.get("issued_grant_ref")
         )
         verb = "approved" if command == "approve" else "rejected"
         _emit(
@@ -666,9 +671,7 @@ def _operator_audit_export(args: argparse.Namespace, *, stdout: TextIO) -> None:
         raise CliError("valid workspace key is required for audit export", code=EXIT_AUTH)
 
     events = [
-        event
-        for event in service.audit_events
-        if event.workspace_id == identity.workspace_id
+        event for event in service.audit_events if event.workspace_id == identity.workspace_id
     ]
     payload = "\n".join(json.dumps(_audit_body(event), sort_keys=True) for event in events)
     if args.file is not None:
@@ -845,6 +848,15 @@ def _operator_keys(args: argparse.Namespace, *, stdout: TextIO) -> None:
             )
             key_type = "agent"
             agent_id = args.agent_id
+        elif args.rotate_target == "pep":
+            result = rotate_pep_key(
+                repository,
+                workspace_id=args.workspace_id,
+                pep_id=args.pep_id,
+                now=now,
+            )
+            key_type = "resource_server"
+            agent_id = args.pep_id
         else:
             raise CliError(f"unknown rotate target: {args.rotate_target}")
         body = {

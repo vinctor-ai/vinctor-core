@@ -50,6 +50,9 @@ def prepare_service_runtime(
             workspace_identity_resolver=lambda raw_key, used_at: (
                 key_repository.resolve_workspace_identity(raw_key, now=used_at)
             ),
+            pep_identity_resolver=lambda raw_key, used_at: key_repository.resolve_pep_identity(
+                raw_key, now=used_at
+            ),
             clock=clock,
             service_mode=config.service_mode,
         )
