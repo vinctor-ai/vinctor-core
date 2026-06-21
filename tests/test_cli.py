@@ -385,6 +385,54 @@ auto_approval_rules:
     conn.close()
 
 
+def test_vinctor_cli_policy_apply_is_atomic_on_invalid_later_entry(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    policy_path = tmp_path / "bad-policy.yaml"
+    # A valid bound for agent_a precedes an invalid-scope bound for agent_b.
+    policy_path.write_text(
+        """
+version: 1
+workspace_id: ws_demo
+agent_bounds:
+  - agent_id: agent_a
+    scopes:
+      - execute:ci/test
+  - agent_id: agent_b
+    scopes:
+      - not-a-valid-scope
+""".strip(),
+        encoding="utf-8",
+    )
+
+    stdout, stderr = StringIO(), StringIO()
+    status = run_vinctor(
+        [
+            "--db",
+            str(db_path),
+            "--workspace-id",
+            "ws_demo",
+            "operator",
+            "policy",
+            "apply",
+            "--file",
+            str(policy_path),
+        ],
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert status != 0
+    assert "invalid issuable scope bound" in stderr.getvalue()
+    # Atomic apply: the valid earlier bound must NOT have been committed.
+    conn = sqlite3.connect(db_path)
+    service = SQLiteV1Service(conn)
+    assert (
+        service.scope_bounds_repository.get_bounds(workspace_id="ws_demo", agent_id="agent_a")
+        is None
+    )
+    conn.close()
+
+
 def test_vinctor_cli_storage_backup_and_reset(tmp_path: Path) -> None:
     db_path = tmp_path / "vinctor.sqlite"
     backup_path = tmp_path / "backups" / "vinctor.backup.sqlite"

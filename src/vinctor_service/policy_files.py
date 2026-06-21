@@ -9,7 +9,9 @@ from typing import Any
 
 import yaml
 
+from vinctor_core.scope import is_valid_grant_scope
 from vinctor_service.auto_approval import upsert_auto_approval_rule
+from vinctor_service.grants import validate_issuable_scope_bounds
 from vinctor_service.models import AutoApprovalRule
 from vinctor_service.sqlite import SQLiteV1Service
 
@@ -35,21 +37,22 @@ def apply_policy_file(
     if policy_workspace_id is not None and policy_workspace_id != workspace_id:
         raise ValueError("policy workspace_id does not match selected workspace")
 
-    bounds_set = 0
+    # Parse and fully validate the ENTIRE document (shape and scope grammar)
+    # BEFORE any write. A malformed later entry must not leave earlier entries
+    # committed, so apply is all-or-nothing with respect to validation. Only
+    # read-only lookups (get_rule) happen during this phase.
+    parsed_bounds = []
     for entry in _required_list(document, "agent_bounds"):
         parsed = _parse_bounds_entry(entry)
-        service.set_agent_issuable_scope_bounds(
-            workspace_id=workspace_id,
-            agent_id=parsed["agent_id"],
-            scopes=tuple(parsed["scopes"]),
-            now=now,
-        )
-        bounds_set += 1
+        validate_issuable_scope_bounds(tuple(parsed["scopes"]))
+        parsed_bounds.append(parsed)
 
-    rules_created = 0
-    rules_updated = 0
+    prepared_rules = []
     for entry in _required_list(document, "auto_approval_rules"):
         parsed = _parse_rule_entry(entry)
+        for scope in parsed["allowed_scopes"]:
+            if not is_valid_grant_scope(scope):
+                raise ValueError(f"invalid allowed scope: {scope}")
         rule_id = parsed.get("rule_id") or _stable_rule_id(
             workspace_id=workspace_id,
             name=parsed["name"],
@@ -57,19 +60,34 @@ def apply_policy_file(
             scopes=tuple(parsed["allowed_scopes"]),
         )
         existing = service.auto_approval_rule_repository.get_rule(rule_id)
-        rule = AutoApprovalRule(
-            rule_id=rule_id,
-            workspace_id=workspace_id,
-            name=parsed["name"],
-            target_agent_id=parsed["target_agent_id"],
-            allowed_scopes=tuple(parsed["allowed_scopes"]),
-            max_ttl_seconds=parsed["max_ttl_seconds"],
-            status=parsed["status"],
-            created_by=existing.created_by if existing is not None else applied_by,
-            created_at=existing.created_at if existing is not None else now,
-            updated_by=applied_by if existing is not None else None,
-            updated_at=now if existing is not None else None,
+        prepared_rules.append(
+            AutoApprovalRule(
+                rule_id=rule_id,
+                workspace_id=workspace_id,
+                name=parsed["name"],
+                target_agent_id=parsed["target_agent_id"],
+                allowed_scopes=tuple(parsed["allowed_scopes"]),
+                max_ttl_seconds=parsed["max_ttl_seconds"],
+                status=parsed["status"],
+                created_by=existing.created_by if existing is not None else applied_by,
+                created_at=existing.created_at if existing is not None else now,
+                updated_by=applied_by if existing is not None else None,
+                updated_at=now if existing is not None else None,
+            )
         )
+
+    # Every entry validated; apply all writes.
+    for parsed in parsed_bounds:
+        service.set_agent_issuable_scope_bounds(
+            workspace_id=workspace_id,
+            agent_id=parsed["agent_id"],
+            scopes=tuple(parsed["scopes"]),
+            now=now,
+        )
+
+    rules_created = 0
+    rules_updated = 0
+    for rule in prepared_rules:
         action = upsert_auto_approval_rule(
             rule_repository=service.auto_approval_rule_repository,
             rule=rule,
@@ -81,7 +99,7 @@ def apply_policy_file(
 
     return PolicyApplyResult(
         workspace_id=workspace_id,
-        bounds_set=bounds_set,
+        bounds_set=len(parsed_bounds),
         rules_created=rules_created,
         rules_updated=rules_updated,
     )
