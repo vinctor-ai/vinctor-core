@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -82,7 +83,18 @@ def render_service_runtime_banner(handle: ServiceRuntimeHandle) -> str:
 
 
 def serve_service_runtime(config: ServiceRuntimeConfig) -> NoReturn:
-    handle = prepare_service_runtime(config)
+    try:
+        handle = prepare_service_runtime(config)
+    except OSError as error:
+        if error.errno == errno.EADDRINUSE:
+            from vinctor_service.cli import EXIT_SERVICE, CliError
+
+            raise CliError(
+                f"port {config.port} already in use — pass --port <n> "
+                "(or --port 0 for any free port)",
+                code=EXIT_SERVICE,
+            ) from error
+        raise
     print(render_service_runtime_banner(handle), flush=True)
     try:
         handle.server.serve_forever()

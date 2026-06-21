@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from http.client import HTTPConnection
@@ -9,10 +10,12 @@ from threading import Thread
 
 import pytest
 
+from vinctor_service.cli import EXIT_SERVICE, CliError
 from vinctor_service.local_launcher import (
     LocalLaunchConfig,
     prepare_local_service,
     render_env_exports,
+    serve_local_service,
 )
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
@@ -82,11 +85,13 @@ def test_render_env_exports_includes_copy_pasteable_hook_values(
     assert 'export VINCTOR_BOUNDARY_ID="' in exports
     assert "# Grant expires at 2026-06-10T20:00:00+00:00." in exports
     assert "# Restart with explicit keys:" in exports
+    assert "# vinctor local start \\" in exports
     assert "#   --db " in exports
     assert '#   --workspace-key "$VINCTOR_WORKSPACE_KEY" \\' in exports
     assert '#   --agent-key "$VINCTOR_AGENT_KEY" \\' in exports
     assert '#   --grant-ref "$VINCTOR_GRANT_REF" \\' in exports
     assert '#   --boundary-name "claude-code-local"' in exports
+    assert "# fallback: python -m vinctor_service.local_launcher ..." in exports
     assert "X-Vinctor-Boundary-Id" in exports
 
 
@@ -182,6 +187,30 @@ def test_prepare_local_service_reuses_explicit_durable_keys(
         assert raw_key_count == 0
     finally:
         second.close()
+
+
+def test_serve_local_service_raises_cli_error_on_busy_port(tmp_path: Path) -> None:
+    busy = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    busy.bind(("127.0.0.1", 0))
+    busy.listen(1)
+    port = busy.getsockname()[1]
+    try:
+        with pytest.raises(CliError) as exc_info:
+            serve_local_service(
+                LocalLaunchConfig(
+                    db_path=tmp_path / "vinctor.sqlite",
+                    port=port,
+                    workspace_key="wsk_demo",
+                    agent_key="aak_demo",
+                    grant_ref="grt_demo",
+                )
+            )
+    finally:
+        busy.close()
+
+    assert exc_info.value.code == EXIT_SERVICE
+    assert f"port {port} already in use" in str(exc_info.value)
+    assert "--port" in str(exc_info.value)
 
 
 def test_prepare_local_service_rejects_invalid_scope(tmp_path: Path) -> None:

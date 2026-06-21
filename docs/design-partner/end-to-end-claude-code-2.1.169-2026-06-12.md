@@ -337,9 +337,10 @@ diagnostic mode would_be_allowed_by:
 
 - The automated setup script proves local service behavior and API-issued grant
   lifecycle, not a live Claude Code run.
-- The automated service smoke uses a fixed test clock, so audit timestamps are
-  intentionally stable and TTL expiry by waiting is not the proof target here.
-  Use revoke/lifecycle-specific tests for expiry behavior.
+- The fixed test clock is supplied only by the pytest suite; the documented
+  smoke command above runs the real CLI with the real wall clock, so its audit
+  timestamps are real-time. Either way, TTL expiry by waiting is not the proof
+  target here — use revoke/lifecycle-specific tests for expiry behavior.
 - The Claude Code proof is valid only after the manual evidence sections are
   filled with observations from Claude Code 2.1.169.
 - `ask` is not a Vinctor permit or deny; it means the hook abstained and Claude
