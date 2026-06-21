@@ -10,6 +10,7 @@ from vinctor_core import (
     evaluate_enforce,
     register_boundary,
 )
+from vinctor_core.audit import EVENT_AUTH_FAILED, REASON_AUTH_FAILED
 from vinctor_service.audit import AuthFailureAuditThrottle, InMemoryAuditWriter
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
@@ -234,25 +235,73 @@ def test_audit_event_records_enforcing_principal_when_set() -> None:
     assert event.to_dict()["enforcing_principal"] == "pep_git_host"
 
 
-def test_auth_failure_throttle_rate_limits_within_window() -> None:
+def test_auth_failure_throttle_emits_timely_event_then_suppresses_window() -> None:
     writer = InMemoryAuditWriter()
     throttle = AuthFailureAuditThrottle(window_seconds=60)
 
     throttle.record(writer, surface="enforce", boundary_id=None, now=NOW)
     throttle.record(writer, surface="enforce", boundary_id=None, now=NOW + timedelta(seconds=30))
 
-    # Within the window the repeat probe is suppressed (no audit-store flood).
-    assert [e.event_type for e in writer.events] == ["auth_failed"]
-    assert writer.events[0].reason == "auth_failed"
+    # First failure emits a timely count=1 event immediately; the in-window
+    # repeat is counted in memory but emits nothing (no audit-store flood).
+    assert [e.event_type for e in writer.events] == [EVENT_AUTH_FAILED]
+    timely = writer.events[0]
+    assert timely.reason_code == REASON_AUTH_FAILED
+    assert timely.reason == REASON_AUTH_FAILED
+    assert timely.occurrence_count == 1
+    assert timely.first_seen_at == NOW
+    assert timely.last_seen_at == NOW
     # Discloses nothing: no resolvable principal, no grant.
-    assert writer.events[0].workspace_id == ""
-    assert writer.events[0].agent_id == ""
-    assert writer.events[0].grant_ref == ""
+    assert timely.workspace_id == ""
+    assert timely.agent_id == ""
+    assert timely.grant_ref == ""
 
-    # After the window, a fresh event is recorded.
-    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW + timedelta(seconds=61))
-    assert len(writer.events) == 2
-
-    # A different surface is tracked independently.
+    # A different surface is tracked independently (its own timely event).
     throttle.record(writer, surface="delegated", boundary_id=None, now=NOW)
+    assert [e.event_type for e in writer.events] == [EVENT_AUTH_FAILED, EVENT_AUTH_FAILED]
+    assert writer.events[1].action == "delegated"
+
+
+def test_auth_failure_throttle_aggregates_window_into_summary_on_roll() -> None:
+    writer = InMemoryAuditWriter()
+    throttle = AuthFailureAuditThrottle(window_seconds=60)
+
+    # Three failures inside one window: a timely count=1 event, then two
+    # in-memory increments (no emit).
+    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW)
+    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW + timedelta(seconds=20))
+    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW + timedelta(seconds=40))
+    assert len(writer.events) == 1
+    assert writer.events[0].occurrence_count == 1
+
+    # A failure after the window rolls: first a summary for the just-closed
+    # window (occurrence_count=3 spanning its first/last seen), then the timely
+    # first event of the freshly opened window.
+    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW + timedelta(seconds=61))
     assert len(writer.events) == 3
+
+    summary = writer.events[1]
+    assert summary.event_type == EVENT_AUTH_FAILED
+    assert summary.reason_code == REASON_AUTH_FAILED
+    assert summary.occurrence_count == 3
+    assert summary.first_seen_at == NOW
+    assert summary.last_seen_at == NOW + timedelta(seconds=40)
+
+    new_window_timely = writer.events[2]
+    assert new_window_timely.occurrence_count == 1
+    assert new_window_timely.first_seen_at == NOW + timedelta(seconds=61)
+    assert new_window_timely.last_seen_at == NOW + timedelta(seconds=61)
+
+
+def test_auth_failure_throttle_window_roll_without_repeats_emits_no_summary() -> None:
+    writer = InMemoryAuditWriter()
+    throttle = AuthFailureAuditThrottle(window_seconds=60)
+
+    # A single failure per window: each window only ever emits its timely
+    # count=1 event; a roll with no in-window repeats emits no summary.
+    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW)
+    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW + timedelta(seconds=61))
+
+    assert len(writer.events) == 2
+    assert [e.occurrence_count for e in writer.events] == [1, 1]
+    assert writer.events[1].first_seen_at == NOW + timedelta(seconds=61)

@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from vinctor_core import Grant
+from vinctor_core.audit import REASON_AGENT_GRANT_MISMATCH
 from vinctor_service import (
     InMemoryV1Service,
     V1HttpResponse,
@@ -121,7 +122,8 @@ def test_delegated_http_pep_cannot_cross_workspace() -> None:
     assert response.body["error"] == "forbidden"
     # ADR 0008: the cross-workspace PEP attempt is audited for the operator (no leak).
     assert len(svc.audit_events) == 1
-    assert svc.audit_events[0].reason == "agent_grant_mismatch"
+    assert svc.audit_events[0].reason_code == REASON_AGENT_GRANT_MISMATCH
+    assert svc.audit_events[0].reason == REASON_AGENT_GRANT_MISMATCH
 
 
 def test_delegated_http_subject_must_match_grant_owner() -> None:
@@ -133,7 +135,8 @@ def test_delegated_http_subject_must_match_grant_owner() -> None:
     assert response.body["error"] == "forbidden"
     # ADR 0008: the subject-vs-grant-owner mismatch is audited (no leak).
     assert len(svc.audit_events) == 1
-    assert svc.audit_events[0].reason == "agent_grant_mismatch"
+    assert svc.audit_events[0].reason_code == REASON_AGENT_GRANT_MISMATCH
+    assert svc.audit_events[0].reason == REASON_AGENT_GRANT_MISMATCH
 
 
 def test_delegated_http_rejects_missing_subject_field() -> None:

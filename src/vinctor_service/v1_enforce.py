@@ -3,7 +3,12 @@ from __future__ import annotations
 import contextlib
 from datetime import datetime
 
-from vinctor_core.audit import AuditEventInput, build_audit_event, build_rejection_audit_event
+from vinctor_core.audit import (
+    REASON_AGENT_GRANT_MISMATCH,
+    AuditEventInput,
+    build_audit_event,
+    build_rejection_audit_event,
+)
 from vinctor_core.enforce import evaluate_enforce
 from vinctor_core.models import (
     AuditEvent,
@@ -49,7 +54,7 @@ def enforce_v1_contract(
     if grant.workspace_id != request.workspace_id or grant.agent_id != request.agent_id:
         _record_rejection(
             audit_writer,
-            reason="agent_grant_mismatch",
+            reason_code=REASON_AGENT_GRANT_MISMATCH,
             workspace_id=request.workspace_id,
             agent_id=request.agent_id,
             action=request.action,
@@ -114,7 +119,7 @@ def delegated_enforce_v1_contract(
     if request.workspace_id and request.workspace_id != trusted_ws:
         _record_rejection(
             audit_writer,
-            reason="agent_grant_mismatch",
+            reason_code=REASON_AGENT_GRANT_MISMATCH,
             workspace_id=trusted_ws,
             agent_id=request.agent_id,
             action=request.action,
@@ -150,7 +155,7 @@ def delegated_enforce_v1_contract(
     if grant.workspace_id != trusted_ws or grant.agent_id != request.agent_id:
         _record_rejection(
             audit_writer,
-            reason="agent_grant_mismatch",
+            reason_code=REASON_AGENT_GRANT_MISMATCH,
             workspace_id=trusted_ws,
             agent_id=request.agent_id,
             action=request.action,
@@ -264,7 +269,7 @@ def _pre_audit_error(status_code: int, error: str, reason: str) -> V1EnforceResp
 def _record_rejection(
     audit_writer: AuditWriter,
     *,
-    reason: str,
+    reason_code: str,
     workspace_id: str,
     agent_id: str,
     action: str,
@@ -282,7 +287,7 @@ def _record_rejection(
     with contextlib.suppress(Exception):
         audit_writer.write(
             build_rejection_audit_event(
-                reason=reason,
+                reason_code=reason_code,
                 workspace_id=workspace_id,
                 agent_id=agent_id,
                 action=action,

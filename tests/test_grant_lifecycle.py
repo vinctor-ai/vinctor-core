@@ -5,6 +5,12 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from vinctor_core.audit import (
+    EVENT_GRANT_ISSUE_REJECTED,
+    REASON_ISSUABLE_BOUNDS_NOT_FOUND,
+    REASON_SCOPE_OUTSIDE_ISSUABLE_BOUNDS,
+    REASON_TTL_EXCEEDS_ISSUABLE_MAX,
+)
 from vinctor_service import GrantIssueRequest, SQLiteV1Service, V1EnforceRequest
 from vinctor_service.grants import DEFAULT_TTL_SECONDS
 
@@ -119,8 +125,12 @@ def test_scopes_outside_agent_issuable_bounds_are_rejected(tmp_path: Path) -> No
     assert service.lookup_grant(grant_ref="grt_issued", workspace_id="ws_main") is None
     # ADR 0008: out-of-bounds issuance is recorded for the operator (no grant disclosed).
     assert audit_rows(conn) == [
-        ("grant_issue_rejected", "scope_outside_issuable_bounds", "", "issue_grant")
+        (EVENT_GRANT_ISSUE_REJECTED, REASON_SCOPE_OUTSIDE_ISSUABLE_BOUNDS, "", "issue_grant")
     ]
+    # The persisted event carries the coarse reason_code (mirrored into reason).
+    event_json = json.loads(conn.execute("SELECT event_json FROM audit_events").fetchone()[0])
+    assert event_json["reason_code"] == REASON_SCOPE_OUTSIDE_ISSUABLE_BOUNDS
+    assert "grt_issued" not in json.dumps(event_json)
     conn.close()
 
 
@@ -135,8 +145,10 @@ def test_issuance_without_agent_bounds_records_rejection_audit(tmp_path: Path) -
     assert result.reason == "issuable_bounds_not_found"
     # ADR 0008: issuance for an agent with no bounds is recorded for the operator.
     assert audit_rows(conn) == [
-        ("grant_issue_rejected", "issuable_bounds_not_found", "", "issue_grant")
+        (EVENT_GRANT_ISSUE_REJECTED, REASON_ISSUABLE_BOUNDS_NOT_FOUND, "", "issue_grant")
     ]
+    event_json = json.loads(conn.execute("SELECT event_json FROM audit_events").fetchone()[0])
+    assert event_json["reason_code"] == REASON_ISSUABLE_BOUNDS_NOT_FOUND
     conn.close()
 
 
@@ -264,8 +276,10 @@ def test_ttl_exceeding_agent_max_ttl_is_rejected(tmp_path: Path) -> None:
     assert service.lookup_grant(grant_ref="grt_issued", workspace_id="ws_main") is None
     # ADR 0008: TTL over the agent's issuable max is recorded for the operator.
     assert audit_rows(conn) == [
-        ("grant_issue_rejected", "ttl_exceeds_issuable_max", "", "issue_grant")
+        (EVENT_GRANT_ISSUE_REJECTED, REASON_TTL_EXCEEDS_ISSUABLE_MAX, "", "issue_grant")
     ]
+    event_json = json.loads(conn.execute("SELECT event_json FROM audit_events").fetchone()[0])
+    assert event_json["reason_code"] == REASON_TTL_EXCEEDS_ISSUABLE_MAX
     conn.close()
 
 

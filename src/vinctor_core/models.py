@@ -132,9 +132,15 @@ class AuditEvent:
     boundary_type: str | None
     created_at: datetime
     enforcing_principal: str | None = None
+    # Pre-grant-evaluation rejection fields (ADR 0008). Absent on decision and
+    # grant-lifecycle events; set only on operator-only rejection events.
+    reason_code: str | None = None
+    occurrence_count: int | None = None
+    first_seen_at: datetime | None = None
+    last_seen_at: datetime | None = None
 
-    def to_dict(self) -> dict[str, str | None]:
-        event = {
+    def to_dict(self) -> dict[str, object]:
+        event: dict[str, object] = {
             "event_id": self.event_id,
             "event_type": self.event_type,
             "decision": self.decision,
@@ -154,4 +160,12 @@ class AuditEvent:
         }
         if self.enforcing_principal is not None:
             event["enforcing_principal"] = self.enforcing_principal
+        if self.reason_code is not None:
+            event["reason_code"] = self.reason_code
+        if self.occurrence_count is not None:
+            event["occurrence_count"] = self.occurrence_count
+        if self.first_seen_at is not None:
+            event["first_seen_at"] = self.first_seen_at.isoformat()
+        if self.last_seen_at is not None:
+            event["last_seen_at"] = self.last_seen_at.isoformat()
         return event

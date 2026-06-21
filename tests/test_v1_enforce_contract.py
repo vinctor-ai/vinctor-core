@@ -4,7 +4,11 @@ from vinctor_core import (
     BoundaryRegistry,
     Grant,
 )
-from vinctor_core.audit import AuditEvent
+from vinctor_core.audit import (
+    EVENT_ACCESS_REJECTED,
+    REASON_AGENT_GRANT_MISMATCH,
+    AuditEvent,
+)
 from vinctor_service import (
     InMemoryAuditWriter,
     InMemoryGrantRepository,
@@ -168,8 +172,9 @@ def test_v1_enforce_cross_agent_misuse_records_rejection_audit() -> None:
     # attributable to the caller and without disclosing the grant.
     assert len(audit.events) == 1
     event = audit.events[0]
-    assert event.event_type == "access_rejected"
-    assert event.reason == "agent_grant_mismatch"
+    assert event.event_type == EVENT_ACCESS_REJECTED
+    assert event.reason_code == REASON_AGENT_GRANT_MISMATCH
+    assert event.reason == REASON_AGENT_GRANT_MISMATCH
     assert event.agent_id == "agent_other"
     assert event.grant_ref == ""
     assert "grt_" not in str(event.to_dict())
@@ -190,8 +195,9 @@ def test_v1_enforce_wrong_workspace_records_rejection_audit() -> None:
     assert response.decision is None
     assert len(audit.events) == 1
     event = audit.events[0]
-    assert event.event_type == "access_rejected"
-    assert event.reason == "agent_grant_mismatch"
+    assert event.event_type == EVENT_ACCESS_REJECTED
+    assert event.reason_code == REASON_AGENT_GRANT_MISMATCH
+    assert event.reason == REASON_AGENT_GRANT_MISMATCH
     assert event.workspace_id == "ws_other"
     assert event.grant_ref == ""
     assert "grt_" not in str(event.to_dict())

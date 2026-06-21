@@ -12,23 +12,37 @@ lands, Vinctor's behavior is unchanged and no rejection-observability claim is
 made. Surfaced by the 2026-06-21 authorization-boundary dogfood; builds on the
 audit stance in [0007](0007-delegated-enforce-and-pep-identity.md).
 
-**Implementation status (2026-06-21): Direction B is fully implemented.** All
-three security-relevant rejection classes now write operator-only events with
-empty `grant_id`/`grant_ref` (no disclosure) and leave caller-facing responses
-byte-for-byte unchanged:
+**Implementation status (2026-06-21): Direction B is fully implemented.** Every
+rejection event now carries a proper coarse `reason_code` enum (mirrored into
+the legacy `reason` field so reason-keyed audit columns/queries keep working).
+All three security-relevant rejection classes write operator-only events with
+empty `grant_id`/`grant_ref` (no grant disclosure) and leave caller-facing
+responses byte-for-byte unchanged. `action`/`resource` are retained on these
+events as operator-only audit signal (read only with the workspace key) — they
+are not part of the caller-facing response, so they are not a caller leak:
 
-1. **agent↔grant mismatch** → `access_rejected` / `reason=agent_grant_mismatch`,
-   at every grant-ownership / cross-workspace mismatch point of both
-   `/v1/enforce` and `/v1/enforce/delegated` (delegated records the enforcing PEP
-   separately from the subject).
-2. **authentication failure** → `auth_failed`, **rate-limited** by an in-memory
-   `AuthFailureAuditThrottle` (at most one event per `(surface, source)` per
-   window) so a bad-credential probe cannot flood the audit store; attributed to
-   the surface/boundary only (no resolvable principal). The throttle is
-   in-memory/per-process — it resets on restart (at worst a small post-restart
-   burst); a durable/aggregated-count variant can follow if needed.
+1. **agent↔grant mismatch** → `access_rejected` /
+   `reason_code=agent_grant_mismatch`, at every grant-ownership / cross-workspace
+   mismatch point of both `/v1/enforce` and `/v1/enforce/delegated` (delegated
+   records the enforcing PEP separately from the subject).
+2. **authentication failure** → `auth_failed` /
+   `reason_code=auth_failed`, **aggregated** by an in-memory
+   `AuthFailureAuditThrottle` per `(surface, source)` window. The first failure
+   of a window emits a timely event immediately (`occurrence_count=1`,
+   `first_seen_at == last_seen_at == now`); in-window repeats are counted in
+   memory and do not emit; when the window rolls, a summary event for the
+   just-closed window is emitted if it saw more than one failure
+   (`occurrence_count`/`first_seen_at`/`last_seen_at` spanning the window). This
+   bounds audit-store writes so a bad-credential probe cannot flood the store,
+   while still giving the operator a prompt signal and an accurate count.
+   Attributed to the surface/boundary only (no resolvable principal). The
+   throttle is in-memory/per-process — it resets on restart (at worst a dropped
+   pending summary and a small post-restart burst); a durable variant can follow
+   if needed.
 3. **out-of-bounds grant issuance** → `grant_issue_rejected`, for the
-   scope-outside-bounds, bounds-not-found, and TTL-over-max ceilings.
+   scope-outside-bounds (`reason_code=scope_outside_issuable_bounds`),
+   bounds-not-found (`reason_code=issuable_bounds_not_found`), and TTL-over-max
+   (`reason_code=ttl_exceeds_issuable_max`) ceilings.
 4. **Malformed input** (e.g. `scope_invalid`) remains deliberately un-audited.
 
 ## Context

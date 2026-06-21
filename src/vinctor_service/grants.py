@@ -5,7 +5,13 @@ from datetime import datetime, timedelta
 from secrets import token_urlsafe
 from typing import Protocol
 
-from vinctor_core.audit import build_rejection_audit_event
+from vinctor_core.audit import (
+    EVENT_GRANT_ISSUE_REJECTED,
+    REASON_ISSUABLE_BOUNDS_NOT_FOUND,
+    REASON_SCOPE_OUTSIDE_ISSUABLE_BOUNDS,
+    REASON_TTL_EXCEEDS_ISSUABLE_MAX,
+    build_rejection_audit_event,
+)
 from vinctor_core.models import AuditEvent, Decision, Grant
 from vinctor_core.scope import is_valid_grant_scope, scope_subsumes
 from vinctor_service.audit import AuditWriter
@@ -94,12 +100,12 @@ def issue_grant(
         agent_id=request.target_agent_id,
     )
     if bounds is None:
-        _record_issue_rejection(audit_writer, request, "issuable_bounds_not_found", now)
+        _record_issue_rejection(audit_writer, request, REASON_ISSUABLE_BOUNDS_NOT_FOUND, now)
         return GrantIssueResult(status="rejected", reason="issuable_bounds_not_found")
     if any(not is_valid_grant_scope(scope) for scope in bounds):
         return GrantIssueResult(status="rejected", reason="invalid_issuable_scope_bound")
     if not _scopes_within_bounds(request.requested_scopes, bounds):
-        _record_issue_rejection(audit_writer, request, "scope_outside_issuable_bounds", now)
+        _record_issue_rejection(audit_writer, request, REASON_SCOPE_OUTSIDE_ISSUABLE_BOUNDS, now)
         return GrantIssueResult(status="rejected", reason="scope_outside_issuable_bounds")
 
     max_ttl_seconds = scope_bounds_repository.get_max_ttl_seconds(
@@ -107,7 +113,7 @@ def issue_grant(
         agent_id=request.target_agent_id,
     )
     if max_ttl_seconds is not None and applied_ttl_seconds > max_ttl_seconds:
-        _record_issue_rejection(audit_writer, request, "ttl_exceeds_issuable_max", now)
+        _record_issue_rejection(audit_writer, request, REASON_TTL_EXCEEDS_ISSUABLE_MAX, now)
         return GrantIssueResult(status="rejected", reason="ttl_exceeds_issuable_max")
 
     grant = Grant(
@@ -145,7 +151,7 @@ def issue_grant(
 def _record_issue_rejection(
     audit_writer: AuditWriter,
     request: GrantIssueRequest,
-    reason: str,
+    reason_code: str,
     now: datetime,
 ) -> None:
     """Best-effort: record an out-of-bounds grant-issuance rejection (ADR 0008).
@@ -157,11 +163,11 @@ def _record_issue_rejection(
     with contextlib.suppress(Exception):
         audit_writer.write(
             build_rejection_audit_event(
-                reason=reason,
+                reason_code=reason_code,
                 workspace_id=request.workspace_id,
                 agent_id=request.target_agent_id,
                 created_at=now,
-                event_type="grant_issue_rejected",
+                event_type=EVENT_GRANT_ISSUE_REJECTED,
                 action="issue_grant",
                 resource=f"agent/{request.target_agent_id}",
                 scope_attempted=",".join(request.requested_scopes),

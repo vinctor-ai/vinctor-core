@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from vinctor_core import Grant
+from vinctor_core.audit import EVENT_ACCESS_REJECTED, REASON_AGENT_GRANT_MISMATCH
 from vinctor_service import (
     InMemoryAuditWriter,
     InMemoryGrantRepository,
@@ -120,8 +121,9 @@ def test_delegated_enforce_cross_workspace_grant_records_rejection_audit() -> No
     assert response.decision is None
     # ADR 0008: a PEP asserting a subject/grant outside its workspace is audited.
     assert len(audit.events) == 1
-    assert audit.events[0].event_type == "access_rejected"
-    assert audit.events[0].reason == "agent_grant_mismatch"
+    assert audit.events[0].event_type == EVENT_ACCESS_REJECTED
+    assert audit.events[0].reason_code == REASON_AGENT_GRANT_MISMATCH
+    assert audit.events[0].reason == REASON_AGENT_GRANT_MISMATCH
     assert audit.events[0].enforcing_principal == "pep_git_host"
     assert audit.events[0].grant_ref == ""
 
@@ -178,7 +180,8 @@ def test_delegated_enforce_caller_asserted_workspace_cannot_override_trusted() -
     assert response.decision is None
     # ADR 0008: still denied AND now audited (cross-workspace assertion attempt).
     assert len(audit.events) == 1
-    assert audit.events[0].reason == "agent_grant_mismatch"
+    assert audit.events[0].reason_code == REASON_AGENT_GRANT_MISMATCH
+    assert audit.events[0].reason == REASON_AGENT_GRANT_MISMATCH
     assert audit.events[0].enforcing_principal == "pep_git_host"
 
 
@@ -199,8 +202,9 @@ def test_delegated_enforce_subject_mismatch_records_rejection_audit() -> None:
     # ADR 0008: audited for the operator; PEP recorded as the enforcing principal.
     assert len(audit.events) == 1
     event = audit.events[0]
-    assert event.event_type == "access_rejected"
-    assert event.reason == "agent_grant_mismatch"
+    assert event.event_type == EVENT_ACCESS_REJECTED
+    assert event.reason_code == REASON_AGENT_GRANT_MISMATCH
+    assert event.reason == REASON_AGENT_GRANT_MISMATCH
     assert event.agent_id == "agent_other"
     assert event.enforcing_principal == "pep_git_host"
     assert event.grant_ref == ""
