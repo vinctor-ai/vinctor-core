@@ -97,7 +97,7 @@ def test_delegated_enforce_scope_deny_records_audit() -> None:
     assert audit.events[0].enforcing_principal == "pep_git_host"
 
 
-def test_delegated_enforce_cross_workspace_grant_is_forbidden_without_audit() -> None:
+def test_delegated_enforce_cross_workspace_grant_records_rejection_audit() -> None:
     audit = InMemoryAuditWriter()
 
     # PEP authenticated for ws_main (its key-derived pep_workspace_id) asserts a
@@ -118,7 +118,12 @@ def test_delegated_enforce_cross_workspace_grant_is_forbidden_without_audit() ->
     assert response.status_code == 403
     assert response.error == "forbidden"
     assert response.decision is None
-    assert audit.events == []
+    # ADR 0008: a PEP asserting a subject/grant outside its workspace is audited.
+    assert len(audit.events) == 1
+    assert audit.events[0].event_type == "access_rejected"
+    assert audit.events[0].reason == "agent_grant_mismatch"
+    assert audit.events[0].enforcing_principal == "pep_git_host"
+    assert audit.events[0].grant_ref == ""
 
 
 def test_delegated_enforce_missing_trusted_pep_workspace_fails_closed() -> None:
@@ -171,10 +176,13 @@ def test_delegated_enforce_caller_asserted_workspace_cannot_override_trusted() -
     assert response.status_code == 403
     assert response.error == "forbidden"
     assert response.decision is None
-    assert audit.events == []
+    # ADR 0008: still denied AND now audited (cross-workspace assertion attempt).
+    assert len(audit.events) == 1
+    assert audit.events[0].reason == "agent_grant_mismatch"
+    assert audit.events[0].enforcing_principal == "pep_git_host"
 
 
-def test_delegated_enforce_subject_mismatch_is_forbidden_without_audit() -> None:
+def test_delegated_enforce_subject_mismatch_records_rejection_audit() -> None:
     audit = InMemoryAuditWriter()
 
     # Grant belongs to a different agent than the asserted subject.
@@ -188,7 +196,15 @@ def test_delegated_enforce_subject_mismatch_is_forbidden_without_audit() -> None
     assert response.status_code == 403
     assert response.error == "forbidden"
     assert response.decision is None
-    assert audit.events == []
+    # ADR 0008: audited for the operator; PEP recorded as the enforcing principal.
+    assert len(audit.events) == 1
+    event = audit.events[0]
+    assert event.event_type == "access_rejected"
+    assert event.reason == "agent_grant_mismatch"
+    assert event.agent_id == "agent_other"
+    assert event.enforcing_principal == "pep_git_host"
+    assert event.grant_ref == ""
+    assert "grt_" not in str(event.to_dict())
 
 
 def test_delegated_enforce_missing_grant_returns_404_without_audit() -> None:

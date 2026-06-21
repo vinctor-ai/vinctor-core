@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime
 
-from vinctor_core.audit import AuditEventInput, build_audit_event
+from vinctor_core.audit import AuditEventInput, build_audit_event, build_rejection_audit_event
 from vinctor_core.enforce import evaluate_enforce
 from vinctor_core.models import (
     AuditEvent,
@@ -46,6 +47,16 @@ def enforce_v1_contract(
         )
 
     if grant.workspace_id != request.workspace_id or grant.agent_id != request.agent_id:
+        _record_rejection(
+            audit_writer,
+            reason="agent_grant_mismatch",
+            workspace_id=request.workspace_id,
+            agent_id=request.agent_id,
+            action=request.action,
+            resource=request.resource,
+            boundary_id=request.boundary_id,
+            now=now,
+        )
         return _pre_audit_error(
             403,
             "forbidden",
@@ -101,6 +112,17 @@ def delegated_enforce_v1_contract(
     # A caller-asserted workspace, if present, must match the trusted workspace;
     # it can never override it.
     if request.workspace_id and request.workspace_id != trusted_ws:
+        _record_rejection(
+            audit_writer,
+            reason="agent_grant_mismatch",
+            workspace_id=trusted_ws,
+            agent_id=request.agent_id,
+            action=request.action,
+            resource=request.resource,
+            boundary_id=request.boundary_id,
+            now=now,
+            enforcing_principal=request.pep_id,
+        )
         return _pre_audit_error(
             403,
             "forbidden",
@@ -126,6 +148,17 @@ def delegated_enforce_v1_contract(
     # Tenant isolation: authorize against the TRUSTED workspace, and require the
     # grant to belong to the asserted subject within it.
     if grant.workspace_id != trusted_ws or grant.agent_id != request.agent_id:
+        _record_rejection(
+            audit_writer,
+            reason="agent_grant_mismatch",
+            workspace_id=trusted_ws,
+            agent_id=request.agent_id,
+            action=request.action,
+            resource=request.resource,
+            boundary_id=request.boundary_id,
+            now=now,
+            enforcing_principal=request.pep_id,
+        )
         return _pre_audit_error(
             403,
             "forbidden",
@@ -228,11 +261,43 @@ def _pre_audit_error(status_code: int, error: str, reason: str) -> V1EnforceResp
     return V1EnforceResponse(status_code=status_code, error=error, reason=reason)
 
 
+def _record_rejection(
+    audit_writer: AuditWriter,
+    *,
+    reason: str,
+    workspace_id: str,
+    agent_id: str,
+    action: str,
+    resource: str,
+    now: datetime,
+    boundary_id: str | None = None,
+    enforcing_principal: str | None = None,
+) -> None:
+    """Best-effort: record a pre-grant-evaluation rejection (ADR 0008).
+
+    Never changes the caller-facing response: an audit-write failure here is
+    swallowed so a security-relevant rejection still returns its generic,
+    leak-free forbidden response (the access is denied regardless).
+    """
+    with contextlib.suppress(Exception):
+        audit_writer.write(
+            build_rejection_audit_event(
+                reason=reason,
+                workspace_id=workspace_id,
+                agent_id=agent_id,
+                action=action,
+                resource=resource,
+                created_at=now,
+                boundary_id=boundary_id,
+                enforcing_principal=enforcing_principal,
+            )
+        )
+
+
 def _invalid_action_reason(action: str) -> str:
     if action == "push":
         return (
-            "action 'push' is not a recognized v1 action verb; "
-            "use 'write' for git push operations"
+            "action 'push' is not a recognized v1 action verb; use 'write' for git push operations"
         )
     return f"action '{action}' is not a recognized v1 action verb"
 

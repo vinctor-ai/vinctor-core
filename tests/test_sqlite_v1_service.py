@@ -297,7 +297,8 @@ def test_sqlite_v1_service_delegated_enforce_blocks_cross_workspace(
 
     assert response.status_code == 403
     assert response.error == "forbidden"
-    assert audit_count(conn) == 0
+    # ADR 0008: the cross-workspace PEP attempt is recorded for the operator.
+    assert audit_count(conn) == 1
     conn.close()
 
 

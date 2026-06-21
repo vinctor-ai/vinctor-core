@@ -356,5 +356,9 @@ def test_auto_approval_service_path_still_requires_agent_issuable_bounds(
         request_id="grq_ci",
         workspace_id="ws_main",
     ).status == "pending"
-    assert [event.event_type for event in service.audit_events] == ["grant_requested"]
+    # ADR 0008: the auto-approval's out-of-bounds issuance attempt is recorded.
+    assert [event.event_type for event in service.audit_events] == [
+        "grant_requested",
+        "grant_issue_rejected",
+    ]
     conn.close()

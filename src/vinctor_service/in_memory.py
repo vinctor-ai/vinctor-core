@@ -12,7 +12,7 @@ from vinctor_core import (
     register_boundary,
 )
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput
-from vinctor_service.audit import InMemoryAuditWriter
+from vinctor_service.audit import AuthFailureAuditThrottle, InMemoryAuditWriter
 from vinctor_service.auto_approval import (
     auto_approve_grant_request,
     create_auto_approval_rule,
@@ -71,6 +71,7 @@ class InMemoryV1Service:
         self.scope_bounds_repository = InMemoryAgentIssuableScopeBoundsRepository(
             self.initial_issuable_scope_bounds
         )
+        self._auth_failures = AuthFailureAuditThrottle()
 
     @property
     def audit_events(self) -> tuple[AuditEvent, ...]:
@@ -80,6 +81,11 @@ class InMemoryV1Service:
         return next(
             (event for event in self.audit_writer.events if event.event_id == event_id),
             None,
+        )
+
+    def record_auth_failure(self, *, surface: str, boundary_id: str | None, now: datetime) -> None:
+        self._auth_failures.record(
+            self.audit_writer, surface=surface, boundary_id=boundary_id, now=now
         )
 
     def register_boundary(

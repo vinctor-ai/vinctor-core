@@ -41,5 +41,51 @@ def build_audit_event(audit_input: AuditEventInput) -> AuditEvent:
     )
 
 
+def build_rejection_audit_event(
+    *,
+    reason: str,
+    workspace_id: str,
+    agent_id: str,
+    created_at: datetime,
+    event_type: str = "access_rejected",
+    action: str = "",
+    resource: str = "",
+    scope_attempted: str | None = None,
+    boundary_id: str | None = None,
+    enforcing_principal: str | None = None,
+    event_id: str | None = None,
+) -> AuditEvent:
+    """Build an audit event for a request rejected BEFORE grant-scope evaluation.
+
+    Per ADR 0008, security-relevant pre-grant rejections (e.g. an agent naming a
+    grant that is not its own, or an operator over-issuing beyond an agent's
+    bounds) are recorded for the operator, while the caller-facing response stays
+    generic and leak-free. The event records the attributable principal and a
+    coarse ``reason`` code, and deliberately discloses no grant identifiers:
+    ``grant_id``/``grant_ref`` are empty so the offending grant is never revealed
+    in the trail. ``scope_attempted`` defaults to ``action:resource`` (the enforce
+    case) but can be set explicitly (e.g. the requested scopes of an issuance).
+    """
+    return AuditEvent(
+        event_id=event_id or _new_event_id(),
+        event_type=event_type,
+        decision="deny",
+        reason=reason,
+        workspace_id=workspace_id,
+        agent_id=agent_id,
+        grant_id="",
+        grant_ref="",
+        action=action,
+        resource=resource,
+        scope_attempted=scope_attempted if scope_attempted is not None else f"{action}:{resource}",
+        scope_matched=None,
+        boundary_id=boundary_id,
+        runtime=None,
+        boundary_type=None,
+        created_at=created_at,
+        enforcing_principal=enforcing_principal,
+    )
+
+
 def _new_event_id() -> str:
     return f"evt_{token_urlsafe(12)}"

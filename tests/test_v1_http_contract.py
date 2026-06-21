@@ -93,7 +93,8 @@ def test_v1_http_requires_agent_key() -> None:
 
     assert response.status_code == 401
     assert response.body["error"] == "authentication_required"
-    assert svc.audit_events == ()
+    # ADR 0008: the authentication failure is recorded (rate-limited) for the operator.
+    assert [e.event_type for e in svc.audit_events] == ["auth_failed"]
 
 
 def test_v1_http_rejects_unknown_agent_key() -> None:
@@ -103,7 +104,8 @@ def test_v1_http_rejects_unknown_agent_key() -> None:
 
     assert response.status_code == 401
     assert response.body["error"] == "authentication_required"
-    assert svc.audit_events == ()
+    # ADR 0008: the bad-credential probe is recorded (rate-limited) for the operator.
+    assert [e.event_type for e in svc.audit_events] == ["auth_failed"]
 
 
 def test_v1_http_rejects_missing_required_body_field() -> None:

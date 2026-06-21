@@ -10,6 +10,7 @@ from vinctor_core import (
     evaluate_enforce,
     register_boundary,
 )
+from vinctor_service.audit import AuthFailureAuditThrottle, InMemoryAuditWriter
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -231,3 +232,27 @@ def test_audit_event_records_enforcing_principal_when_set() -> None:
     assert event.enforcing_principal == "pep_git_host"
     assert event.agent_id == "agent_release"
     assert event.to_dict()["enforcing_principal"] == "pep_git_host"
+
+
+def test_auth_failure_throttle_rate_limits_within_window() -> None:
+    writer = InMemoryAuditWriter()
+    throttle = AuthFailureAuditThrottle(window_seconds=60)
+
+    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW)
+    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW + timedelta(seconds=30))
+
+    # Within the window the repeat probe is suppressed (no audit-store flood).
+    assert [e.event_type for e in writer.events] == ["auth_failed"]
+    assert writer.events[0].reason == "auth_failed"
+    # Discloses nothing: no resolvable principal, no grant.
+    assert writer.events[0].workspace_id == ""
+    assert writer.events[0].agent_id == ""
+    assert writer.events[0].grant_ref == ""
+
+    # After the window, a fresh event is recorded.
+    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW + timedelta(seconds=61))
+    assert len(writer.events) == 2
+
+    # A different surface is tracked independently.
+    throttle.record(writer, surface="delegated", boundary_id=None, now=NOW)
+    assert len(writer.events) == 3

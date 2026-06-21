@@ -12,6 +12,7 @@ from vinctor_core import (
     register_boundary,
 )
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput, Grant
+from vinctor_service.audit import AuthFailureAuditThrottle
 from vinctor_service.auto_approval import (
     auto_approve_grant_request,
     create_auto_approval_rule,
@@ -729,12 +730,14 @@ class SQLiteV1Service:
     scope_bounds_repository: SQLiteAgentIssuableScopeBoundsRepository = field(init=False)
     grant_request_repository: SQLiteGrantRequestRepository = field(init=False)
     auto_approval_rule_repository: SQLiteAutoApprovalRuleRepository = field(init=False)
+    _auth_failures: AuthFailureAuditThrottle = field(init=False)
 
     def __post_init__(self) -> None:
         if self.initialize_schema:
             init_sqlite_schema(self.conn)
         self.grant_repository = SQLiteGrantRepository(self.conn)
         self.audit_writer = SQLiteAuditWriter(self.conn)
+        self._auth_failures = AuthFailureAuditThrottle()
         self.boundary_registry = SQLiteBoundaryRegistry(self.conn)
         self.scope_bounds_repository = SQLiteAgentIssuableScopeBoundsRepository(self.conn)
         self.grant_request_repository = SQLiteGrantRequestRepository(self.conn)
@@ -999,6 +1002,13 @@ class SQLiteV1Service:
             self.boundary_registry,
             boundary_id,
             workspace_id,
+        )
+
+    def record_auth_failure(
+        self, *, surface: str, boundary_id: str | None, now: datetime
+    ) -> None:
+        self._auth_failures.record(
+            self.audit_writer, surface=surface, boundary_id=boundary_id, now=now
         )
 
     def enforce(self, request: V1EnforceRequest, *, now: datetime) -> V1EnforceResponse:

@@ -87,7 +87,8 @@ def test_delegated_http_requires_pep_key() -> None:
 
     assert response.status_code == 401
     assert response.body["error"] == "authentication_required"
-    assert svc.audit_events == ()
+    # ADR 0008: the authentication failure is recorded (rate-limited) for the operator.
+    assert [e.event_type for e in svc.audit_events] == ["auth_failed"]
 
 
 def test_delegated_http_rejects_agent_key_as_pep() -> None:
@@ -102,7 +103,8 @@ def test_delegated_http_rejects_agent_key_as_pep() -> None:
 
     assert response.status_code == 401
     assert response.body["error"] == "authentication_required"
-    assert svc.audit_events == ()
+    # ADR 0008: the bad-credential probe is recorded (rate-limited) for the operator.
+    assert [e.event_type for e in svc.audit_events] == ["auth_failed"]
 
 
 def test_delegated_http_pep_cannot_cross_workspace() -> None:
@@ -117,7 +119,9 @@ def test_delegated_http_pep_cannot_cross_workspace() -> None:
 
     assert response.status_code == 403
     assert response.body["error"] == "forbidden"
-    assert svc.audit_events == ()
+    # ADR 0008: the cross-workspace PEP attempt is audited for the operator (no leak).
+    assert len(svc.audit_events) == 1
+    assert svc.audit_events[0].reason == "agent_grant_mismatch"
 
 
 def test_delegated_http_subject_must_match_grant_owner() -> None:
@@ -127,7 +131,9 @@ def test_delegated_http_subject_must_match_grant_owner() -> None:
 
     assert response.status_code == 403
     assert response.body["error"] == "forbidden"
-    assert svc.audit_events == ()
+    # ADR 0008: the subject-vs-grant-owner mismatch is audited (no leak).
+    assert len(svc.audit_events) == 1
+    assert svc.audit_events[0].reason == "agent_grant_mismatch"
 
 
 def test_delegated_http_rejects_missing_subject_field() -> None:

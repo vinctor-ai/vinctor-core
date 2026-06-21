@@ -176,7 +176,8 @@ def test_approval_fails_when_requested_scope_is_outside_bounds(tmp_path: Path) -
         request_id="grq_main",
         workspace_id="ws_main",
     ).status == "pending"
-    assert audit_events(conn) == ["grant_requested"]
+    # ADR 0008: the approval's out-of-bounds issuance attempt is recorded.
+    assert audit_events(conn) == ["grant_requested", "grant_issue_rejected"]
     conn.close()
 
 

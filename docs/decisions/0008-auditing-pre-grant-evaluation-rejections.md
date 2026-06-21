@@ -12,6 +12,25 @@ lands, Vinctor's behavior is unchanged and no rejection-observability claim is
 made. Surfaced by the 2026-06-21 authorization-boundary dogfood; builds on the
 audit stance in [0007](0007-delegated-enforce-and-pep-identity.md).
 
+**Implementation status (2026-06-21): Direction B is fully implemented.** All
+three security-relevant rejection classes now write operator-only events with
+empty `grant_id`/`grant_ref` (no disclosure) and leave caller-facing responses
+byte-for-byte unchanged:
+
+1. **agent↔grant mismatch** → `access_rejected` / `reason=agent_grant_mismatch`,
+   at every grant-ownership / cross-workspace mismatch point of both
+   `/v1/enforce` and `/v1/enforce/delegated` (delegated records the enforcing PEP
+   separately from the subject).
+2. **authentication failure** → `auth_failed`, **rate-limited** by an in-memory
+   `AuthFailureAuditThrottle` (at most one event per `(surface, source)` per
+   window) so a bad-credential probe cannot flood the audit store; attributed to
+   the surface/boundary only (no resolvable principal). The throttle is
+   in-memory/per-process — it resets on restart (at worst a small post-restart
+   burst); a durable/aggregated-count variant can follow if needed.
+3. **out-of-bounds grant issuance** → `grant_issue_rejected`, for the
+   scope-outside-bounds, bounds-not-found, and TTL-over-max ceilings.
+4. **Malformed input** (e.g. `scope_invalid`) remains deliberately un-audited.
+
 ## Context
 
 `/v1/enforce` evaluates a request in stages: authenticate the caller's

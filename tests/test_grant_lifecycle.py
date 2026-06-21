@@ -117,7 +117,26 @@ def test_scopes_outside_agent_issuable_bounds_are_rejected(tmp_path: Path) -> No
     assert result.status == "rejected"
     assert result.reason == "scope_outside_issuable_bounds"
     assert service.lookup_grant(grant_ref="grt_issued", workspace_id="ws_main") is None
-    assert audit_rows(conn) == []
+    # ADR 0008: out-of-bounds issuance is recorded for the operator (no grant disclosed).
+    assert audit_rows(conn) == [
+        ("grant_issue_rejected", "scope_outside_issuable_bounds", "", "issue_grant")
+    ]
+    conn.close()
+
+
+def test_issuance_without_agent_bounds_records_rejection_audit(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    # No issuable bounds are configured for the target agent.
+
+    result = service.issue_grant(issue_request(scopes=("execute:ci/test",)), now=NOW)
+
+    assert result.status == "rejected"
+    assert result.reason == "issuable_bounds_not_found"
+    # ADR 0008: issuance for an agent with no bounds is recorded for the operator.
+    assert audit_rows(conn) == [
+        ("grant_issue_rejected", "issuable_bounds_not_found", "", "issue_grant")
+    ]
     conn.close()
 
 
@@ -243,7 +262,10 @@ def test_ttl_exceeding_agent_max_ttl_is_rejected(tmp_path: Path) -> None:
     assert result.status == "rejected"
     assert result.reason == "ttl_exceeds_issuable_max"
     assert service.lookup_grant(grant_ref="grt_issued", workspace_id="ws_main") is None
-    assert audit_rows(conn) == []
+    # ADR 0008: TTL over the agent's issuable max is recorded for the operator.
+    assert audit_rows(conn) == [
+        ("grant_issue_rejected", "ttl_exceeds_issuable_max", "", "issue_grant")
+    ]
     conn.close()
 
 

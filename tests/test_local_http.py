@@ -232,7 +232,8 @@ def test_local_http_delegated_enforce_rejects_agent_key() -> None:
 
     assert status == 401
     assert response["error"] == "authentication_required"
-    assert svc.audit_events == ()
+    # ADR 0008: the authentication failure is recorded (rate-limited) for the operator.
+    assert [e.event_type for e in svc.audit_events] == ["auth_failed"]
 
 
 def test_local_http_plain_enforce_rejects_pep_key() -> None:
@@ -249,7 +250,8 @@ def test_local_http_plain_enforce_rejects_pep_key() -> None:
 
     assert status == 401
     assert response["error"] == "authentication_required"
-    assert svc.audit_events == ()
+    # ADR 0008: the authentication failure is recorded (rate-limited) for the operator.
+    assert [e.event_type for e in svc.audit_events] == ["auth_failed"]
 
 
 def test_local_http_service_rejects_invalid_json() -> None:
@@ -276,7 +278,8 @@ def test_local_http_service_requires_agent_key() -> None:
 
     assert status == 401
     assert response["error"] == "authentication_required"
-    assert svc.audit_events == ()
+    # ADR 0008: the authentication failure is recorded (rate-limited) for the operator.
+    assert [e.event_type for e in svc.audit_events] == ["auth_failed"]
 
 
 def test_local_http_service_maps_boundary_header() -> None:
