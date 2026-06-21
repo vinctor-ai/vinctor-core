@@ -35,13 +35,13 @@ see [The runtime environment bundle](#service-endpoint-and-database).)
 | Global option | Environment default | Who uses it |
 | --- | --- | --- |
 | `--endpoint` | `VINCTOR_ENDPOINT` | every command that talks to the service |
-| `--workspace-key` | `VINCTOR_WORKSPACE_KEY` | `operator` commands (the admin key) |
+| `--workspace-key` | `VINCTOR_WORKSPACE_KEY` | the HTTP `operator` commands (`requests`, `rules`) — the admin key |
 | `--agent-key` | `VINCTOR_AGENT_KEY` | `agent` commands |
 | `--grant-ref` | `VINCTOR_GRANT_REF` | `agent enforce` |
 | `--boundary-id` | `VINCTOR_BOUNDARY_ID` | request / audit filtering |
-| `--db` | `VINCTOR_DB` | service startup and `operator storage` (direct DB) |
-| `--workspace-id` | _(no environment default)_ | scoping / disambiguation |
-| `--agent-id` | _(no environment default)_ | scoping / disambiguation |
+| `--db` | `VINCTOR_DB` | service startup and the direct-DB `operator` commands |
+| `--workspace-id` | _(no environment default)_ | required by the direct-DB `operator` commands |
+| `--agent-id` | _(no environment default)_ | scoping (e.g. `operator keys rotate agent`) |
 | `--json` / `-o {text,json}` | — | machine-readable output |
 
 `vinctor service serve` additionally reads `VINCTOR_HOST`, `VINCTOR_PORT`,
@@ -49,16 +49,22 @@ see [The runtime environment bundle](#service-endpoint-and-database).)
 inspection server uses a separate `VINCTOR_MCP_*` set — see
 [MCP server docs](mcp-server.md).
 
-### Authentication surfaces
+### How commands reach Vinctor
 
-Commands authenticate in one of three ways. Knowing which a command uses tells you
-which key it needs:
+Commands talk to Vinctor in one of two ways, and which one a command uses
+determines its required inputs:
 
-- **`operator …`** → the **workspace key** (`wsk_…`, the admin key) over the
-  endpoint. Keep it in an operator-only shell.
-- **`agent …`** → the **agent key** (`aak_…`) over the endpoint.
-- **`operator storage …`** → the **SQLite database directly** (`--db`), not the
-  endpoint — these are offline DB-lifecycle operations.
+- **Over HTTP, authenticated by a key** (needs `--endpoint` and the key; the key
+  identifies the workspace, so no `--workspace-id`):
+  - `agent …` → the **agent key** (`aak_…` / `VINCTOR_AGENT_KEY`).
+  - `operator requests …` and `operator rules …` → the **workspace key**
+    (`wsk_…` / `VINCTOR_WORKSPACE_KEY`). Keep it in an operator-only shell.
+- **Directly on the SQLite database** (needs `--db` and `--workspace-id`; no key,
+  no endpoint): `operator bounds`, `operator audit`, `operator policy`,
+  `operator storage`, `operator service`, and `operator keys`.
+
+(One mix: `operator requests timeline` is HTTP for the request but also reads the
+`--db` for the audit trail.)
 
 ---
 
@@ -110,8 +116,10 @@ authorizes every `operator` command.
   material; the new raw key is printed once and is not recoverable afterward.
 - **Listed by** `vinctor operator keys list`; **revoked by**
   `vinctor operator keys revoke <key_id>`.
-- **Consumed via** `--workspace-key` / `VINCTOR_WORKSPACE_KEY` by all `operator`
-  commands.
+- **Consumed via** `--workspace-key` / `VINCTOR_WORKSPACE_KEY` by the HTTP
+  `operator` commands (`requests`, `rules`); the direct-DB `operator` commands
+  (`bounds`, `audit`, `policy`, `storage`, `service`, `keys`) take `--workspace-id`
+  against the `--db` instead.
 
 ---
 
