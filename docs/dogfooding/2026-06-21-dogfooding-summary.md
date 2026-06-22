@@ -19,6 +19,7 @@ DBs**, not re-running the unit suite. Every fix/decision below is on `main`.
 | 5 | Approval / request flow | auto-approval / manual / reject / duplicate / out-of-bounds, with auditing | ✅ PASS, no findings |
 | 6 | Parallel batch (4 areas) | boundary fail-closed · storage lifecycle · scope grammar · policy files | ✅ 3 clean → **policy MED** + LOW notes |
 | 7 | ADR 0007 proven path (subject tokens), **live** | mint → present `X-Subject-Token` → proven delegated enforce; fail-closed; no-leak; both runtimes (10 scenarios) | ✅ 10/10 PASS, no defect |
+| 8 | ADR 0009-B `require_boundary` (per-agent), **live** | operator enable/disable/show; hardened absent→`boundary_required`, valid→permit, empty→`boundary_not_found`; default-off unchanged; **disable kill-switch now effective**; both runtimes (8 scenarios) | ✅ 8/8 PASS, no defect |
 
 ## Per-round detail
 
@@ -87,6 +88,25 @@ present; cross-workspace isolation → 403; proven path reachable on **both**
 runtimes (including the net-new `local start` PEP wiring). Findings all LOW /
 by-design (see residuals).
 
+### 8 — ADR 0009-B `require_boundary` (live, 2026-06-22)
+Live end-to-end against `local start` (:8831) and `service serve` (:8832), real
+wall clock. **8/8 PASS, no defect.** Default-off in-scope enforce → permit
+(unchanged); `operator require-boundary enable <agent>` → absent-boundary enforce
+→ 403 `boundary_required`; with a valid active boundary → permit (the flag only
+closes the absent gap); empty/whitespace header → `boundary_not_found` (never
+normalized to absent, never permit — no fail-open); toggle `disable` restores
+permit and `show` tracks state; the flag works on **both** runtimes (live-read
+from the shared DB by `service serve`). **Headline — the `disable` kill-switch is
+now effective:** against a *disabled* boundary, an **unhardened** agent that drops
+the header still permits (the classic bypass, by design/default-off), but a
+**hardened** agent that drops the header is denied `boundary_required` — it can no
+longer evade the disabled boundary by omitting the header. Audit records the
+`boundary_required` deny with the correct reason; full-DB scan found zero raw-key
+occurrences. F1 (informational, NOT a server bug): reproducing the empty-header
+case with `curl -H "X-…:    "` is misleading because curl drops whitespace-only
+headers before sending; verify at the server level (e.g. Python `http.client`),
+where whitespace values correctly yield `boundary_not_found`.
+
 ## Findings → disposition
 
 | Finding | Severity | Disposition |
@@ -94,7 +114,7 @@ by-design (see residuals).
 | **D2** — pre-grant rejections un-audited | MED-HIGH | **ADR 0008** (Accepted) + implemented + reconciled — `#51`/`#53`/`#54` (merged) |
 | **D3** — delegated/PEP path not runtime-wired or provisionable | gap | `#52` (merged): wired the PEP resolver in `serve` + `operator keys rotate pep` |
 | **policy apply non-atomic** (partial apply) | MED | `#55` (merged): validate the whole document before any write (all-or-nothing) |
-| **boundary opt-in / no mandatory-boundary control** | LOW (design) | **ADR 0009** Accepted direction B (`require_boundary`, opt-in) — `#56`/`#57` (merged); implementation pending |
+| **boundary opt-in / no mandatory-boundary control** | LOW (design) | **ADR 0009-B implemented (per-agent)** — `#56`/`#57`/`#60` (merged); live dogfood 8/8 PASS (round 8). The `disable` kill-switch is now effective for hardened agents |
 | Codex `emitted?` | — | documented as unmeasured in the coverage matrix |
 | `agent enforce -o json` double-object on deny | LOW (cosmetic) | open (recorded) |
 | policy export `max_ttl_seconds` vs input `max_ttl` | LOW (cosmetic) | open (round-trip still faithful) |
@@ -109,7 +129,10 @@ non-disclosure** (holds against adversarial input) · storage backup/restore
 **byte-perfect** with destructive-op guards and no secret leak · scope grammar
 (segment-aware wildcard, two-layer rejection) · the full approval workflow · and
 (ADR 0007) the **proven on-behalf-of path** — Vinctor-minted, grant-bound,
-audience-scoped tokens with fail-closed verification and no raw-token leak.
+audience-scoped tokens with fail-closed verification and no raw-token leak · and
+(ADR 0009-B) **opt-in mandatory boundary** — a per-agent `require_boundary` that
+makes the `disable` kill-switch un-evadable (an absent boundary on a hardened
+agent fails closed) while leaving the default-off path unchanged.
 
 ## Residual open items (LOW, unfixed)
 
@@ -122,6 +145,9 @@ audience-scoped tokens with fail-closed verification and no raw-token leak.
   enforcement flag (mirrors ADR 0009; must treat an empty token header as absent).
 
 ## Remaining untested live
+
+The autonomously-runnable dogfooding is complete (rounds 1–8 cover every shipped
+runtime-authorization surface). What remains cannot be driven autonomously here:
 
 - **Hermes runtime boundary measurement** — feasibility uncertain (backlog).
 - **Claude Code real-use** — requires interactive `claude -p` driving of the
@@ -136,3 +162,8 @@ afterward (service killed, temp removed). Several rounds were run as parallel
 sub-agent fan-outs that returned schema-validated findings. Claims are kept honest:
 "unmeasured" / "deferred to unit coverage" are valid results and are recorded as
 such rather than overstated.
+
+Harness caveat (round 8): `curl` drops whitespace-only request headers before
+sending, so an empty/whitespace `X-Vinctor-Boundary-Id` reproduced via `curl`
+looks truly-absent to the server. Verify header-value edge cases with a client
+that does not trim (e.g. Python `http.client`).
