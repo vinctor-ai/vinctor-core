@@ -221,6 +221,32 @@ V1 service contract boundary:
   supervision, logs/observability (honest about suppressed per-request logging
   and audit records as the operational signal), and SQLite/Docker-volume
   backup/restore. Linked from `self-hosting.md`; no production-readiness claims.
+- Added ADR 0008 operator-only auditing of pre-grant-evaluation rejections
+  (agent↔grant mismatch, rate-limited/aggregated auth failures, out-of-bounds
+  issuance) carrying a coarse `reason_code`, with caller responses byte-for-byte
+  unchanged (`#51`/`#53`/`#54`).
+- Made `vinctor operator policy apply` atomic: the whole document is validated
+  before any write, so a malformed later entry no longer leaves earlier bounds
+  committed (`#55`).
+- Added `docs/cli-reference.md` (a per-config-value CLI reference, source- and
+  `--help`-verified) and ran a cross-repo docs-standards sweep.
+- Implemented ADR 0007 Model 2 identity proof: Vinctor-issued, grant-bound,
+  audience-scoped, short-lived subject tokens (`vat_`) via `POST /v1/tokens` +
+  `vinctor agent token mint`, plus an additive optional `X-Subject-Token` on
+  `/v1/enforce/delegated` that proves the subject (audited `identity_proven` +
+  `token_id`), fails closed on any token failure, and never leaks the raw token;
+  PEP resolver wired into both `serve` and `local start`. Schema v3 (`#58`).
+- Implemented ADR 0009-B per-agent `require_boundary`: an opt-in
+  `agent_enforcement_settings` flag (schema v4) that fails a hardened agent's
+  enforce closed (`boundary_required`) when the boundary is truly absent — making
+  the `disable` kill-switch un-evadable — while leaving the default-off path
+  unchanged; `vinctor operator require-boundary enable|disable|show` CLI (`#60`).
+- Ran the runtime-authorization dogfooding arc (rounds 1–8: authz boundary,
+  Codex measurement, tenant/delegation, MCP inspection, approval flow, the
+  4-area parallel batch, the ADR 0007 proven path, and ADR 0009-B
+  require_boundary), recorded in `docs/dogfooding/2026-06-21-dogfooding-summary.md`.
+  Findings dispositioned: D2→ADR 0008, D3→`#52`, policy non-atomic→`#55`,
+  boundary opt-in→ADR 0009-B.
 
 ## Next
 
@@ -239,13 +265,41 @@ V1 service contract boundary:
 - Consider HTTP-level policy import/export once a hosted or long-running service
   deployment contract exists. Current policy file apply/export is local
   SQLite-backed.
-- Add an explicit SQLite schema migrate/upgrade command once migration needs
-  exceed the current version markers. (Backup and reset shipped in the first
-  operational-interfaces slice; restore is still pending.)
+- SQLite schema is at version 4 (adds subject tokens and agent enforcement
+  settings); backup, reset, restore, and `vinctor operator storage migrate` have
+  all shipped. Further migration tooling is only needed if a non-additive
+  migration arises (current additions are `CREATE TABLE IF NOT EXISTS` + a version
+  row).
 - Add richer reviewer identity and operator inbox assignment only after a
   concrete human/operator workflow exists.
 - Add stronger local secret storage such as OS keychain integration only after
   a separate design slice. Current env-file support is explicit test/dev UX.
+
+### Hardening follow-ups (deferred from the 2026-06 ADR 0007 / 0009-B slices)
+
+- ADR 0007 subject tokens: sender-constrained proof-of-possession (mTLS or
+  DPoP) to remove the residual within-TTL replay risk (the real anti-replay
+  control); single-use / per-action token binding; explicit token revocation;
+  and an opt-in `require_subject_token` enforcement flag (mirrors
+  `require_boundary`; must treat an empty token header as absent → deny).
+- ADR 0009-B `require_boundary`: workspace-level (or workspace-default +
+  per-agent override) scope; a declarative policy-file surface for the flag.
+
+### Measurement / adoption (not autonomously reproducible)
+
+- Hermes runtime boundary measurement (feasibility uncertain).
+- Claude Code real-use dogfood (interactive `claude -p` driving of the
+  hook → enforce loop).
+- Codex `emitted?` stays unmeasured: headless `codex exec` does not load plugin
+  hooks on 0.137.0; revisit only if the TUI becomes driveable or a newer build
+  changes this.
+
+### Low-priority cosmetics
+
+- `vinctor agent enforce -o json` emits two JSON objects on a deny (stderr error
+  line + stdout decision); naive single-stream parsers may trip.
+- `vinctor operator policy export` emits `max_ttl_seconds` where the input used
+  `max_ttl` (round-trip remains faithful).
 
 ### MCP Phase 2 - Approval / Grant Administration
 
