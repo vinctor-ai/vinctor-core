@@ -24,6 +24,10 @@ classifiers = [
   "Typing :: Typed",
 ]
 
+[project.urls]
+Homepage = "https://github.com/pkachuc/vinctor-core"
+Repository = "https://github.com/pkachuc/vinctor-core"
+
 [project.optional-dependencies]
 dev = [
   "build>=1.2",

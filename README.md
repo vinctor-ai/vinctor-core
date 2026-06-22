@@ -7,18 +7,33 @@ database, or HTTP stack.
 
 > Status: early prototype. APIs and package boundaries may change.
 
-## Local Prototype Quickstart
+## Install
 
-Install the package in editable mode:
+Vinctor is a Python ≥ 3.11 package that installs two console commands —
+`vinctor` (the operator/agent CLI) and `vinctor-mcp-server` (the read-only MCP
+control plane). Install it as a standalone tool with
+[pipx](https://pipx.pypa.io) (recommended for a CLI), or with `pip` into a
+virtualenv — no `PYTHONPATH` or `python -m …` invocation needed:
 
 ```bash
-.venv/bin/python -m pip install -e ".[dev]"
+# Standalone CLI (recommended). Not yet on PyPI, so install from a clone:
+pipx install .
+# include the MCP control plane:  pipx install ".[mcp]"
+
+# …or into a virtualenv:
+python3.11 -m venv .venv && .venv/bin/python -m pip install .
+
+vinctor --help
+vinctor local start        # bootstrap a local service and print VINCTOR_* exports
 ```
 
-Add the `mcp` extra (`pip install -e ".[dev,mcp]"`) if you also want the
-read-only MCP control plane (`docs/mcp-server.md`).
+Once published to PyPI this becomes `pipx install vinctor-core`. To **contribute**
+(editable install + dev tools + tests), see [Testing](#testing).
 
-Run a complete service-style demo:
+## Local Prototype Quickstart
+
+With Vinctor installed (see [Install](#install)), run a complete service-style
+demo:
 
 ```bash
 vinctor demo service
@@ -645,7 +660,7 @@ documentation should change together.
 Python 3.11 or newer is required.
 
 ```bash
-/opt/homebrew/bin/python3.11 -m venv .venv
+python3.11 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
 .venv/bin/python -m pytest -q
 .venv/bin/python demo/boundary_registry_core_e2e.py
