@@ -26,7 +26,11 @@ from vinctor_service.models import (
     V1EnforceRequest,
     V1EnforceResponse,
 )
-from vinctor_service.repositories import GrantRepository, SubjectTokenRepository
+from vinctor_service.repositories import (
+    AgentEnforcementSettingsRepository,
+    GrantRepository,
+    SubjectTokenRepository,
+)
 
 
 def enforce_v1_contract(
@@ -36,6 +40,7 @@ def enforce_v1_contract(
     now: datetime,
     audit_writer: AuditWriter,
     boundary_registry: BoundaryLookup | None = None,
+    agent_enforcement_settings_repository: AgentEnforcementSettingsRepository | None = None,
 ) -> V1EnforceResponse:
     try:
         grant = grant_repository.get_by_ref(request.grant_ref)
@@ -70,6 +75,13 @@ def enforce_v1_contract(
             f"grant_ref {request.grant_ref} does not belong to the requesting agent",
         )
 
+    require_boundary = (
+        agent_enforcement_settings_repository.get_require_boundary(
+            workspace_id=request.workspace_id, agent_id=request.agent_id
+        )
+        if agent_enforcement_settings_repository is not None
+        else False
+    )
     return _evaluate_and_record(
         grant=grant,
         action=request.action,
@@ -78,6 +90,7 @@ def enforce_v1_contract(
         now=now,
         audit_writer=audit_writer,
         boundary_registry=boundary_registry,
+        require_boundary=require_boundary,
     )
 
 
@@ -90,6 +103,7 @@ def delegated_enforce_v1_contract(
     boundary_registry: BoundaryLookup | None = None,
     pep_workspace_id: str | None = None,
     subject_token_repository: SubjectTokenRepository | None = None,
+    agent_enforcement_settings_repository: AgentEnforcementSettingsRepository | None = None,
 ) -> V1EnforceResponse:
     """Resolve an on-behalf-of enforce request from a PEP (see ADR 0007).
 
@@ -229,6 +243,13 @@ def delegated_enforce_v1_contract(
         identity_proven = True
         proven_token_id = token.token_id
 
+    require_boundary = (
+        agent_enforcement_settings_repository.get_require_boundary(
+            workspace_id=trusted_ws, agent_id=request.agent_id
+        )
+        if agent_enforcement_settings_repository is not None
+        else False
+    )
     return _evaluate_and_record(
         grant=grant,
         action=request.action,
@@ -240,6 +261,7 @@ def delegated_enforce_v1_contract(
         enforcing_principal=request.pep_id,
         identity_proven=identity_proven,
         token_id=proven_token_id,
+        require_boundary=require_boundary,
     )
 
 
@@ -255,6 +277,7 @@ def _evaluate_and_record(
     enforcing_principal: str | None = None,
     identity_proven: bool = False,
     token_id: str | None = None,
+    require_boundary: bool = False,
 ) -> V1EnforceResponse:
     if not is_valid_requested_action(action):
         return _pre_audit_error(
@@ -278,6 +301,7 @@ def _evaluate_and_record(
             now=now,
             boundary_id=boundary_id,
             boundary_registry=boundary_registry,
+            require_boundary=require_boundary,
         )
     )
     audit_event = build_audit_event(

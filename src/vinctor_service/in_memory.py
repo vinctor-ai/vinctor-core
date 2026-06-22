@@ -48,6 +48,7 @@ from vinctor_service.models import (
     V1EnforceResponse,
 )
 from vinctor_service.repositories import (
+    InMemoryAgentEnforcementSettingsRepository,
     InMemoryAutoApprovalRuleRepository,
     InMemoryGrantRepository,
     InMemoryGrantRequestRepository,
@@ -70,6 +71,9 @@ class InMemoryV1Service:
         self.grant_request_repository = InMemoryGrantRequestRepository()
         self.auto_approval_rule_repository = InMemoryAutoApprovalRuleRepository()
         self.subject_token_repository = InMemorySubjectTokenRepository()
+        self.agent_enforcement_settings_repository = (
+            InMemoryAgentEnforcementSettingsRepository()
+        )
         self.scope_bounds_repository = InMemoryAgentIssuableScopeBoundsRepository(
             self.initial_issuable_scope_bounds
         )
@@ -358,6 +362,7 @@ class InMemoryV1Service:
             now=now,
             audit_writer=self.audit_writer,
             boundary_registry=self.boundary_registry,
+            agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
         )
 
     def delegated_enforce(
@@ -373,4 +378,5 @@ class InMemoryV1Service:
             audit_writer=self.audit_writer,
             boundary_registry=self.boundary_registry,
             subject_token_repository=self.subject_token_repository,
+            agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
         )

@@ -41,7 +41,7 @@ def test_sqlite_insert_and_get_by_hash_round_trip(tmp_path) -> None:
     assert repo.get_by_hash("missing") is None
 
 
-def test_sqlite_schema_records_version_3(tmp_path) -> None:
+def test_sqlite_schema_records_version_4(tmp_path) -> None:
     conn = sqlite3.connect(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
-    assert get_sqlite_schema_versions(conn) == (1, 2, 3)
+    assert get_sqlite_schema_versions(conn) == (1, 2, 3, 4)

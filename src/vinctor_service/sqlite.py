@@ -188,6 +188,14 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_subject_tokens_hash
         ON subject_tokens(token_hash);
+
+        CREATE TABLE IF NOT EXISTS agent_enforcement_settings (
+            workspace_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            require_boundary INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, agent_id)
+        );
         """
     )
     _ensure_grant_request_metadata_columns(conn)
@@ -212,6 +220,13 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         VALUES (?, ?)
         """,
         (3, datetime.now(UTC).isoformat()),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (4, datetime.now(UTC).isoformat()),
     )
     conn.commit()
 
@@ -424,6 +439,37 @@ class SQLiteAgentIssuableScopeBoundsRepository:
                     max_ttl_seconds,
                     now.isoformat(),
                 ),
+            )
+
+
+class SQLiteAgentEnforcementSettingsRepository:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def get_require_boundary(self, *, workspace_id: str, agent_id: str) -> bool:
+        row = self._conn.execute(
+            """
+            SELECT require_boundary FROM agent_enforcement_settings
+            WHERE workspace_id = ? AND agent_id = ?
+            """,
+            (workspace_id, agent_id),
+        ).fetchone()
+        return bool(row[0]) if row is not None else False
+
+    def set_require_boundary(
+        self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime
+    ) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO agent_enforcement_settings (
+                    workspace_id, agent_id, require_boundary, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
+                    require_boundary = excluded.require_boundary,
+                    updated_at = excluded.updated_at
+                """,
+                (workspace_id, agent_id, 1 if require_boundary else 0, now.isoformat()),
             )
 
 
@@ -796,6 +842,9 @@ class SQLiteV1Service:
     grant_request_repository: SQLiteGrantRequestRepository = field(init=False)
     auto_approval_rule_repository: SQLiteAutoApprovalRuleRepository = field(init=False)
     subject_token_repository: SQLiteSubjectTokenRepository = field(init=False)
+    agent_enforcement_settings_repository: SQLiteAgentEnforcementSettingsRepository = field(
+        init=False
+    )
     _auth_failures: AuthFailureAuditThrottle = field(init=False)
 
     def __post_init__(self) -> None:
@@ -809,6 +858,9 @@ class SQLiteV1Service:
         self.grant_request_repository = SQLiteGrantRequestRepository(self.conn)
         self.auto_approval_rule_repository = SQLiteAutoApprovalRuleRepository(self.conn)
         self.subject_token_repository = SQLiteSubjectTokenRepository(self.conn)
+        self.agent_enforcement_settings_repository = SQLiteAgentEnforcementSettingsRepository(
+            self.conn
+        )
 
     def insert_grant(self, grant: Grant) -> None:
         insert_grant(self.conn, grant)
@@ -1096,6 +1148,7 @@ class SQLiteV1Service:
             now=now,
             audit_writer=self.audit_writer,
             boundary_registry=self.boundary_registry,
+            agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
         )
 
     def delegated_enforce(
@@ -1111,6 +1164,7 @@ class SQLiteV1Service:
             audit_writer=self.audit_writer,
             boundary_registry=self.boundary_registry,
             subject_token_repository=self.subject_token_repository,
+            agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
         )
 
 

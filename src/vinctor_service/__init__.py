@@ -58,10 +58,12 @@ from vinctor_service.models import (
     V1EnforceResponse,
 )
 from vinctor_service.repositories import (
+    AgentEnforcementSettingsRepository,
     AutoApprovalRuleRepository,
     GrantLifecycleRepository,
     GrantRepository,
     GrantRequestRepository,
+    InMemoryAgentEnforcementSettingsRepository,
     InMemoryAutoApprovalRuleRepository,
     InMemoryGrantRepository,
     InMemoryGrantRequestRepository,
@@ -75,6 +77,7 @@ from vinctor_service.service_runtime import (
     render_service_runtime_banner,
 )
 from vinctor_service.sqlite import (
+    SQLiteAgentEnforcementSettingsRepository,
     SQLiteAgentIssuableScopeBoundsRepository,
     SQLiteAuditWriter,
     SQLiteAutoApprovalRuleRepository,
@@ -109,6 +112,7 @@ __all__ = [
     "AuditWriter",
     "AGENT_KEY_PREFIX",
     "CreatedLocalKey",
+    "AgentEnforcementSettingsRepository",
     "AgentIssuableScopeBoundsRepository",
     "GrantIssueRequest",
     "GrantIssueResult",
@@ -120,6 +124,7 @@ __all__ = [
     "GrantRequestRoutingHint",
     "GrantRequestRepository",
     "GrantRepository",
+    "InMemoryAgentEnforcementSettingsRepository",
     "InMemoryAgentIssuableScopeBoundsRepository",
     "InMemoryAutoApprovalRuleRepository",
     "InMemoryAuditWriter",
@@ -130,6 +135,7 @@ __all__ = [
     "LocalKeyRecord",
     "PEP_KEY_PREFIX",
     "PepIdentity",
+    "SQLiteAgentEnforcementSettingsRepository",
     "SQLiteAgentIssuableScopeBoundsRepository",
     "SQLiteAuditWriter",
     "SQLiteAutoApprovalRuleRepository",

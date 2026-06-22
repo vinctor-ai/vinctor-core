@@ -15,6 +15,24 @@ the operator surface to set the flag) is deferred to that slice. Until it lands,
 Vinctor's behavior is unchanged and no mandatory-boundary claim is made.
 Surfaced by the 2026-06-21 boundary fail-closed dogfood.
 
+**Implementation status (2026-06-22): implemented, per-agent.** The slice landed
+as a per-agent flag: a new `agent_enforcement_settings` table + repository (schema
+v4), `EnforceInput.require_boundary` consumed by `_resolve_boundary`, resolved per
+`(workspace_id, agent_id)` and threaded through **both** the direct and delegated
+enforce paths (and both runtimes), plus an `operator require-boundary
+enable|disable|show` CLI. Default **off** → existing behavior byte-for-byte
+unchanged. Refinement vs the original wording above: the flag converts only the
+**truly-absent** boundary (header not sent → `boundary_id is None`) to a
+`boundary_required` deny; an *unusable* boundary already fails closed with its
+specific reason (`boundary_not_found`/`boundary_inactive`) and is unchanged, and an
+empty/whitespace header keeps its existing `boundary_not_found` deny (it is **not**
+normalized to absent — doing so would have been a default-off fail-open). The
+`disable` kill-switch is now effective for hardened agents (an absent boundary can
+no longer evade it). Workspace-level scope and a policy-file surface remain deferred
+follow-ups. Design:
+`docs/superpowers/specs/2026-06-22-adr0009-require-boundary-design.md`; plan:
+`docs/superpowers/plans/2026-06-22-adr0009-require-boundary.md`.
+
 ## Context
 
 `/v1/enforce` accepts an optional `X-Vinctor-Boundary-Id` header. The PDP core

@@ -58,6 +58,12 @@ def evaluate_enforce(enforce_input: EnforceInput) -> DecisionResult:
 def _resolve_boundary(enforce_input: EnforceInput) -> Boundary | DecisionResult | None:
     boundary_id = enforce_input.boundary_id
     if boundary_id is None:
+        if enforce_input.require_boundary:
+            return _deny(
+                enforce_input,
+                "boundary_required",
+                attempted_scope(enforce_input.action, enforce_input.resource),
+            )
         return None
 
     registry = enforce_input.boundary_registry

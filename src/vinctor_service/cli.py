@@ -235,6 +235,15 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
     show_bounds = bounds_commands.add_parser("show")
     show_bounds.add_argument("target_agent_id", nargs="?")
 
+    require_boundary = resources.add_parser("require-boundary")
+    rb_commands = require_boundary.add_subparsers(dest="require_boundary_command", required=True)
+    rb_enable = rb_commands.add_parser("enable")
+    rb_enable.add_argument("target_agent_id", nargs="?")
+    rb_disable = rb_commands.add_parser("disable")
+    rb_disable.add_argument("target_agent_id", nargs="?")
+    rb_show = rb_commands.add_parser("show")
+    rb_show.add_argument("target_agent_id", nargs="?")
+
     audit = resources.add_parser("audit")
     audit_commands = audit.add_subparsers(dest="audit_command", required=True)
     audit_list = audit_commands.add_parser("list")
@@ -447,6 +456,9 @@ def _operator(args: argparse.Namespace, *, stdout: TextIO) -> None:
         return
     if resource == "bounds":
         _operator_bounds(args, stdout=stdout)
+        return
+    if resource == "require-boundary":
+        _operator_require_boundary(args, stdout=stdout)
         return
     if resource == "audit":
         _operator_audit(args, stdout=stdout)
@@ -681,6 +693,33 @@ def _operator_bounds(args: argparse.Namespace, *, stdout: TextIO) -> None:
         _emit(args, body, text, stdout=stdout)
         return
     raise CliError(f"unknown bounds command: {args.bounds_command}")
+
+
+def _operator_require_boundary(args: argparse.Namespace, *, stdout: TextIO) -> None:
+    service = _sqlite_service(args.db)
+    agent_id = args.target_agent_id or args.agent_id
+    repo = service.agent_enforcement_settings_repository
+    if args.require_boundary_command in ("enable", "disable"):
+        value = args.require_boundary_command == "enable"
+        repo.set_require_boundary(
+            workspace_id=args.workspace_id,
+            agent_id=agent_id,
+            require_boundary=value,
+            now=datetime.now(UTC),
+        )
+    else:  # show
+        value = repo.get_require_boundary(workspace_id=args.workspace_id, agent_id=agent_id)
+    body = {
+        "workspace_id": args.workspace_id,
+        "agent_id": agent_id,
+        "require_boundary": value,
+    }
+    _emit(
+        args,
+        body,
+        f"require_boundary workspace={args.workspace_id} agent={agent_id} value={value}",
+        stdout=stdout,
+    )
 
 
 def _operator_audit(args: argparse.Namespace, *, stdout: TextIO) -> None:

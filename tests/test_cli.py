@@ -397,8 +397,8 @@ auto_approval_rules:
         "rules_updated": 0,
         "workspace_id": "ws_demo",
     }
-    assert service_info["schema_versions"] == [1, 2, 3]
-    assert service_info["schema_version"] == 3
+    assert service_info["schema_versions"] == [1, 2, 3, 4]
+    assert service_info["schema_version"] == 4
     assert exported["agent_bounds"] == 1
     assert exported["auto_approval_rules"] == 1
     assert bounds == ("execute:ci/test", "write:repo/vinctor-core/*")
@@ -467,11 +467,11 @@ def test_vinctor_cli_storage_backup_and_reset(tmp_path: Path) -> None:
 
     assert backup["output_path"] == str(backup_path)
     assert backup["bytes"] > 0
-    assert backup["schema_versions"] == [1, 2, 3]
+    assert backup["schema_versions"] == [1, 2, 3, 4]
     assert reset == {
         "db_path": str(db_path),
         "reset": True,
-        "schema_versions": [1, 2, 3],
+        "schema_versions": [1, 2, 3, 4],
     }
 
     backup_conn = sqlite3.connect(backup_path)
@@ -543,8 +543,8 @@ def test_vinctor_cli_service_info_reports_schema(tmp_path: Path) -> None:
 
     assert info["mode"] == "local"
     assert info["db_path"] == str(db_path)
-    assert info["schema_version"] == 3
-    assert info["schema_versions"] == [1, 2, 3]
+    assert info["schema_version"] == 4
+    assert info["schema_versions"] == [1, 2, 3, 4]
     assert info["key_storage_mode"] == "sqlite_hashes"
     assert "host" in info
     assert "port" in info
@@ -580,7 +580,7 @@ def test_vinctor_cli_storage_restore_roundtrip(tmp_path: Path) -> None:
         "db_path": str(db_path),
         "input_path": str(backup_path),
         "restored": True,
-        "schema_versions": [1, 2, 3],
+        "schema_versions": [1, 2, 3, 4],
     }
     conn = sqlite3.connect(db_path)
     try:
@@ -658,7 +658,7 @@ def test_vinctor_cli_storage_migrate_reports_versions(tmp_path: Path) -> None:
 
     migrate = _run(["--json", "--db", str(db_path), "operator", "storage", "migrate"])
 
-    assert migrate == {"db_path": str(db_path), "schema_versions": [1, 2, 3]}
+    assert migrate == {"db_path": str(db_path), "schema_versions": [1, 2, 3, 4]}
     conn = sqlite3.connect(db_path)
     try:
         grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
@@ -804,6 +804,20 @@ def test_vinctor_cli_bounds_set_without_max_ttl(tmp_path: Path) -> None:
 
     assert set_result["max_ttl_seconds"] is None
     assert shown["max_ttl_seconds"] is None
+
+
+def test_vinctor_cli_operator_require_boundary_enable_show(tmp_path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+    enabled = _run([*common, "operator", "require-boundary", "enable", "agent_runner"])
+    shown = _run([*common, "operator", "require-boundary", "show", "agent_runner"])
+    disabled = _run([*common, "operator", "require-boundary", "disable", "agent_runner"])
+    shown_after = _run([*common, "operator", "require-boundary", "show", "agent_runner"])
+
+    assert enabled["require_boundary"] is True
+    assert shown["require_boundary"] is True
+    assert disabled["require_boundary"] is False
+    assert shown_after["require_boundary"] is False
 
 
 def _seed_storage_db(db_path: Path) -> None:

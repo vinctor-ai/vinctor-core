@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol
 
 from vinctor_core.models import Grant
@@ -48,6 +49,14 @@ class SubjectTokenRepository(Protocol):
     def insert(self, token: SubjectToken) -> None: ...
 
     def get_by_hash(self, token_hash: str) -> SubjectToken | None: ...
+
+
+class AgentEnforcementSettingsRepository(Protocol):
+    def get_require_boundary(self, *, workspace_id: str, agent_id: str) -> bool: ...
+
+    def set_require_boundary(
+        self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime
+    ) -> None: ...
 
 
 class InMemoryGrantRepository:
@@ -164,3 +173,16 @@ class InMemorySubjectTokenRepository:
 
     def get_by_hash(self, token_hash: str) -> SubjectToken | None:
         return self._tokens_by_hash.get(token_hash)
+
+
+class InMemoryAgentEnforcementSettingsRepository:
+    def __init__(self) -> None:
+        self._require_boundary: dict[tuple[str, str], bool] = {}
+
+    def get_require_boundary(self, *, workspace_id: str, agent_id: str) -> bool:
+        return self._require_boundary.get((workspace_id, agent_id), False)
+
+    def set_require_boundary(
+        self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime
+    ) -> None:
+        self._require_boundary[(workspace_id, agent_id)] = require_boundary

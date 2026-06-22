@@ -68,6 +68,7 @@ class EnforceInput:
     now: datetime
     boundary_id: str | None = None
     boundary_registry: BoundaryLookup | None = None
+    require_boundary: bool = False
 
 
 @dataclass(frozen=True)
