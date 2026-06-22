@@ -54,6 +54,12 @@ class SubjectTokenRepository(Protocol):
 class AgentEnforcementSettingsRepository(Protocol):
     def get_require_boundary(self, *, workspace_id: str, agent_id: str) -> bool: ...
 
+    def get_require_boundary_setting(self, *, workspace_id: str, agent_id: str) -> bool | None: ...
+
+    def is_boundary_required(self, *, workspace_id: str, agent_id: str) -> bool: ...
+
+    def list_require_boundary(self, workspace_id: str) -> tuple[tuple[str, bool], ...]: ...
+
     def set_require_boundary(
         self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime
     ) -> None: ...
@@ -181,6 +187,24 @@ class InMemoryAgentEnforcementSettingsRepository:
 
     def get_require_boundary(self, *, workspace_id: str, agent_id: str) -> bool:
         return self._require_boundary.get((workspace_id, agent_id), False)
+
+    def get_require_boundary_setting(self, *, workspace_id: str, agent_id: str) -> bool | None:
+        return self._require_boundary.get((workspace_id, agent_id))
+
+    def is_boundary_required(self, *, workspace_id: str, agent_id: str) -> bool:
+        agent = self._require_boundary.get((workspace_id, agent_id))
+        if agent is not None:
+            return agent
+        return self._require_boundary.get((workspace_id, ""), False)
+
+    def list_require_boundary(self, workspace_id: str) -> tuple[tuple[str, bool], ...]:
+        return tuple(
+            sorted(
+                (agent_id, value)
+                for (ws, agent_id), value in self._require_boundary.items()
+                if ws == workspace_id
+            )
+        )
 
     def set_require_boundary(
         self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime

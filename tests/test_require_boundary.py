@@ -159,3 +159,31 @@ def test_sqlite_unhardened_agent_permits_without_boundary(tmp_path) -> None:
     )
     r = service.enforce(request, now=NOW)
     assert r.decision == "permit"
+
+
+def test_ws_default_hardens_agent_without_own_row() -> None:
+    svc = _svc()
+    svc.agent_enforcement_settings_repository.set_require_boundary(
+        workspace_id="ws", agent_id="", require_boundary=True, now=NOW)
+    r = svc.enforce(V1EnforceRequest(workspace_id="ws", agent_id="a", grant_ref="grt",
+                                     action="write", resource="repo/x/y"), now=NOW)
+    assert r.status_code == 403 and r.decision == "deny"
+
+
+def test_agent_row_overrides_ws_default_to_exempt() -> None:
+    svc = _svc()
+    repo = svc.agent_enforcement_settings_repository
+    repo.set_require_boundary(workspace_id="ws", agent_id="", require_boundary=True, now=NOW)
+    repo.set_require_boundary(workspace_id="ws", agent_id="a", require_boundary=False, now=NOW)
+    r = svc.enforce(V1EnforceRequest(workspace_id="ws", agent_id="a", grant_ref="grt",
+                                     action="write", resource="repo/x/y"), now=NOW)
+    assert r.decision == "permit"
+
+
+def test_no_rows_is_not_required() -> None:
+    repo = _svc().agent_enforcement_settings_repository
+    assert repo.is_boundary_required(workspace_id="ws", agent_id="a") is False
+    repo.set_require_boundary(workspace_id="ws", agent_id="", require_boundary=True, now=NOW)
+    assert repo.is_boundary_required(workspace_id="ws", agent_id="a") is True
+    repo.set_require_boundary(workspace_id="ws", agent_id="a", require_boundary=False, now=NOW)
+    assert repo.is_boundary_required(workspace_id="ws", agent_id="a") is False

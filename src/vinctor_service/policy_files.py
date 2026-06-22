@@ -76,6 +76,8 @@ def apply_policy_file(
             )
         )
 
+    parsed_require_boundary = _parse_require_boundary(document)
+
     # Every entry validated; apply all writes.
     for parsed in parsed_bounds:
         service.set_agent_issuable_scope_bounds(
@@ -97,6 +99,22 @@ def apply_policy_file(
         else:
             rules_updated += 1
 
+    # require_boundary enables only (additive); disabling stays a CLI action.
+    if parsed_require_boundary["workspace"] is not None:
+        service.agent_enforcement_settings_repository.set_require_boundary(
+            workspace_id=workspace_id,
+            agent_id="",
+            require_boundary=parsed_require_boundary["workspace"],
+            now=now,
+        )
+    for agent_id in parsed_require_boundary["agents"]:
+        service.agent_enforcement_settings_repository.set_require_boundary(
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            require_boundary=True,
+            now=now,
+        )
+
     return PolicyApplyResult(
         workspace_id=workspace_id,
         bounds_set=len(parsed_bounds),
@@ -110,7 +128,7 @@ def export_policy_document(
     service: SQLiteV1Service,
     workspace_id: str,
 ) -> dict[str, object]:
-    return {
+    document: dict[str, object] = {
         "version": 1,
         "workspace_id": workspace_id,
         "agent_bounds": [
@@ -135,6 +153,19 @@ def export_policy_document(
         ],
     }
 
+    rows = service.agent_enforcement_settings_repository.list_require_boundary(workspace_id)
+    if rows:
+        block: dict[str, object] = {}
+        for agent_id, value in rows:
+            if agent_id == "":
+                block["workspace"] = value
+        agents = sorted(agent_id for agent_id, value in rows if agent_id != "" and value)
+        if agents:
+            block["agents"] = agents
+        document["require_boundary"] = block
+
+    return document
+
 
 def write_policy_file(path: Path, document: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -158,7 +189,10 @@ def _load_policy_document(path: Path) -> dict[str, object]:
 
     if not isinstance(loaded, dict):
         raise ValueError("policy file must contain a mapping")
-    extra = sorted(set(loaded) - {"version", "workspace_id", "agent_bounds", "auto_approval_rules"})
+    extra = sorted(
+        set(loaded)
+        - {"version", "workspace_id", "agent_bounds", "auto_approval_rules", "require_boundary"}
+    )
     if extra:
         raise ValueError(f"unexpected policy field: {extra[0]}")
     version = loaded.get("version")
@@ -209,6 +243,30 @@ def _parse_rule_entry(entry: object) -> dict[str, Any]:
         "max_ttl_seconds": _duration_seconds(mapping),
         "status": status,
     }
+
+
+def _parse_require_boundary(document: dict[str, object]) -> dict[str, Any]:
+    raw = document.get("require_boundary")
+    if raw is None:
+        return {"workspace": None, "agents": []}
+    mapping = _mapping(raw, "require_boundary")
+    _reject_extra(mapping, {"workspace", "agents"}, "require_boundary")
+    workspace: bool | None = None
+    if "workspace" in mapping:
+        value = mapping["workspace"]
+        if not isinstance(value, bool):
+            raise ValueError("require_boundary workspace must be a boolean")
+        workspace = value
+    agents: list[str] = []
+    if "agents" in mapping:
+        raw_agents = mapping["agents"]
+        if not isinstance(raw_agents, list):
+            raise ValueError("require_boundary agents must be a list")
+        for item in raw_agents:
+            if not isinstance(item, str) or item == "":
+                raise ValueError("require_boundary agents must contain only non-empty strings")
+            agents.append(item)
+    return {"workspace": workspace, "agents": agents}
 
 
 def _mapping(value: object, label: str) -> dict[str, object]:

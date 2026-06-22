@@ -408,6 +408,38 @@ auto_approval_rules:
     conn.close()
 
 
+def test_vinctor_cli_policy_apply_export_require_boundary_round_trip(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    policy_path = tmp_path / "policy.yaml"
+    exported_path = tmp_path / "exported-policy.yaml"
+    policy_path.write_text(
+        """
+version: 1
+workspace_id: ws_demo
+require_boundary:
+  workspace: true
+  agents:
+    - agent_runner
+""".strip(),
+        encoding="utf-8",
+    )
+
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+    _run([*common, "operator", "policy", "apply", "--file", str(policy_path)])
+    _run([*common, "operator", "policy", "export", "--file", str(exported_path)])
+
+    conn = sqlite3.connect(db_path)
+    service = SQLiteV1Service(conn)
+    repo = service.agent_enforcement_settings_repository
+    assert repo.is_boundary_required(workspace_id="ws_demo", agent_id="agent_runner") is True
+    assert repo.get_require_boundary_setting(workspace_id="ws_demo", agent_id="") is True
+    conn.close()
+
+    exported_yaml = yaml.safe_load(exported_path.read_text(encoding="utf-8"))
+    assert exported_yaml["require_boundary"]["workspace"] is True
+    assert "agent_runner" in exported_yaml["require_boundary"]["agents"]
+
+
 def test_vinctor_cli_policy_apply_is_atomic_on_invalid_later_entry(tmp_path: Path) -> None:
     db_path = tmp_path / "vinctor.sqlite"
     policy_path = tmp_path / "bad-policy.yaml"
@@ -818,6 +850,15 @@ def test_vinctor_cli_operator_require_boundary_enable_show(tmp_path) -> None:
     assert shown["require_boundary"] is True
     assert disabled["require_boundary"] is False
     assert shown_after["require_boundary"] is False
+
+
+def test_vinctor_cli_require_boundary_workspace_default(tmp_path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+    enabled = _run([*common, "operator", "require-boundary", "enable", "--workspace"])
+    shown = _run([*common, "operator", "require-boundary", "show", "--workspace"])
+    assert enabled["require_boundary"] is True and enabled["scope"] == "workspace"
+    assert shown["require_boundary"] is True
 
 
 def _seed_storage_db(db_path: Path) -> None:

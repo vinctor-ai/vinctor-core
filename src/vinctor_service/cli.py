@@ -89,6 +89,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vinctor",
         description="Operate the local Vinctor prototype.",
+        allow_abbrev=False,
     )
     parser.add_argument("--endpoint", default=os.environ.get("VINCTOR_ENDPOINT"))
     parser.add_argument("--workspace-key", default=os.environ.get("VINCTOR_WORKSPACE_KEY"))
@@ -239,10 +240,13 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
     rb_commands = require_boundary.add_subparsers(dest="require_boundary_command", required=True)
     rb_enable = rb_commands.add_parser("enable")
     rb_enable.add_argument("target_agent_id", nargs="?")
+    rb_enable.add_argument("--workspace", action="store_true")
     rb_disable = rb_commands.add_parser("disable")
     rb_disable.add_argument("target_agent_id", nargs="?")
+    rb_disable.add_argument("--workspace", action="store_true")
     rb_show = rb_commands.add_parser("show")
     rb_show.add_argument("target_agent_id", nargs="?")
+    rb_show.add_argument("--workspace", action="store_true")
 
     audit = resources.add_parser("audit")
     audit_commands = audit.add_subparsers(dest="audit_command", required=True)
@@ -697,7 +701,9 @@ def _operator_bounds(args: argparse.Namespace, *, stdout: TextIO) -> None:
 
 def _operator_require_boundary(args: argparse.Namespace, *, stdout: TextIO) -> None:
     service = _sqlite_service(args.db)
-    agent_id = args.target_agent_id or args.agent_id
+    if args.workspace and args.target_agent_id is not None:
+        raise CliError("require-boundary --workspace cannot be combined with an agent id")
+    agent_id = "" if args.workspace else (args.target_agent_id or args.agent_id)
     repo = service.agent_enforcement_settings_repository
     if args.require_boundary_command in ("enable", "disable"):
         value = args.require_boundary_command == "enable"
@@ -713,6 +719,7 @@ def _operator_require_boundary(args: argparse.Namespace, *, stdout: TextIO) -> N
         "workspace_id": args.workspace_id,
         "agent_id": agent_id,
         "require_boundary": value,
+        "scope": "workspace" if args.workspace else "agent",
     }
     _emit(
         args,

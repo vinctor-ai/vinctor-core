@@ -76,7 +76,7 @@ def enforce_v1_contract(
         )
 
     require_boundary = (
-        agent_enforcement_settings_repository.get_require_boundary(
+        agent_enforcement_settings_repository.is_boundary_required(
             workspace_id=request.workspace_id, agent_id=request.agent_id
         )
         if agent_enforcement_settings_repository is not None
@@ -244,7 +244,7 @@ def delegated_enforce_v1_contract(
         proven_token_id = token.token_id
 
     require_boundary = (
-        agent_enforcement_settings_repository.get_require_boundary(
+        agent_enforcement_settings_repository.is_boundary_required(
             workspace_id=trusted_ws, agent_id=request.agent_id
         )
         if agent_enforcement_settings_repository is not None

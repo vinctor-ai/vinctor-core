@@ -456,6 +456,34 @@ class SQLiteAgentEnforcementSettingsRepository:
         ).fetchone()
         return bool(row[0]) if row is not None else False
 
+    def get_require_boundary_setting(self, *, workspace_id: str, agent_id: str) -> bool | None:
+        row = self._conn.execute(
+            """
+            SELECT require_boundary FROM agent_enforcement_settings
+            WHERE workspace_id = ? AND agent_id = ?
+            """,
+            (workspace_id, agent_id),
+        ).fetchone()
+        return bool(row[0]) if row is not None else None
+
+    def is_boundary_required(self, *, workspace_id: str, agent_id: str) -> bool:
+        agent = self.get_require_boundary_setting(workspace_id=workspace_id, agent_id=agent_id)
+        if agent is not None:
+            return agent
+        ws = self.get_require_boundary_setting(workspace_id=workspace_id, agent_id="")
+        return ws if ws is not None else False
+
+    def list_require_boundary(self, workspace_id: str) -> tuple[tuple[str, bool], ...]:
+        rows = self._conn.execute(
+            """
+            SELECT agent_id, require_boundary FROM agent_enforcement_settings
+            WHERE workspace_id = ?
+            ORDER BY agent_id
+            """,
+            (workspace_id,),
+        ).fetchall()
+        return tuple((row[0], bool(row[1])) for row in rows)
+
     def set_require_boundary(
         self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime
     ) -> None:
