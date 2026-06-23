@@ -247,6 +247,20 @@ V1 service contract boundary:
   require_boundary), recorded in `docs/dogfooding/2026-06-21-dogfooding-summary.md`.
   Findings dispositioned: D2→ADR 0008, D3→`#52`, policy non-atomic→`#55`,
   boundary opt-in→ADR 0009-B.
+- 2026-06 build program (A–E), all merged to main and adversarially reviewed:
+  - **A** install ergonomics — clean `pipx`/`pip install` → `vinctor` path +
+    project URLs (`#63`).
+  - **B** `require_boundary` workspace-default + per-agent override + policy-file
+    surface (`#64`).
+  - **C1** subject-token revocation (`operator tokens revoke/list`) +
+    `require_subject_token` mandate (`#65`).
+  - **C2** per-action subject-token binding (`#66`).
+  - **C3** stdlib HMAC proof-of-possession for subject tokens (`#67`).
+  - **D** opt-in structured access log + `/metrics` Prometheus endpoint, both
+    default off (`#68`).
+  - **E** MCP Phase 2 safe core — opt-in operator `approve`/`reject` write tools
+    (`#69`).
+  Test suite 351 → 484; dependencies still stdlib + PyYAML; SQLite schema v7.
 
 ## Next
 
@@ -256,8 +270,9 @@ V1 service contract boundary:
   commands.
 - Deployment-ops runbooks (TLS/reverse proxy, firewall, systemd, logs, SQLite/
   volume backup) are written in `docs/deployment/operational-runbooks.md`.
-  Remaining deployment work: structured/exportable operational logging and
-  metrics, and Docker image publishing / tagged release artifacts.
+  Opt-in structured access logging + a `/metrics` Prometheus endpoint shipped
+  (off by default, `#68`). Remaining deployment work: Docker image publishing /
+  tagged release artifacts (needs registry/PyPI credentials).
 - Keep local config-file auto-reuse and OS keychain integration deferred until
   the local bootstrap UX is stable enough for a separate ADR-backed slice.
 - Keep production deployment hardening deferred. The current self-hosting
@@ -277,13 +292,19 @@ V1 service contract boundary:
 
 ### Hardening follow-ups (deferred from the 2026-06 ADR 0007 / 0009-B slices)
 
-- ADR 0007 subject tokens: sender-constrained proof-of-possession (mTLS or
-  DPoP) to remove the residual within-TTL replay risk (the real anti-replay
-  control); single-use / per-action token binding; explicit token revocation;
-  and an opt-in `require_subject_token` enforcement flag (mirrors
-  `require_boundary`; must treat an empty token header as absent → deny).
-- ADR 0009-B `require_boundary`: workspace-level (or workspace-default +
-  per-agent override) scope; a declarative policy-file surface for the flag.
+**Shipped 2026-06** — ADR 0007 fully hardened (revocation + `require_subject_token`
+`#65`, per-action binding `#66`, stdlib HMAC PoP `#67`) and ADR 0009-B follow-ups
+(workspace-default + per-agent override + policy-file surface `#64`).
+
+Remaining (deferred):
+- **Shared/durable PoP replay cache** — the current cache is per-process, so
+  anti-replay is single-process only (a ~2×skew replay residual per extra worker).
+- **Opt-in `require_pop` mandate** — let an operator force PoP for a subject/
+  workspace (mirrors `require_boundary` / `require_subject_token`).
+- **Asymmetric DPoP / mTLS PoP** (Vinctor never holds the secret) — needs a crypto
+  dependency; the shipped symmetric HMAC-PoP fits the current minimal-dep posture.
+- **True single-use tokens** — deferred as retry-fragile; per-action binding +
+  revocation + short TTL + HMAC-PoP already bound the replay window.
 
 ### Measurement / adoption (not autonomously reproducible)
 
@@ -303,7 +324,11 @@ V1 service contract boundary:
 
 ### MCP Phase 2 - Approval / Grant Administration
 
-Status: Future work. Not implemented.
+Status: **Safe core shipped 2026-06 (`#69`)** — opt-in (`VINCTOR_MCP_WRITE`, default
+off) `vinctor_approve_grant_request` / `vinctor_reject_grant_request` proxying the
+workspace-key operator endpoints (the service audits and structurally prevents
+execution-agent self-approval). **Remaining:** `grants.revoke` (needs a new HTTP
+revoke endpoint first) and `grants.issue` (service-authorized only).
 
 Goal: Extend the MCP server from read-only inspection into a privileged approval
 and grant administration interface.

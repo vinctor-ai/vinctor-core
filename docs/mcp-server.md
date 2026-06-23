@@ -87,6 +87,17 @@ Do not pass agent/runtime credentials to the MCP server. The MCP server does
 not read `VINCTOR_AGENT_KEY`, does not call `/v1/enforce`, and does not pass
 MCP client tokens through to `vinctor-service`.
 
+### Opt-in write tools (Phase 2 safe core)
+
+The server is **read-only by default**. Setting `VINCTOR_MCP_WRITE=1` registers
+two additional **operator write tools** — `vinctor_approve_grant_request` and
+`vinctor_reject_grant_request` — which proxy the workspace-key-authed operator
+endpoints (`POST /v1/grant-requests/{id}/approve|reject`). The service
+authenticates, audits the decision (returns `audit_event_id`), and structurally
+prevents execution agents from approving their own requests; the MCP server mints
+or revokes nothing and adds no new credential. Output is allowlist-shaped like the
+read tools. Leave `VINCTOR_MCP_WRITE` unset for a strictly read-only deployment.
+
 ## Model-Visible Output Policy
 
 All MCP tool outputs are model-visible. Every tool response is rebuilt from an
