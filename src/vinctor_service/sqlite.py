@@ -184,7 +184,9 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             issued_at TEXT NOT NULL,
             expires_at TEXT NOT NULL,
             created_by TEXT NOT NULL,
-            revoked_at TEXT
+            revoked_at TEXT,
+            bound_action TEXT,
+            bound_resource TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_subject_tokens_hash
@@ -203,6 +205,7 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
     _ensure_grant_request_metadata_columns(conn)
     _ensure_scope_bounds_max_ttl_column(conn)
     _ensure_subject_tokens_revoked_at_column(conn)
+    _ensure_subject_tokens_bound_columns(conn)
     _ensure_agent_enforcement_require_subject_token_column(conn)
     conn.execute(
         """
@@ -238,6 +241,13 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         VALUES (?, ?)
         """,
         (5, datetime.now(UTC).isoformat()),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (6, datetime.now(UTC).isoformat()),
     )
     conn.commit()
 
@@ -304,6 +314,16 @@ def _ensure_subject_tokens_revoked_at_column(conn: sqlite3.Connection) -> None:
     }
     if "revoked_at" not in existing_columns:
         conn.execute("ALTER TABLE subject_tokens ADD COLUMN revoked_at TEXT")
+
+
+def _ensure_subject_tokens_bound_columns(conn: sqlite3.Connection) -> None:
+    existing_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(subject_tokens)").fetchall()
+    }
+    if "bound_action" not in existing_columns:
+        conn.execute("ALTER TABLE subject_tokens ADD COLUMN bound_action TEXT")
+    if "bound_resource" not in existing_columns:
+        conn.execute("ALTER TABLE subject_tokens ADD COLUMN bound_resource TEXT")
 
 
 def _ensure_agent_enforcement_require_subject_token_column(conn: sqlite3.Connection) -> None:
@@ -688,8 +708,9 @@ class SQLiteSubjectTokenRepository:
                 """
                 INSERT INTO subject_tokens (
                     token_id, token_hash, workspace_id, agent_id, grant_ref,
-                    audience, issued_at, expires_at, created_by, revoked_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    audience, issued_at, expires_at, created_by, revoked_at,
+                    bound_action, bound_resource
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     token.token_id,
@@ -702,6 +723,8 @@ class SQLiteSubjectTokenRepository:
                     token.expires_at.isoformat(),
                     token.created_by,
                     _datetime_to_storage(token.revoked_at),
+                    token.bound_action,
+                    token.bound_resource,
                 ),
             )
 
@@ -709,7 +732,8 @@ class SQLiteSubjectTokenRepository:
         row = self._conn.execute(
             """
             SELECT token_id, token_hash, workspace_id, agent_id, grant_ref,
-                   audience, issued_at, expires_at, created_by, revoked_at
+                   audience, issued_at, expires_at, created_by, revoked_at,
+                   bound_action, bound_resource
             FROM subject_tokens
             WHERE token_hash = ?
             """,
@@ -721,7 +745,8 @@ class SQLiteSubjectTokenRepository:
         row = self._conn.execute(
             """
             SELECT token_id, token_hash, workspace_id, agent_id, grant_ref,
-                   audience, issued_at, expires_at, created_by, revoked_at
+                   audience, issued_at, expires_at, created_by, revoked_at,
+                   bound_action, bound_resource
             FROM subject_tokens
             WHERE token_id = ?
             """,
@@ -741,7 +766,8 @@ class SQLiteSubjectTokenRepository:
         rows = self._conn.execute(
             """
             SELECT token_id, token_hash, workspace_id, agent_id, grant_ref,
-                   audience, issued_at, expires_at, created_by, revoked_at
+                   audience, issued_at, expires_at, created_by, revoked_at,
+                   bound_action, bound_resource
             FROM subject_tokens
             WHERE workspace_id = ?
             ORDER BY issued_at
@@ -1079,7 +1105,8 @@ class SQLiteV1Service:
         )
 
     def mint_subject_token(
-        self, *, workspace_id, agent_id, grant_ref, audience, ttl_seconds, now
+        self, *, workspace_id, agent_id, grant_ref, audience, ttl_seconds, now,
+        bound_action=None, bound_resource=None,
     ):
         return mint_subject_token(
             grant_repository=self.grant_repository,
@@ -1087,6 +1114,7 @@ class SQLiteV1Service:
             audit_writer=self.audit_writer,
             workspace_id=workspace_id, agent_id=agent_id, grant_ref=grant_ref,
             audience=audience, ttl_seconds=ttl_seconds, now=now,
+            bound_action=bound_action, bound_resource=bound_resource,
         )
 
     def lookup_grant_request(
@@ -1398,6 +1426,8 @@ def _subject_token_from_row(row: sqlite3.Row | tuple | None) -> SubjectToken | N
         expires_at=datetime.fromisoformat(row[7]),
         created_by=row[8],
         revoked_at=_datetime_from_storage(row[9]),
+        bound_action=row[10],
+        bound_resource=row[11],
     )
 
 

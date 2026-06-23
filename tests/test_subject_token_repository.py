@@ -12,7 +12,11 @@ NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
 
 def _token(
-    token_hash: str = "hash_main", *, revoked_at: datetime | None = None
+    token_hash: str = "hash_main",
+    *,
+    revoked_at: datetime | None = None,
+    bound_action: str | None = None,
+    bound_resource: str | None = None,
 ) -> SubjectToken:
     return SubjectToken(
         token_id="vtk_main",
@@ -25,6 +29,8 @@ def _token(
         expires_at=NOW + timedelta(seconds=300),
         created_by="agent_release",
         revoked_at=revoked_at,
+        bound_action=bound_action,
+        bound_resource=bound_resource,
     )
 
 
@@ -44,10 +50,10 @@ def test_sqlite_insert_and_get_by_hash_round_trip(tmp_path) -> None:
     assert repo.get_by_hash("missing") is None
 
 
-def test_sqlite_schema_records_version_5(tmp_path) -> None:
+def test_sqlite_schema_records_version_6(tmp_path) -> None:
     conn = sqlite3.connect(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
-    assert get_sqlite_schema_versions(conn) == (1, 2, 3, 4, 5)
+    assert get_sqlite_schema_versions(conn) == (1, 2, 3, 4, 5, 6)
 
 
 def test_in_memory_round_trip_revoked_at() -> None:
@@ -68,3 +74,45 @@ def test_sqlite_round_trip_revoked_at(tmp_path) -> None:
     stored = repo.get_by_hash("hash_main")
     assert stored is not None
     assert stored.revoked_at == NOW + timedelta(seconds=60)
+
+
+def test_in_memory_round_trip_bound_action_resource() -> None:
+    repo = InMemorySubjectTokenRepository()
+    bound = _token(bound_action="write", bound_resource="repo/x/y")
+    repo.insert(bound)
+    stored = repo.get_by_hash("hash_main")
+    assert stored is not None
+    assert stored.bound_action == "write"
+    assert stored.bound_resource == "repo/x/y"
+
+
+def test_in_memory_round_trip_unbound_defaults_none() -> None:
+    repo = InMemorySubjectTokenRepository()
+    repo.insert(_token())
+    stored = repo.get_by_hash("hash_main")
+    assert stored is not None
+    assert stored.bound_action is None
+    assert stored.bound_resource is None
+
+
+def test_sqlite_round_trip_bound_action_resource(tmp_path) -> None:
+    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    init_sqlite_schema(conn)
+    repo = SQLiteSubjectTokenRepository(conn)
+    bound = _token(bound_action="write", bound_resource="repo/x/y")
+    repo.insert(bound)
+    stored = repo.get_by_hash("hash_main")
+    assert stored is not None
+    assert stored.bound_action == "write"
+    assert stored.bound_resource == "repo/x/y"
+
+
+def test_sqlite_round_trip_unbound_defaults_none(tmp_path) -> None:
+    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    init_sqlite_schema(conn)
+    repo = SQLiteSubjectTokenRepository(conn)
+    repo.insert(_token())
+    stored = repo.get_by_hash("hash_main")
+    assert stored is not None
+    assert stored.bound_action is None
+    assert stored.bound_resource is None

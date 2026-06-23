@@ -189,6 +189,8 @@ def _add_agent_commands(roles: argparse._SubParsersAction) -> None:
     mint.add_argument("--grant-ref", dest="token_grant_ref", required=True)
     mint.add_argument("--audience", required=True)
     mint.add_argument("--ttl")
+    mint.add_argument("--action", dest="token_action")
+    mint.add_argument("--resource", dest="token_resource")
 
 
 def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
@@ -440,20 +442,25 @@ def _agent(args: argparse.Namespace, *, stdout: TextIO) -> None:
         return
 
     if args.agent_command == "token" and args.token_command == "mint":
+        mint_body: dict[str, object] = {
+            "grant_ref": _required(args.token_grant_ref, "grant ref"),
+            "audience": _required(args.audience, "audience"),
+            "ttl_seconds": (
+                _parse_duration_seconds(args.ttl)
+                if args.ttl
+                else DEFAULT_SUBJECT_TOKEN_TTL_SECONDS
+            ),
+        }
+        if args.token_action is not None:
+            mint_body["action"] = args.token_action
+        if args.token_resource is not None:
+            mint_body["resource"] = args.token_resource
         status, body = _request_json(
             args.endpoint,
             "POST",
             "/v1/tokens",
             headers={"X-Agent-Key": _required(args.agent_key, "agent key")},
-            body={
-                "grant_ref": _required(args.token_grant_ref, "grant ref"),
-                "audience": _required(args.audience, "audience"),
-                "ttl_seconds": (
-                    _parse_duration_seconds(args.ttl)
-                    if args.ttl
-                    else DEFAULT_SUBJECT_TOKEN_TTL_SECONDS
-                ),
-            },
+            body=mint_body,
         )
         _raise_for_status(status, body)
         text = "\n".join(

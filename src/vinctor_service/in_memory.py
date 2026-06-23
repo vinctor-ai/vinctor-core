@@ -227,7 +227,8 @@ class InMemoryV1Service:
         )
 
     def mint_subject_token(
-        self, *, workspace_id, agent_id, grant_ref, audience, ttl_seconds, now
+        self, *, workspace_id, agent_id, grant_ref, audience, ttl_seconds, now,
+        bound_action=None, bound_resource=None,
     ):
         from vinctor_service.subject_tokens import mint_subject_token
 
@@ -237,6 +238,7 @@ class InMemoryV1Service:
             audit_writer=self.audit_writer,
             workspace_id=workspace_id, agent_id=agent_id, grant_ref=grant_ref,
             audience=audience, ttl_seconds=ttl_seconds, now=now,
+            bound_action=bound_action, bound_resource=bound_resource,
         )
 
     def lookup_grant_request(

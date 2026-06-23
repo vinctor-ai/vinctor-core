@@ -40,7 +40,15 @@ def mint_subject_token(
     audience: str,
     ttl_seconds: int,
     now: datetime,
+    bound_action: str | None = None,
+    bound_resource: str | None = None,
 ) -> SubjectTokenMintResult:
+    # Both-or-neither: a binding is an (action, resource) pair. Reject a half
+    # binding before any grant lookup or audit write (contract-level ValueError;
+    # the HTTP layer maps this to 400 invalid_request).
+    if (bound_action is None) != (bound_resource is None):
+        raise ValueError("bound_action and bound_resource must be set together")
+
     grant = grant_repository.get_by_ref(grant_ref)
     # Hand-rolled ownership equality (NOT lookup_grant, which omits agent_id).
     if (
@@ -67,6 +75,8 @@ def mint_subject_token(
         issued_at=now,
         expires_at=expires_at,
         created_by=agent_id,
+        bound_action=bound_action,
+        bound_resource=bound_resource,
     )
     subject_token_repository.insert(token)
     audit_writer.write(_subject_token_minted_event(token=token, now=now))

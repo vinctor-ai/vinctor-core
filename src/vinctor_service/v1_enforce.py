@@ -260,7 +260,12 @@ def delegated_enforce_v1_contract(
                 enforcing_principal=request.pep_id,
             )
             return _pre_audit_error(403, "forbidden", "subject token is not valid")
-        # audience (target pep_id) + identity tuple (body and grant) + expiry
+        # audience (target pep_id) + identity tuple (body and grant) + expiry +
+        # optional per-action binding. When bound_action/bound_resource are NULL
+        # (unbound) these two clauses are no-ops, so the token authorizes the
+        # grant's full scope exactly as before. When bound, a mismatching request
+        # action/resource fails closed with the SAME generic subject_token_invalid
+        # (never revealing what was bound).
         if (
             token.expires_at <= now
             or token.audience != request.pep_id
@@ -271,6 +276,8 @@ def delegated_enforce_v1_contract(
             or token.agent_id != grant.agent_id
             or token.workspace_id != grant.workspace_id
             or token.grant_ref != grant.grant_ref
+            or (token.bound_action is not None and token.bound_action != request.action)
+            or (token.bound_resource is not None and token.bound_resource != request.resource)
         ):
             _record_rejection(
                 audit_writer,

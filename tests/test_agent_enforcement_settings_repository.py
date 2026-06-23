@@ -28,7 +28,7 @@ def test_sqlite_default_false_and_round_trip(tmp_path) -> None:
     assert repo.get_require_boundary(workspace_id="ws", agent_id="a") is True
 
 
-def test_sqlite_schema_records_version_5(tmp_path) -> None:
+def test_sqlite_schema_records_version_6(tmp_path) -> None:
     conn = sqlite3.connect(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
-    assert get_sqlite_schema_versions(conn) == (1, 2, 3, 4, 5)
+    assert get_sqlite_schema_versions(conn) == (1, 2, 3, 4, 5, 6)

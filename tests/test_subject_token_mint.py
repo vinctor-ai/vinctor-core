@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from vinctor_core.models import Grant
 from vinctor_service import InMemoryV1Service
 
@@ -58,3 +60,32 @@ def test_mint_for_time_expired_but_status_active_grant_is_forbidden() -> None:
 def test_mint_clamps_expiry_to_grant_expiry() -> None:
     svc = _svc(_grant(expires_at=NOW + timedelta(seconds=60)))
     assert _mint(svc, ttl_seconds=300).expires_at == NOW + timedelta(seconds=60)
+
+
+def test_mint_unbound_stores_null_binding() -> None:
+    svc = _svc(_grant())
+    result = _mint(svc)
+    token = svc.subject_token_repository.get_by_id(result.token_id)
+    assert token.bound_action is None
+    assert token.bound_resource is None
+
+
+def test_mint_with_action_and_resource_stores_binding() -> None:
+    svc = _svc(_grant())
+    result = _mint(svc, bound_action="write", bound_resource="repo/feature/readme")
+    assert result.status == "minted"
+    token = svc.subject_token_repository.get_by_id(result.token_id)
+    assert token.bound_action == "write"
+    assert token.bound_resource == "repo/feature/readme"
+
+
+def test_mint_with_only_action_raises_both_or_neither() -> None:
+    svc = _svc(_grant())
+    with pytest.raises(ValueError):
+        _mint(svc, bound_action="write")
+
+
+def test_mint_with_only_resource_raises_both_or_neither() -> None:
+    svc = _svc(_grant())
+    with pytest.raises(ValueError):
+        _mint(svc, bound_resource="repo/feature/readme")

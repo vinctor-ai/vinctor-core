@@ -197,3 +197,5 @@ class SubjectToken:
     expires_at: datetime
     created_by: str  # minting agent
     revoked_at: datetime | None = None  # explicit revocation; null when active
+    bound_action: str | None = None  # per-action binding; null = unbound (grant scope)
+    bound_resource: str | None = None  # per-action binding; null = unbound (grant scope)

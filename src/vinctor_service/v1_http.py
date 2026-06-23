@@ -71,6 +71,8 @@ class V1TokenService(Protocol):
         audience: str,
         ttl_seconds: int,
         now: datetime,
+        bound_action: str | None = None,
+        bound_resource: str | None = None,
     ) -> Any: ...
 
     def record_auth_failure(
@@ -204,6 +206,8 @@ def handle_v1_tokens_http(
         audience=parsed["audience"],
         ttl_seconds=parsed["ttl_seconds"],
         now=now,
+        bound_action=parsed["bound_action"],
+        bound_resource=parsed["bound_resource"],
     )
     if result.status != "minted":
         return _error(403, "forbidden", "subject token could not be issued")
@@ -220,7 +224,7 @@ def handle_v1_tokens_http(
 def _parse_tokens_body(body: object, *, max_ttl: int) -> dict[str, Any] | V1HttpResponse:
     if not isinstance(body, dict):
         return _error(400, "invalid_request", "request body must be a JSON object")
-    extra = sorted(set(body) - {"grant_ref", "audience", "ttl_seconds"})
+    extra = sorted(set(body) - {"grant_ref", "audience", "ttl_seconds", "action", "resource"})
     if extra:
         return _error(400, "invalid_request", f"unexpected field: {extra[0]}")
     for field in ("grant_ref", "audience"):
@@ -232,10 +236,23 @@ def _parse_tokens_body(body: object, *, max_ttl: int) -> dict[str, Any] | V1Http
         return _error(400, "invalid_request", "ttl_seconds must be a positive integer")
     if ttl > max_ttl:
         return _error(400, "invalid_request", f"ttl_seconds exceeds maximum {max_ttl}")
+    # Optional per-action binding: action + resource are both-or-neither, and each
+    # must be a non-empty string when present.
+    bound_action = body.get("action")
+    bound_resource = body.get("resource")
+    for field, value in (("action", bound_action), ("resource", bound_resource)):
+        if value is not None and (not isinstance(value, str) or value == ""):
+            return _error(400, "invalid_request", f"{field} must be a non-empty string")
+    if (bound_action is None) != (bound_resource is None):
+        return _error(
+            400, "invalid_request", "action and resource must be set together"
+        )
     return {
         "grant_ref": body["grant_ref"],
         "audience": body["audience"],
         "ttl_seconds": ttl,
+        "bound_action": bound_action,
+        "bound_resource": bound_resource,
     }
 
 
