@@ -236,11 +236,17 @@ What the prototype emits today:
 
 - **Startup banner** to stdout: listening URL, mode, database path, configured
   log level, and a prototype warning. It contains no raw keys.
-- **Per-request HTTP access logging is intentionally suppressed**, so request
-  details are not written to stderr.
+- **Per-request HTTP access logging is suppressed by default.** Enable an opt-in,
+  leak-free structured access log with `VINCTOR_ACCESS_LOG=1` or
+  `vinctor service serve --access-log` — one JSON line per request to stderr with
+  `{ts, method, path, status, latency_ms, decision?, error?}` and no keys, tokens,
+  grant refs, ids, or request bodies.
+- **Metrics:** `VINCTOR_METRICS=1` or `vinctor service serve --metrics` exposes an
+  opt-in `/metrics` Prometheus endpoint (in-process counters
+  `vinctor_http_requests_total` and `vinctor_enforce_decisions_total`;
+  low-cardinality, leak-free labels). Off by default; counters are per-process.
 - **`VINCTOR_LOG_LEVEL` / `--log-level`** sets the configured level shown in the
-  banner. Structured operational logging is not yet implemented in this
-  prototype; do not rely on log volume changing with the level.
+  banner.
 
 The authoritative operational signal is the **audit record**, not process logs.
 Authorization decisions and lifecycle events are recorded in SQLite and read
@@ -375,8 +381,11 @@ These remain intentionally out of scope for the single-node prototype:
 
 - production auth/session/user management and managed identity
 - high availability, replication, and multi-tenant control plane
-- structured/exportable operational logging and metrics
-- Docker image publishing and tagged release artifacts
+- Docker image publishing and tagged release artifacts (the CI workflow and
+  registry/PyPI credentials are still required)
+
+Opt-in structured access logging and a `/metrics` Prometheus endpoint shipped
+(off by default); see "What the prototype emits today" above.
 
 Until those exist, describe deployments as a "single-node self-hostable
 prototype", not a production-ready service.

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,6 +26,7 @@ from vinctor_service.grant_request_http import (
     GrantRequestService,
     handle_v1_grant_requests_http,
 )
+from vinctor_service.metrics import Metrics
 from vinctor_service.service_config import (
     DEFAULT_SUBJECT_TOKEN_MAX_TTL_SECONDS,
     DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS,
@@ -57,6 +60,8 @@ def create_v1_http_server(
     pep_identity_resolver: PepIdentityResolver | None = None,
     clock: Clock | None = None,
     service_mode: str = "local",
+    metrics: Metrics | None = None,
+    access_log: bool = False,
 ) -> ThreadingHTTPServer:
     handler = create_v1_http_handler(
         service=service,
@@ -68,6 +73,8 @@ def create_v1_http_server(
         pep_identity_resolver=pep_identity_resolver,
         clock=clock,
         service_mode=service_mode,
+        metrics=metrics,
+        access_log=access_log,
     )
     return ThreadingHTTPServer(address, handler)
 
@@ -83,6 +90,8 @@ def create_v1_http_handler(
     pep_identity_resolver: PepIdentityResolver | None = None,
     clock: Clock | None = None,
     service_mode: str = "local",
+    metrics: Metrics | None = None,
+    access_log: bool = False,
 ) -> type[BaseHTTPRequestHandler]:
     agent_keys = dict(agent_identities)
     workspace_keys = dict(workspace_identities or {})
@@ -93,19 +102,29 @@ def create_v1_http_handler(
         server_version = "VinctorLocalHTTP/0.1"
 
         def do_POST(self) -> None:
-            _handle_request(self, "POST")
+            self._dispatch("POST")
 
         def do_GET(self) -> None:
-            _handle_request(self, "GET")
+            self._dispatch("GET")
 
         def do_PUT(self) -> None:
-            _handle_request(self, "PUT")
+            self._dispatch("PUT")
 
         def do_PATCH(self) -> None:
-            _handle_request(self, "PATCH")
+            self._dispatch("PATCH")
 
         def do_DELETE(self) -> None:
-            _handle_request(self, "DELETE")
+            self._dispatch("DELETE")
+
+        def _dispatch(self, method: str) -> None:
+            self._vinctor_start = time.monotonic()
+            self._vinctor_status = None
+            self._vinctor_decision = None
+            self._vinctor_error = None
+            try:
+                _handle_request(self, method)
+            finally:
+                _observe(self, method)
 
         def log_message(self, format: str, *args: Any) -> None:
             return
@@ -115,6 +134,9 @@ def create_v1_http_handler(
         path = parsed_path.path
         if path == "/healthz":
             _handle_health_request(handler, method)
+            return
+        if path == "/metrics":
+            _handle_metrics_request(handler, method)
             return
         if path == "/v1/enforce/delegated":
             _handle_delegated_enforce_request(handler, method)
@@ -176,6 +198,79 @@ def create_v1_http_handler(
                 },
             ),
         )
+
+    def _handle_metrics_request(
+        handler: BaseHTTPRequestHandler,
+        method: str,
+    ) -> None:
+        if metrics is None:
+            _send_json(
+                handler,
+                V1HttpResponse(
+                    status_code=404,
+                    body={"error": "not_found", "reason": "route not found"},
+                ),
+            )
+            return
+        if method != "GET":
+            _send_json(
+                handler,
+                V1HttpResponse(
+                    status_code=405,
+                    body={
+                        "error": "method_not_allowed",
+                        "reason": "GET is required for /metrics",
+                    },
+                ),
+            )
+            return
+        _send_text(
+            handler,
+            200,
+            metrics.render(),
+            content_type="text/plain; version=0.0.4",
+        )
+
+    def _observe(handler: BaseHTTPRequestHandler, method: str) -> None:
+        if metrics is None and not access_log:
+            return
+        status = getattr(handler, "_vinctor_status", None)
+        if status is None:
+            return
+        path = _route_label(urlsplit(handler.path).path)
+        decision = getattr(handler, "_vinctor_decision", None)
+        error = getattr(handler, "_vinctor_error", None)
+        if metrics is not None:
+            metrics.increment(
+                "vinctor_http_requests_total",
+                method=method,
+                path=path,
+                status=str(status),
+            )
+            if decision in ("permit", "deny"):
+                metrics.increment(
+                    "vinctor_enforce_decisions_total",
+                    decision=decision,
+                )
+        if access_log:
+            start = getattr(handler, "_vinctor_start", None)
+            latency_ms = (
+                round((time.monotonic() - start) * 1000, 1)
+                if start is not None
+                else 0.0
+            )
+            line: dict[str, object] = {
+                "ts": now().isoformat(),
+                "method": method,
+                "path": path,
+                "status": status,
+                "latency_ms": latency_ms,
+            }
+            if decision is not None:
+                line["decision"] = decision
+            if error is not None:
+                line["error"] = error
+            print(json.dumps(line, sort_keys=True), file=sys.stderr, flush=True)
 
     def _handle_enforce_request(handler: BaseHTTPRequestHandler, method: str) -> None:
         if method != "POST":
@@ -407,6 +502,43 @@ def create_v1_http_handler(
     return V1Handler
 
 
+_EXACT_ROUTES = frozenset(
+    {
+        "/healthz",
+        "/metrics",
+        "/v1/enforce/delegated",
+        "/v1/enforce",
+        "/v1/tokens",
+    }
+)
+
+_COLLECTION_ROUTES = (
+    "/v1/boundaries",
+    "/v1/auto-approval-rules",
+    "/v1/grant-requests",
+    "/v1/grants",
+    "/v1/audit-events",
+)
+
+
+def _route_label(path: str) -> str:
+    """Map a request path to a fixed, low-cardinality route template.
+
+    Only server-defined templates are ever returned, never the raw
+    client-supplied path. Id segments collapse to ``:id`` and any
+    unrecognized path collapses to ``other`` so that user-controlled
+    strings (grant refs, ids, junk) can never become a metric label.
+    """
+    if path in _EXACT_ROUTES:
+        return path
+    for collection in _COLLECTION_ROUTES:
+        if path == collection:
+            return collection
+        if path.startswith(collection + "/"):
+            return collection + "/:id"
+    return "other"
+
+
 def _read_optional_json_body(handler: BaseHTTPRequestHandler) -> object | V1HttpResponse:
     length_header = handler.headers.get("Content-Length")
     if length_header is None or length_header == "0":
@@ -441,9 +573,29 @@ def _read_json_body(handler: BaseHTTPRequestHandler) -> object | V1HttpResponse:
 
 
 def _send_json(handler: BaseHTTPRequestHandler, response: V1HttpResponse) -> None:
+    handler._vinctor_status = response.status_code  # type: ignore[attr-defined]
+    if isinstance(response.body, dict):
+        handler._vinctor_decision = response.body.get("decision")  # type: ignore[attr-defined]
+        handler._vinctor_error = response.body.get("error")  # type: ignore[attr-defined]
     payload = json.dumps(response.body, sort_keys=True).encode("utf-8")
     handler.send_response(response.status_code)
     handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(payload)))
+    handler.end_headers()
+    handler.wfile.write(payload)
+
+
+def _send_text(
+    handler: BaseHTTPRequestHandler,
+    status: int,
+    body: str,
+    *,
+    content_type: str,
+) -> None:
+    handler._vinctor_status = status  # type: ignore[attr-defined]
+    payload = body.encode("utf-8")
+    handler.send_response(status)
+    handler.send_header("Content-Type", content_type)
     handler.send_header("Content-Length", str(len(payload)))
     handler.end_headers()
     handler.wfile.write(payload)

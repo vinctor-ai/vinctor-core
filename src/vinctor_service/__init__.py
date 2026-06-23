@@ -40,6 +40,7 @@ from vinctor_service.keys import (
     mask_key,
 )
 from vinctor_service.local_http import create_v1_http_handler, create_v1_http_server
+from vinctor_service.metrics import Metrics
 from vinctor_service.models import (
     AuthorizationRequest,
     AuthorizationResponse,
@@ -133,6 +134,7 @@ __all__ = [
     "InMemorySubjectTokenRepository",
     "InMemoryV1Service",
     "LocalKeyRecord",
+    "Metrics",
     "PEP_KEY_PREFIX",
     "PepIdentity",
     "SQLiteAgentEnforcementSettingsRepository",

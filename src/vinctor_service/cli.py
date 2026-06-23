@@ -125,6 +125,8 @@ def _add_service_commands(roles: argparse._SubParsersAction) -> None:
     serve.add_argument("--db", dest="service_db", type=Path)
     serve.add_argument("--mode", choices=SERVICE_MODES, dest="service_mode")
     serve.add_argument("--log-level", choices=LOG_LEVELS)
+    serve.add_argument("--metrics", action="store_true", default=None)
+    serve.add_argument("--access-log", action="store_true", default=None)
 
 
 def _add_local_commands(roles: argparse._SubParsersAction) -> None:
@@ -356,6 +358,8 @@ def _service(args: argparse.Namespace) -> None:
                 sqlite_db_path=args.service_db or args.db,
                 log_level=args.log_level,
                 service_mode=args.service_mode,
+                metrics=args.metrics,
+                access_log=args.access_log,
                 env=os.environ,
             )
         except ValueError as error:

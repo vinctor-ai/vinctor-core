@@ -21,6 +21,8 @@ class ServiceRuntimeConfig:
     log_level: str = "info"
     service_mode: str = "local"
     key_storage_mode: str = KEY_STORAGE_MODE
+    metrics: bool = False
+    access_log: bool = False
 
     def __post_init__(self) -> None:
         if not self.host:
@@ -42,6 +44,8 @@ def load_service_runtime_config(
     sqlite_db_path: str | Path | None = None,
     log_level: str | None = None,
     service_mode: str | None = None,
+    metrics: bool | None = None,
+    access_log: bool | None = None,
     env: Mapping[str, str] | None = None,
 ) -> ServiceRuntimeConfig:
     values = env or {}
@@ -52,12 +56,24 @@ def load_service_runtime_config(
     resolved_service_mode = (
         service_mode or values.get("VINCTOR_SERVICE_MODE") or "local"
     ).lower()
+    resolved_metrics = (
+        metrics
+        if metrics is not None
+        else _parse_bool(values.get("VINCTOR_METRICS"))
+    )
+    resolved_access_log = (
+        access_log
+        if access_log is not None
+        else _parse_bool(values.get("VINCTOR_ACCESS_LOG"))
+    )
     return ServiceRuntimeConfig(
         host=resolved_host,
         port=resolved_port,
         sqlite_db_path=resolved_db_path.expanduser(),
         log_level=resolved_log_level,
         service_mode=resolved_service_mode,
+        metrics=resolved_metrics,
+        access_log=resolved_access_log,
     )
 
 
@@ -68,3 +84,9 @@ def _parse_port(value: int | str) -> int:
         return int(value)
     except ValueError as error:
         raise ValueError("port must be an integer") from error
+
+
+def _parse_bool(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in ("1", "true")

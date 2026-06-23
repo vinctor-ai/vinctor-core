@@ -15,6 +15,7 @@ from vinctor_service import (
     AgentIdentity,
     GrantRequestCreateRequest,
     InMemoryV1Service,
+    Metrics,
     PepIdentity,
     WorkspaceIdentity,
     create_v1_http_server,
@@ -75,6 +76,7 @@ def running_server(
     *,
     workspace_keys: dict[str, WorkspaceIdentity] | None = None,
     pep_keys: dict[str, PepIdentity] | None = None,
+    metrics: Metrics | None = None,
 ) -> Iterator[ThreadingHTTPServer]:
     server = create_v1_http_server(
         ("127.0.0.1", 0),
@@ -83,6 +85,7 @@ def running_server(
         workspace_identities=workspace_keys,
         pep_identities=pep_keys,
         clock=lambda: NOW,
+        metrics=metrics,
     )
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -1071,3 +1074,91 @@ def test_local_http_workspace_manages_auto_approval_rules() -> None:
     assert disable_status == 200
     assert disabled["rule_id"] == created["rule_id"]
     assert disabled["status"] == "disabled"
+
+
+def get_text(
+    server: ThreadingHTTPServer,
+    *,
+    path: str,
+) -> tuple[int, str]:
+    host, port = server.server_address
+    conn = HTTPConnection(host, port, timeout=5)
+    conn.request("GET", path)
+    response = conn.getresponse()
+    raw = response.read().decode("utf-8")
+    conn.close()
+    return response.status, raw
+
+
+def test_local_http_metrics_endpoint_records_requests_and_decisions() -> None:
+    svc = service()
+    metrics = Metrics()
+
+    with running_server(svc, metrics=metrics) as server:
+        permit_status, _ = post_json(server)
+        deny_status, _ = post_json(
+            server,
+            payload=body(action="send", resource="email/external"),
+        )
+        metrics_status, metrics_text = get_text(server, path="/metrics")
+
+    assert permit_status == 200
+    assert deny_status == 403
+    assert metrics_status == 200
+    assert "# TYPE vinctor_http_requests_total counter" in metrics_text
+    assert 'path="/v1/enforce"' in metrics_text
+    assert 'vinctor_enforce_decisions_total{decision="permit"} 1' in metrics_text
+    assert 'vinctor_enforce_decisions_total{decision="deny"} 1' in metrics_text
+    # Leak-free: only method/path/status/decision codes appear — never the
+    # agent key, grant ref, agent id, workspace id, or any raw body value.
+    for secret in (
+        "agent_key_main",
+        "grt_main",
+        "grnt_main",
+        "agent_release",
+        "ws_main",
+        "email/external",
+    ):
+        assert secret not in metrics_text
+
+
+def test_local_http_metrics_collapses_ids_and_unknown_paths_to_route_templates() -> (
+    None
+):
+    svc = service()
+    metrics = Metrics()
+
+    with running_server(svc, metrics=metrics) as server:
+        # Prefix route carrying a grant id (no auth needed: the label is
+        # captured in finally regardless of the 401 auth result).
+        grant_status, _ = get_text(server, path="/v1/grants/grnt_main")
+        # Arbitrary unknown path carrying a junk segment.
+        junk_status, _ = get_text(server, path="/xyz/AAAA_SECRET")
+        metrics_status, metrics_text = get_text(server, path="/metrics")
+
+    assert grant_status == 401
+    assert junk_status == 404
+    assert metrics_status == 200
+    # The id segment is collapsed to the fixed route template; the raw id
+    # and the junk segment never reach a metric label.
+    assert 'path="/v1/grants/:id"' in metrics_text
+    assert 'path="other"' in metrics_text
+    for leaked in (
+        "grnt_main",
+        "grt_main",
+        "AAAA_SECRET",
+        "/v1/grants/grnt_main",
+        "/xyz/AAAA_SECRET",
+    ):
+        assert leaked not in metrics_text
+
+
+def test_local_http_metrics_endpoint_absent_without_metrics() -> None:
+    svc = service()
+
+    with running_server(svc) as server:
+        post_json(server)
+        status, response = get_text(server, path="/metrics")
+
+    assert status == 404
+    assert json.loads(response)["error"] == "not_found"

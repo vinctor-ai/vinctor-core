@@ -10,6 +10,7 @@ from typing import NoReturn
 
 from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.local_http import create_v1_http_server
+from vinctor_service.metrics import Metrics
 from vinctor_service.service_config import ServiceRuntimeConfig
 from vinctor_service.sqlite import SQLiteV1Service
 
@@ -38,6 +39,7 @@ def prepare_service_runtime(
     try:
         service = SQLiteV1Service(conn)
         key_repository = SQLiteLocalKeyRepository(conn)
+        metrics = Metrics() if config.metrics else None
         server = create_v1_http_server(
             (config.host, config.port),
             service=service,
@@ -55,6 +57,8 @@ def prepare_service_runtime(
             ),
             clock=clock,
             service_mode=config.service_mode,
+            metrics=metrics,
+            access_log=config.access_log,
         )
     except Exception:
         conn.close()
