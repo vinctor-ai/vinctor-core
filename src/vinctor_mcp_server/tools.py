@@ -57,6 +57,22 @@ class ReadOnlyVinctorClient(Protocol):
     def list_auto_approval_rules(self) -> dict[str, Any]: ...
 
 
+class WriteVinctorClient(Protocol):
+    def approve_grant_request(
+        self,
+        request_id: str,
+        *,
+        reason: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def reject_grant_request(
+        self,
+        request_id: str,
+        *,
+        reason: str | None = None,
+    ) -> dict[str, Any]: ...
+
+
 class ToolRegistrar(Protocol):
     def tool(self, *, name: str, description: str) -> Any: ...
 
@@ -333,6 +349,89 @@ def register_read_only_tools(
             "Does not call /v1/enforce."
         ),
     )(tools.explain_denial)
+    return tools
+
+
+class VinctorWriteTools:
+    def __init__(
+        self,
+        client: WriteVinctorClient,
+        *,
+        output_mode: OutputMode = "safe",
+    ) -> None:
+        self._client = client
+        self._output_mode = output_mode
+
+    def approve_grant_request(
+        self,
+        request_id: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        return self._shape_decision(
+            self._client.approve_grant_request(request_id, reason=reason)
+        )
+
+    def reject_grant_request(
+        self,
+        request_id: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        return self._shape_decision(
+            self._client.reject_grant_request(request_id, reason=reason)
+        )
+
+    def _shape_decision(self, body: dict[str, Any]) -> dict[str, Any]:
+        shaped: dict[str, Any] = {
+            **allowlist_object(body, self._grant_request_fields()),
+            "audit_event_id": body.get("audit_event_id"),
+        }
+        grant = body.get("grant")
+        if isinstance(grant, dict):
+            shaped["grant"] = allowlist_object(grant, self._grant_fields())
+        return shaped
+
+    def _grant_request_fields(self) -> tuple[str, ...]:
+        return fields_for_mode(
+            GRANT_REQUEST_SAFE_FIELDS,
+            GRANT_REQUEST_DIAGNOSTIC_FIELDS,
+            self._output_mode,
+        )
+
+    def _grant_fields(self) -> tuple[str, ...]:
+        return fields_for_mode(
+            GRANT_SAFE_FIELDS,
+            GRANT_DIAGNOSTIC_FIELDS,
+            self._output_mode,
+        )
+
+
+def register_write_tools(
+    mcp: ToolRegistrar,
+    client: WriteVinctorClient,
+    *,
+    output_mode: OutputMode = "safe",
+) -> VinctorWriteTools:
+    tools = VinctorWriteTools(client, output_mode=output_mode)
+    mcp.tool(
+        name="vinctor_approve_grant_request",
+        description=(
+            "Operator write action: approve a pending grant request by request_id "
+            "via the workspace-key authorized operator endpoint. The service "
+            "authenticates, audits the decision (returns audit_event_id), and "
+            "prevents execution agents from approving their own requests. Output "
+            "is allowlist-shaped and omits raw keys, hashes, and service internals."
+        ),
+    )(tools.approve_grant_request)
+    mcp.tool(
+        name="vinctor_reject_grant_request",
+        description=(
+            "Operator write action: reject a pending grant request by request_id "
+            "via the workspace-key authorized operator endpoint. The service "
+            "authenticates, audits the decision (returns audit_event_id), and "
+            "prevents execution agents from deciding their own requests. Output "
+            "is allowlist-shaped and omits raw keys, hashes, and service internals."
+        ),
+    )(tools.reject_grant_request)
     return tools
 
 

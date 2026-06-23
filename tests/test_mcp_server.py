@@ -57,6 +57,22 @@ class FakeClient:
     def list_auto_approval_rules(self) -> dict[str, object]:
         return {"auto_approval_rules": []}
 
+    def approve_grant_request(
+        self,
+        request_id: str,
+        *,
+        reason: str | None = None,
+    ) -> dict[str, object]:
+        return {"request_id": request_id, "status": "approved"}
+
+    def reject_grant_request(
+        self,
+        request_id: str,
+        *,
+        reason: str | None = None,
+    ) -> dict[str, object]:
+        return {"request_id": request_id, "status": "rejected"}
+
 
 def test_load_config_requires_mcp_workspace_key_not_agent_key() -> None:
     with pytest.raises(ValueError, match="VINCTOR_MCP_WORKSPACE_KEY"):
@@ -84,6 +100,43 @@ def test_load_config_reads_explicit_mcp_environment() -> None:
         timeout=9,
         output_mode="diagnostic",
     )
+
+
+def test_load_config_write_disabled_by_default() -> None:
+    config = load_config(
+        {
+            "VINCTOR_MCP_ENDPOINT": "http://127.0.0.1:8765",
+            "VINCTOR_MCP_WORKSPACE_KEY": "wsk_operator",
+        }
+    )
+
+    assert config.write_enabled is False
+
+
+def test_load_config_enables_write_for_truthy_values() -> None:
+    for value in ("1", "true", "TRUE", "True"):
+        config = load_config(
+            {
+                "VINCTOR_MCP_ENDPOINT": "http://127.0.0.1:8765",
+                "VINCTOR_MCP_WORKSPACE_KEY": "wsk_operator",
+                "VINCTOR_MCP_WRITE": value,
+            }
+        )
+
+        assert config.write_enabled is True, value
+
+
+def test_load_config_keeps_write_disabled_for_other_values() -> None:
+    for value in ("0", "false", "no", ""):
+        config = load_config(
+            {
+                "VINCTOR_MCP_ENDPOINT": "http://127.0.0.1:8765",
+                "VINCTOR_MCP_WORKSPACE_KEY": "wsk_operator",
+                "VINCTOR_MCP_WRITE": value,
+            }
+        )
+
+        assert config.write_enabled is False, value
 
 
 def test_load_config_rejects_unknown_output_mode() -> None:
@@ -122,6 +175,37 @@ def test_create_stdio_server_registers_read_only_tools_with_fastmcp() -> None:
         "vinctor_list_grants",
         "vinctor_status",
     ]
+
+
+def test_create_stdio_server_omits_write_tools_when_write_disabled() -> None:
+    server = create_stdio_server(
+        config=VinctorMcpConfig(
+            endpoint="http://127.0.0.1:8765",
+            workspace_key="wsk_operator",
+        ),
+        client=FakeClient(),
+        fastmcp_cls=FakeFastMcp,
+    )
+
+    assert "vinctor_approve_grant_request" not in server.tools
+    assert "vinctor_reject_grant_request" not in server.tools
+    assert not any("approve" in name for name in server.tools)
+    assert not any("reject" in name for name in server.tools)
+
+
+def test_create_stdio_server_registers_write_tools_when_write_enabled() -> None:
+    server = create_stdio_server(
+        config=VinctorMcpConfig(
+            endpoint="http://127.0.0.1:8765",
+            workspace_key="wsk_operator",
+            write_enabled=True,
+        ),
+        client=FakeClient(),
+        fastmcp_cls=FakeFastMcp,
+    )
+
+    assert "vinctor_approve_grant_request" in server.tools
+    assert "vinctor_reject_grant_request" in server.tools
 
 
 def test_server_module_entrypoint_invokes_main() -> None:

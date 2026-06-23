@@ -195,6 +195,57 @@ def test_client_reads_auto_approval_rules_with_workspace_key() -> None:
     }
 
 
+def test_client_approves_grant_request_with_decision_reason() -> None:
+    client, conn = make_client(
+        FakeResponse(200, {"request_id": "grq_x", "status": "approved"})
+    )
+
+    body = client.approve_grant_request("grq_x", reason="looks safe")
+
+    assert body == {"request_id": "grq_x", "status": "approved"}
+    request = conn.requests[0]
+    assert request["method"] == "POST"
+    assert request["path"] == "/v1/grant-requests/grq_x/approve"
+    assert request["headers"]["X-Workspace-Key"] == "wsk_demo"
+    assert json.loads(request["body"]) == {"decision_reason": "looks safe"}
+
+
+def test_client_rejects_grant_request_with_decision_reason() -> None:
+    client, conn = make_client(
+        FakeResponse(200, {"request_id": "grq_x", "status": "rejected"})
+    )
+
+    body = client.reject_grant_request("grq_x", reason="out of policy")
+
+    assert body == {"request_id": "grq_x", "status": "rejected"}
+    request = conn.requests[0]
+    assert request["method"] == "POST"
+    assert request["path"] == "/v1/grant-requests/grq_x/reject"
+    assert request["headers"]["X-Workspace-Key"] == "wsk_demo"
+    assert json.loads(request["body"]) == {"decision_reason": "out of policy"}
+
+
+def test_client_approves_without_reason_sends_no_body() -> None:
+    client, conn = make_client(FakeResponse(200, {"request_id": "grq_x"}))
+
+    client.approve_grant_request("grq_x")
+
+    request = conn.requests[0]
+    assert request["method"] == "POST"
+    assert request["path"] == "/v1/grant-requests/grq_x/approve"
+    assert request["body"] is None
+
+
+def test_client_approve_encodes_path_preventing_traversal() -> None:
+    client, conn = make_client(FakeResponse(200, {"request_id": "x"}))
+
+    client.approve_grant_request("../../../healthz", reason="ok")
+
+    path = conn.requests[0]["path"]
+    assert path == "/v1/grant-requests/..%2F..%2F..%2Fhealthz/approve"
+    assert "../" not in path
+
+
 def test_client_raises_for_service_errors_without_exposing_credentials() -> None:
     client, _ = make_client(
         FakeResponse(

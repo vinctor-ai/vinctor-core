@@ -4,7 +4,12 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from vinctor_mcp_server.tools import VinctorReadOnlyTools, register_read_only_tools
+from vinctor_mcp_server.tools import (
+    VinctorReadOnlyTools,
+    VinctorWriteTools,
+    register_read_only_tools,
+    register_write_tools,
+)
 
 
 class FakeClient:
@@ -668,3 +673,177 @@ def test_audit_list_tool_description_mentions_limit_cap() -> None:
 
     description = mcp.descriptions["vinctor_list_audit_events"]
     assert "1..100 cap" in description
+
+
+class FakeDecisionClient(FakeClient):
+    """A client whose approve/reject responses smuggle service internals
+    (raw keys/hashes/internal fields) at the top level and inside the issued
+    grant, to pin the write-tool leak discipline."""
+
+    def __init__(self) -> None:
+        self.approved: list[tuple[str, str | None]] = []
+        self.rejected: list[tuple[str, str | None]] = []
+
+    def _decision_response(self, request_id: str, status: str) -> dict[str, Any]:
+        return {
+            "request_id": request_id,
+            "workspace_id": "ws_main",
+            "requester_agent_id": "agent_release",
+            "target_agent_id": "agent_release",
+            "requested_scopes": ["write:repo/feature/*"],
+            "requested_ttl_seconds": 300,
+            "status": status,
+            "created_at": "2026-06-11T12:00:00+00:00",
+            "decided_at": "2026-06-11T12:05:00+00:00",
+            "decided_by": "workspace:ws_main",
+            "decision_reason": "operator note",
+            "issued_grant_ref": "grt_issued",
+            "boundary_id": "bnd_main",
+            "requester_runtime": "codex",
+            "routing_hint": "manual_review_required",
+            "routing_reason": "no_matching_auto_approval_rule",
+            "queue_reason": "no_matching_auto_approval_rule",
+            "audit_event_id": "evt_decision",
+            "raw_tool_input": {"secret": "hidden"},
+            "key_hash": "hash_secret",
+            "grant": {
+                "grant_id": "grnt_issued",
+                "grant_ref": "grt_issued",
+                "workspace_id": "ws_main",
+                "agent_id": "agent_release",
+                "scopes": ["write:repo/feature/*"],
+                "status": "active",
+                "expires_at": "2999-06-11T12:00:00+00:00",
+                "raw_key": "wsk_secret",
+                "key_hash": "hash_secret",
+            },
+        }
+
+    def approve_grant_request(
+        self,
+        request_id: str,
+        *,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        self.approved.append((request_id, reason))
+        return self._decision_response(request_id, "approved")
+
+    def reject_grant_request(
+        self,
+        request_id: str,
+        *,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        self.rejected.append((request_id, reason))
+        return self._decision_response(request_id, "rejected")
+
+
+def test_approve_grant_request_proxies_client_and_returns_allowlisted_fields() -> None:
+    client = FakeDecisionClient()
+    tools = VinctorWriteTools(client)
+
+    result = tools.approve_grant_request("grq_x", reason="looks safe")
+
+    assert client.approved == [("grq_x", "looks safe")]
+    assert result == {
+        "request_id": "grq_x",
+        "workspace_id": "ws_main",
+        "requester_agent_id": "agent_release",
+        "target_agent_id": "agent_release",
+        "requested_ttl_seconds": 300,
+        "status": "approved",
+        "created_at": "2026-06-11T12:00:00+00:00",
+        "decided_at": "2026-06-11T12:05:00+00:00",
+        "decision_reason": "operator note",
+        "issued_grant_ref": "grt_issued",
+        "boundary_id": "bnd_main",
+        "requester_runtime": "codex",
+        "routing_hint": "manual_review_required",
+        "routing_reason": "no_matching_auto_approval_rule",
+        "queue_reason": "no_matching_auto_approval_rule",
+        "audit_event_id": "evt_decision",
+        "grant": {
+            "grant_id": "grnt_issued",
+            "grant_ref": "grt_issued",
+            "workspace_id": "ws_main",
+            "agent_id": "agent_release",
+            "status": "active",
+            "expires_at": "2999-06-11T12:00:00+00:00",
+        },
+    }
+
+
+def test_reject_grant_request_proxies_client_and_returns_allowlisted_fields() -> None:
+    client = FakeDecisionClient()
+    tools = VinctorWriteTools(client)
+
+    result = tools.reject_grant_request("grq_x", reason="out of policy")
+
+    assert client.rejected == [("grq_x", "out of policy")]
+    assert result["status"] == "rejected"
+    assert result["audit_event_id"] == "evt_decision"
+
+
+def test_decision_diagnostic_mode_includes_scope_fields() -> None:
+    tools = VinctorWriteTools(FakeDecisionClient(), output_mode="diagnostic")
+
+    result = tools.approve_grant_request("grq_x", reason="ok")
+
+    assert result["requested_scopes"] == ["write:repo/feature/*"]
+    assert result["grant"]["scopes"] == ["write:repo/feature/*"]
+
+
+def test_write_tools_never_leak_raw_keys_hashes_or_internals() -> None:
+    tools = VinctorWriteTools(FakeDecisionClient(), output_mode="diagnostic")
+
+    blob = json.dumps(
+        [
+            tools.approve_grant_request("grq_x", reason="ok"),
+            tools.reject_grant_request("grq_x", reason="no"),
+        ]
+    )
+
+    for forbidden in ("wsk_", "hash_secret", "raw_tool_input", "raw_key", "decided_by"):
+        assert forbidden not in blob
+
+
+def test_decision_omits_grant_when_service_returns_none() -> None:
+    class NoGrantClient(FakeDecisionClient):
+        def reject_grant_request(
+            self,
+            request_id: str,
+            *,
+            reason: str | None = None,
+        ) -> dict[str, Any]:
+            body = super().reject_grant_request(request_id, reason=reason)
+            del body["grant"]
+            return body
+
+    tools = VinctorWriteTools(NoGrantClient())
+
+    result = tools.reject_grant_request("grq_x", reason="no")
+
+    assert "grant" not in result
+
+
+def test_register_write_tools_adds_approve_and_reject() -> None:
+    mcp = FakeMcp()
+
+    register_write_tools(mcp, FakeDecisionClient())
+
+    assert sorted(mcp.tools) == [
+        "vinctor_approve_grant_request",
+        "vinctor_reject_grant_request",
+    ]
+
+
+def test_write_tool_descriptions_state_operator_write_action() -> None:
+    mcp = FakeMcp()
+
+    register_write_tools(mcp, FakeDecisionClient())
+
+    for name in ("vinctor_approve_grant_request", "vinctor_reject_grant_request"):
+        description = mcp.descriptions[name]
+        assert "operator" in description.lower()
+        assert "audit" in description.lower()
+        assert "own" in description.lower()

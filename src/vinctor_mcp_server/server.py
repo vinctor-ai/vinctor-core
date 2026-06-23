@@ -6,7 +6,11 @@ from typing import Any
 
 from vinctor_mcp_server.config import VinctorMcpConfig, load_config
 from vinctor_mcp_server.service_client import VinctorServiceClient
-from vinctor_mcp_server.tools import ReadOnlyVinctorClient, register_read_only_tools
+from vinctor_mcp_server.tools import (
+    ReadOnlyVinctorClient,
+    register_read_only_tools,
+    register_write_tools,
+)
 
 
 def create_stdio_server(
@@ -24,6 +28,8 @@ def create_stdio_server(
     server_cls = fastmcp_cls or _load_fastmcp()
     mcp = _create_fastmcp(server_cls, "vinctor-mcp-server", version("vinctor-core"))
     register_read_only_tools(mcp, resolved_client, output_mode=resolved_config.output_mode)
+    if resolved_config.write_enabled:
+        register_write_tools(mcp, resolved_client, output_mode=resolved_config.output_mode)
     return mcp
 
 

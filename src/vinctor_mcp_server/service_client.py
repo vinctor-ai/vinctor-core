@@ -103,6 +103,30 @@ class VinctorServiceClient:
     def list_auto_approval_rules(self) -> dict[str, Any]:
         return self._request_json("GET", "/v1/auto-approval-rules")
 
+    def approve_grant_request(
+        self,
+        request_id: str,
+        *,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            f"/v1/grant-requests/{_path_part(request_id)}/approve",
+            body=_decision_body(reason),
+        )
+
+    def reject_grant_request(
+        self,
+        request_id: str,
+        *,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            f"/v1/grant-requests/{_path_part(request_id)}/reject",
+            body=_decision_body(reason),
+        )
+
     def _request_json(
         self,
         method: str,
@@ -143,6 +167,15 @@ class VinctorServiceClient:
         if self._scheme == "https":
             return HTTPSConnection(host, port, timeout=timeout)
         return HTTPConnection(host, port, timeout=timeout)
+
+
+def _decision_body(reason: str | None) -> dict[str, str] | None:
+    # The operator endpoint's _decision_reason parser accepts no body (None) as
+    # "no reason" and only the "decision_reason" key otherwise; an empty/None
+    # reason sends no body at all.
+    if reason is None or reason == "":
+        return None
+    return {"decision_reason": reason}
 
 
 def _path_part(value: str) -> str:
