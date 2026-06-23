@@ -27,6 +27,7 @@ from vinctor_service.models import (
     V1EnforceRequest,
     V1EnforceResponse,
 )
+from vinctor_service.pop import PopReplayCache, verify_pop
 from vinctor_service.repositories import (
     AgentEnforcementSettingsRepository,
     GrantRepository,
@@ -105,6 +106,8 @@ def delegated_enforce_v1_contract(
     pep_workspace_id: str | None = None,
     subject_token_repository: SubjectTokenRepository | None = None,
     agent_enforcement_settings_repository: AgentEnforcementSettingsRepository | None = None,
+    pop_replay_cache: PopReplayCache | None = None,
+    pop_skew_seconds: int = 30,
 ) -> V1EnforceResponse:
     """Resolve an on-behalf-of enforce request from a PEP (see ADR 0007).
 
@@ -291,6 +294,35 @@ def delegated_enforce_v1_contract(
                 enforcing_principal=request.pep_id,
             )
             return _pre_audit_error(403, "forbidden", "subject token is not valid")
+        # ADR 0007 C3 proof-of-possession: when the token is PoP-required
+        # (pop_secret is not None — a strict identity check, never truthiness),
+        # the request MUST carry a fresh, correctly-bound HMAC proof. A pop token
+        # with no replay cache wired fails closed (defense in depth). All failure
+        # modes collapse to the SAME generic subject_token_invalid (no leak).
+        if token.pop_secret is not None:
+            ok = pop_replay_cache is not None and verify_pop(
+                proof=request.subject_token_proof,
+                pop_secret=token.pop_secret,
+                token_id=token.token_id,
+                action=request.action,
+                resource=request.resource,
+                now=now,
+                skew=pop_skew_seconds,
+                replay_cache=pop_replay_cache,
+            )
+            if not ok:
+                _record_rejection(
+                    audit_writer,
+                    reason_code=REASON_SUBJECT_TOKEN_INVALID,
+                    workspace_id=trusted_ws,
+                    agent_id=request.agent_id,
+                    action=request.action,
+                    resource=request.resource,
+                    boundary_id=request.boundary_id,
+                    now=now,
+                    enforcing_principal=request.pep_id,
+                )
+                return _pre_audit_error(403, "forbidden", "subject token is not valid")
         identity_proven = True
         proven_token_id = token.token_id
 

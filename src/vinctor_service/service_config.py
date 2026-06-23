@@ -7,6 +7,7 @@ from pathlib import Path
 DEFAULT_SERVICE_DB_PATH = Path(".vinctor/vinctor.sqlite")
 DEFAULT_SUBJECT_TOKEN_TTL_SECONDS = 300
 DEFAULT_SUBJECT_TOKEN_MAX_TTL_SECONDS = 3600
+DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS = 30
 SERVICE_MODES = ("local", "self_hosted")
 LOG_LEVELS = ("debug", "info", "warning", "error")
 KEY_STORAGE_MODE = "sqlite_hashes"

@@ -54,6 +54,7 @@ class V1DelegatedEnforceService(Protocol):
         request: V1DelegatedEnforceRequest,
         *,
         now: datetime,
+        pop_skew_seconds: int = 30,
     ) -> V1EnforceResponse: ...
 
     def record_auth_failure(
@@ -73,6 +74,7 @@ class V1TokenService(Protocol):
         now: datetime,
         bound_action: str | None = None,
         bound_resource: str | None = None,
+        pop: bool = False,
     ) -> Any: ...
 
     def record_auth_failure(
@@ -133,6 +135,7 @@ def handle_v1_delegated_enforce_http(
     pep_identity_resolver: PepIdentityResolver | None = None,
     service: V1DelegatedEnforceService,
     now: datetime,
+    pop_skew_seconds: int = 30,
 ) -> V1HttpResponse:
     normalized_headers = {key.lower(): value for key, value in headers.items()}
     pep_key = normalized_headers.get("x-pep-key")
@@ -165,8 +168,11 @@ def handle_v1_delegated_enforce_http(
         boundary_id=normalized_headers.get("x-vinctor-boundary-id"),
         pep_workspace_id=identity.workspace_id,
         subject_token=normalized_headers.get("x-subject-token"),
+        subject_token_proof=normalized_headers.get("x-subject-token-proof"),
     )
-    return _http_response_from_enforce(service.delegated_enforce(request, now=now))
+    return _http_response_from_enforce(
+        service.delegated_enforce(request, now=now, pop_skew_seconds=pop_skew_seconds)
+    )
 
 
 def handle_v1_tokens_http(
@@ -208,23 +214,26 @@ def handle_v1_tokens_http(
         now=now,
         bound_action=parsed["bound_action"],
         bound_resource=parsed["bound_resource"],
+        pop=parsed["pop"],
     )
     if result.status != "minted":
         return _error(403, "forbidden", "subject token could not be issued")
-    return V1HttpResponse(
-        status_code=201,
-        body={
-            "token": result.token,
-            "token_id": result.token_id,
-            "expires_at": result.expires_at.isoformat(),
-        },
-    )
+    body = {
+        "token": result.token,
+        "token_id": result.token_id,
+        "expires_at": result.expires_at.isoformat(),
+    }
+    if result.pop_secret is not None:
+        body["pop_secret"] = result.pop_secret
+    return V1HttpResponse(status_code=201, body=body)
 
 
 def _parse_tokens_body(body: object, *, max_ttl: int) -> dict[str, Any] | V1HttpResponse:
     if not isinstance(body, dict):
         return _error(400, "invalid_request", "request body must be a JSON object")
-    extra = sorted(set(body) - {"grant_ref", "audience", "ttl_seconds", "action", "resource"})
+    extra = sorted(
+        set(body) - {"grant_ref", "audience", "ttl_seconds", "action", "resource", "pop"}
+    )
     if extra:
         return _error(400, "invalid_request", f"unexpected field: {extra[0]}")
     for field in ("grant_ref", "audience"):
@@ -247,12 +256,17 @@ def _parse_tokens_body(body: object, *, max_ttl: int) -> dict[str, Any] | V1Http
         return _error(
             400, "invalid_request", "action and resource must be set together"
         )
+    # Optional HMAC proof-of-possession: must be a real bool (default off).
+    pop = body.get("pop", False)
+    if not isinstance(pop, bool):
+        return _error(400, "invalid_request", "pop must be a boolean")
     return {
         "grant_ref": body["grant_ref"],
         "audience": body["audience"],
         "ttl_seconds": ttl,
         "bound_action": bound_action,
         "bound_resource": bound_resource,
+        "pop": pop,
     }
 
 

@@ -89,3 +89,23 @@ def test_mint_with_only_resource_raises_both_or_neither() -> None:
     svc = _svc(_grant())
     with pytest.raises(ValueError):
         _mint(svc, bound_resource="repo/feature/readme")
+
+
+def test_mint_with_pop_returns_secret_and_stores_pop_required_token() -> None:
+    svc = _svc(_grant())
+    result = _mint(svc, pop=True)
+    assert result.status == "minted"
+    assert isinstance(result.pop_secret, str) and result.pop_secret != ""
+    # the stored token is pop-required (gate is `pop_secret is not None`)
+    token = svc.subject_token_repository.get_by_id(result.token_id)
+    assert token.pop_secret is not None
+    # the pop_secret never lands in audit
+    assert result.pop_secret not in str(svc.audit_events[0].to_dict())
+
+
+def test_mint_without_pop_returns_no_secret_and_non_pop_token() -> None:
+    svc = _svc(_grant())
+    result = _mint(svc)
+    assert result.pop_secret is None
+    token = svc.subject_token_repository.get_by_id(result.token_id)
+    assert token.pop_secret is None

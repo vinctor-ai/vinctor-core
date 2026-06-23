@@ -59,8 +59,9 @@ class V1DelegatedEnforceRequest:
 
     The PEP authenticates with its own key (``pep_id`` / ``pep_workspace_id``)
     and asserts the subject it is asking about (``workspace_id`` / ``agent_id``).
-    See ADR 0007. The subject identity proof model is an open decision; this
-    request only carries the asserted subject, not a proof of it.
+    See ADR 0007. Identity is proven by presenting a ``subject_token``; a
+    PoP-required token additionally carries a ``subject_token_proof`` (an HMAC
+    proof-of-possession over this request's action/resource — see ADR 0007 C3).
     """
 
     pep_id: str
@@ -72,6 +73,7 @@ class V1DelegatedEnforceRequest:
     boundary_id: str | None = None
     pep_workspace_id: str | None = None
     subject_token: str | None = None
+    subject_token_proof: str | None = None
 
 
 @dataclass(frozen=True)
@@ -199,3 +201,4 @@ class SubjectToken:
     revoked_at: datetime | None = None  # explicit revocation; null when active
     bound_action: str | None = None  # per-action binding; null = unbound (grant scope)
     bound_resource: str | None = None  # per-action binding; null = unbound (grant scope)
+    pop_secret: str | None = None  # HMAC proof-of-possession secret; null = no PoP required

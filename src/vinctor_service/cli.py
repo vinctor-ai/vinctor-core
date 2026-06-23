@@ -191,6 +191,7 @@ def _add_agent_commands(roles: argparse._SubParsersAction) -> None:
     mint.add_argument("--ttl")
     mint.add_argument("--action", dest="token_action")
     mint.add_argument("--resource", dest="token_resource")
+    mint.add_argument("--pop", action="store_true", dest="token_pop")
 
 
 def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
@@ -455,6 +456,8 @@ def _agent(args: argparse.Namespace, *, stdout: TextIO) -> None:
             mint_body["action"] = args.token_action
         if args.token_resource is not None:
             mint_body["resource"] = args.token_resource
+        if args.token_pop:
+            mint_body["pop"] = True
         status, body = _request_json(
             args.endpoint,
             "POST",
@@ -463,14 +466,16 @@ def _agent(args: argparse.Namespace, *, stdout: TextIO) -> None:
             body=mint_body,
         )
         _raise_for_status(status, body)
-        text = "\n".join(
-            [
-                f"minted subject token token_id={body['token_id']} "
-                f"expires_at={body['expires_at']}",
-                f"token={body['token']}",
-                "# Store this raw token now; it cannot be recovered from SQLite.",
-            ]
-        )
+        lines = [
+            f"minted subject token token_id={body['token_id']} "
+            f"expires_at={body['expires_at']}",
+            f"token={body['token']}",
+            "# Store this raw token now; it cannot be recovered from SQLite.",
+        ]
+        if "pop_secret" in body:
+            lines.append(f"pop_secret={body['pop_secret']}")
+            lines.append("# Store this pop_secret now; it cannot be recovered from SQLite.")
+        text = "\n".join(lines)
         _emit(args, body, text, stdout=stdout)
         return
 

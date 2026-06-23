@@ -18,6 +18,7 @@ class SubjectTokenMintResult:
     token: str | None = None
     token_id: str | None = None
     expires_at: datetime | None = None
+    pop_secret: str | None = None  # returned once, only when minted with pop=True
 
 
 def _grant_is_valid(grant: Grant, now: datetime) -> bool:
@@ -42,6 +43,7 @@ def mint_subject_token(
     now: datetime,
     bound_action: str | None = None,
     bound_resource: str | None = None,
+    pop: bool = False,
 ) -> SubjectTokenMintResult:
     # Both-or-neither: a binding is an (action, resource) pair. Reject a half
     # binding before any grant lookup or audit write (contract-level ValueError;
@@ -65,6 +67,7 @@ def mint_subject_token(
 
     raw_token = _new_key("vat_")
     token_id = _new_key("vtk_")
+    pop_secret = token_urlsafe(32) if pop else None
     token = SubjectToken(
         token_id=token_id,
         token_hash=_hash_key(raw_token),
@@ -77,11 +80,16 @@ def mint_subject_token(
         created_by=agent_id,
         bound_action=bound_action,
         bound_resource=bound_resource,
+        pop_secret=pop_secret,
     )
     subject_token_repository.insert(token)
     audit_writer.write(_subject_token_minted_event(token=token, now=now))
     return SubjectTokenMintResult(
-        status="minted", token=raw_token, token_id=token_id, expires_at=expires_at
+        status="minted",
+        token=raw_token,
+        token_id=token_id,
+        expires_at=expires_at,
+        pop_secret=pop_secret,
     )
 
 

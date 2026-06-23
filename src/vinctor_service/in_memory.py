@@ -47,6 +47,7 @@ from vinctor_service.models import (
     V1EnforceRequest,
     V1EnforceResponse,
 )
+from vinctor_service.pop import PopReplayCache
 from vinctor_service.repositories import (
     InMemoryAgentEnforcementSettingsRepository,
     InMemoryAutoApprovalRuleRepository,
@@ -54,6 +55,7 @@ from vinctor_service.repositories import (
     InMemoryGrantRequestRepository,
     InMemorySubjectTokenRepository,
 )
+from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 
 
@@ -78,6 +80,7 @@ class InMemoryV1Service:
             self.initial_issuable_scope_bounds
         )
         self._auth_failures = AuthFailureAuditThrottle()
+        self._pop_replay = PopReplayCache()
 
     @property
     def audit_events(self) -> tuple[AuditEvent, ...]:
@@ -228,7 +231,7 @@ class InMemoryV1Service:
 
     def mint_subject_token(
         self, *, workspace_id, agent_id, grant_ref, audience, ttl_seconds, now,
-        bound_action=None, bound_resource=None,
+        bound_action=None, bound_resource=None, pop=False,
     ):
         from vinctor_service.subject_tokens import mint_subject_token
 
@@ -238,7 +241,7 @@ class InMemoryV1Service:
             audit_writer=self.audit_writer,
             workspace_id=workspace_id, agent_id=agent_id, grant_ref=grant_ref,
             audience=audience, ttl_seconds=ttl_seconds, now=now,
-            bound_action=bound_action, bound_resource=bound_resource,
+            bound_action=bound_action, bound_resource=bound_resource, pop=pop,
         )
 
     def lookup_grant_request(
@@ -372,6 +375,7 @@ class InMemoryV1Service:
         request: V1DelegatedEnforceRequest,
         *,
         now: datetime,
+        pop_skew_seconds: int = DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS,
     ) -> V1EnforceResponse:
         return delegated_enforce_v1_contract(
             request,
@@ -381,4 +385,6 @@ class InMemoryV1Service:
             boundary_registry=self.boundary_registry,
             subject_token_repository=self.subject_token_repository,
             agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
+            pop_replay_cache=self._pop_replay,
+            pop_skew_seconds=pop_skew_seconds,
         )

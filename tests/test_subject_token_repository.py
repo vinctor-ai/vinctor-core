@@ -17,6 +17,7 @@ def _token(
     revoked_at: datetime | None = None,
     bound_action: str | None = None,
     bound_resource: str | None = None,
+    pop_secret: str | None = None,
 ) -> SubjectToken:
     return SubjectToken(
         token_id="vtk_main",
@@ -31,6 +32,7 @@ def _token(
         revoked_at=revoked_at,
         bound_action=bound_action,
         bound_resource=bound_resource,
+        pop_secret=pop_secret,
     )
 
 
@@ -50,10 +52,10 @@ def test_sqlite_insert_and_get_by_hash_round_trip(tmp_path) -> None:
     assert repo.get_by_hash("missing") is None
 
 
-def test_sqlite_schema_records_version_6(tmp_path) -> None:
+def test_sqlite_schema_records_version_7(tmp_path) -> None:
     conn = sqlite3.connect(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
-    assert get_sqlite_schema_versions(conn) == (1, 2, 3, 4, 5, 6)
+    assert get_sqlite_schema_versions(conn) == (1, 2, 3, 4, 5, 6, 7)
 
 
 def test_in_memory_round_trip_revoked_at() -> None:
@@ -116,3 +118,39 @@ def test_sqlite_round_trip_unbound_defaults_none(tmp_path) -> None:
     assert stored is not None
     assert stored.bound_action is None
     assert stored.bound_resource is None
+
+
+def test_in_memory_round_trip_pop_secret() -> None:
+    repo = InMemorySubjectTokenRepository()
+    repo.insert(_token(pop_secret="pop-secret-value"))
+    stored = repo.get_by_hash("hash_main")
+    assert stored is not None
+    assert stored.pop_secret == "pop-secret-value"
+
+
+def test_in_memory_round_trip_pop_secret_defaults_none() -> None:
+    repo = InMemorySubjectTokenRepository()
+    repo.insert(_token())
+    stored = repo.get_by_hash("hash_main")
+    assert stored is not None
+    assert stored.pop_secret is None
+
+
+def test_sqlite_round_trip_pop_secret(tmp_path) -> None:
+    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    init_sqlite_schema(conn)
+    repo = SQLiteSubjectTokenRepository(conn)
+    repo.insert(_token(pop_secret="pop-secret-value"))
+    stored = repo.get_by_hash("hash_main")
+    assert stored is not None
+    assert stored.pop_secret == "pop-secret-value"
+
+
+def test_sqlite_round_trip_pop_secret_defaults_none(tmp_path) -> None:
+    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    init_sqlite_schema(conn)
+    repo = SQLiteSubjectTokenRepository(conn)
+    repo.insert(_token())
+    stored = repo.get_by_hash("hash_main")
+    assert stored is not None
+    assert stored.pop_secret is None

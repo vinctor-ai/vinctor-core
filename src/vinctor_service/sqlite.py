@@ -49,6 +49,8 @@ from vinctor_service.models import (
     V1EnforceRequest,
     V1EnforceResponse,
 )
+from vinctor_service.pop import PopReplayCache
+from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS
 from vinctor_service.subject_tokens import mint_subject_token
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 
@@ -186,7 +188,8 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             created_by TEXT NOT NULL,
             revoked_at TEXT,
             bound_action TEXT,
-            bound_resource TEXT
+            bound_resource TEXT,
+            pop_secret TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_subject_tokens_hash
@@ -206,6 +209,7 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
     _ensure_scope_bounds_max_ttl_column(conn)
     _ensure_subject_tokens_revoked_at_column(conn)
     _ensure_subject_tokens_bound_columns(conn)
+    _ensure_subject_tokens_pop_secret_column(conn)
     _ensure_agent_enforcement_require_subject_token_column(conn)
     conn.execute(
         """
@@ -248,6 +252,13 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         VALUES (?, ?)
         """,
         (6, datetime.now(UTC).isoformat()),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (7, datetime.now(UTC).isoformat()),
     )
     conn.commit()
 
@@ -324,6 +335,14 @@ def _ensure_subject_tokens_bound_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE subject_tokens ADD COLUMN bound_action TEXT")
     if "bound_resource" not in existing_columns:
         conn.execute("ALTER TABLE subject_tokens ADD COLUMN bound_resource TEXT")
+
+
+def _ensure_subject_tokens_pop_secret_column(conn: sqlite3.Connection) -> None:
+    existing_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(subject_tokens)").fetchall()
+    }
+    if "pop_secret" not in existing_columns:
+        conn.execute("ALTER TABLE subject_tokens ADD COLUMN pop_secret TEXT")
 
 
 def _ensure_agent_enforcement_require_subject_token_column(conn: sqlite3.Connection) -> None:
@@ -709,8 +728,8 @@ class SQLiteSubjectTokenRepository:
                 INSERT INTO subject_tokens (
                     token_id, token_hash, workspace_id, agent_id, grant_ref,
                     audience, issued_at, expires_at, created_by, revoked_at,
-                    bound_action, bound_resource
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    bound_action, bound_resource, pop_secret
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     token.token_id,
@@ -725,6 +744,7 @@ class SQLiteSubjectTokenRepository:
                     _datetime_to_storage(token.revoked_at),
                     token.bound_action,
                     token.bound_resource,
+                    token.pop_secret,
                 ),
             )
 
@@ -733,7 +753,7 @@ class SQLiteSubjectTokenRepository:
             """
             SELECT token_id, token_hash, workspace_id, agent_id, grant_ref,
                    audience, issued_at, expires_at, created_by, revoked_at,
-                   bound_action, bound_resource
+                   bound_action, bound_resource, pop_secret
             FROM subject_tokens
             WHERE token_hash = ?
             """,
@@ -1017,6 +1037,7 @@ class SQLiteV1Service:
         self.agent_enforcement_settings_repository = SQLiteAgentEnforcementSettingsRepository(
             self.conn
         )
+        self._pop_replay = PopReplayCache()
 
     def insert_grant(self, grant: Grant) -> None:
         insert_grant(self.conn, grant)
@@ -1106,7 +1127,7 @@ class SQLiteV1Service:
 
     def mint_subject_token(
         self, *, workspace_id, agent_id, grant_ref, audience, ttl_seconds, now,
-        bound_action=None, bound_resource=None,
+        bound_action=None, bound_resource=None, pop=False,
     ):
         return mint_subject_token(
             grant_repository=self.grant_repository,
@@ -1114,7 +1135,7 @@ class SQLiteV1Service:
             audit_writer=self.audit_writer,
             workspace_id=workspace_id, agent_id=agent_id, grant_ref=grant_ref,
             audience=audience, ttl_seconds=ttl_seconds, now=now,
-            bound_action=bound_action, bound_resource=bound_resource,
+            bound_action=bound_action, bound_resource=bound_resource, pop=pop,
         )
 
     def lookup_grant_request(
@@ -1314,6 +1335,7 @@ class SQLiteV1Service:
         request: V1DelegatedEnforceRequest,
         *,
         now: datetime,
+        pop_skew_seconds: int = DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS,
     ) -> V1EnforceResponse:
         return delegated_enforce_v1_contract(
             request,
@@ -1323,6 +1345,8 @@ class SQLiteV1Service:
             boundary_registry=self.boundary_registry,
             subject_token_repository=self.subject_token_repository,
             agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
+            pop_replay_cache=self._pop_replay,
+            pop_skew_seconds=pop_skew_seconds,
         )
 
 
@@ -1415,6 +1439,9 @@ def _grant_request_from_row(row: sqlite3.Row | tuple | None) -> GrantRequest | N
 def _subject_token_from_row(row: sqlite3.Row | tuple | None) -> SubjectToken | None:
     if row is None:
         return None
+    # pop_secret is only selected by get_by_hash (verification needs it); list/get_by_id
+    # omit it (12-column rows) so it never reaches operator surfaces. Default to None.
+    pop_secret = row[12] if len(row) > 12 else None
     return SubjectToken(
         token_id=row[0],
         token_hash=row[1],
@@ -1428,6 +1455,7 @@ def _subject_token_from_row(row: sqlite3.Row | tuple | None) -> SubjectToken | N
         revoked_at=_datetime_from_storage(row[9]),
         bound_action=row[10],
         bound_resource=row[11],
+        pop_secret=pop_secret,
     )
 
 

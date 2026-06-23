@@ -24,7 +24,10 @@ from vinctor_service.grant_request_http import (
     GrantRequestService,
     handle_v1_grant_requests_http,
 )
-from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_MAX_TTL_SECONDS
+from vinctor_service.service_config import (
+    DEFAULT_SUBJECT_TOKEN_MAX_TTL_SECONDS,
+    DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS,
+)
 from vinctor_service.v1_http import (
     AgentIdentity,
     AgentIdentityResolver,
@@ -232,6 +235,12 @@ def create_v1_http_handler(
             pep_identity_resolver=pep_identity_resolver,
             service=cast(V1DelegatedEnforceService, service),
             now=now(),
+            pop_skew_seconds=int(
+                os.environ.get(
+                    "VINCTOR_SUBJECT_TOKEN_POP_SKEW_SECONDS",
+                    DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS,
+                )
+            ),
         )
         _send_json(handler, response)
 

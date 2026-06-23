@@ -95,3 +95,40 @@ def test_mint_other_agents_grant_is_403_no_leak() -> None:
     assert r.status_code == 403
     assert r.body["error"] == "forbidden"
     assert "grt_main" not in str(r.body)
+
+
+def test_mint_with_pop_true_returns_201_with_pop_secret() -> None:
+    svc = InMemoryV1Service(grants=(_grant(),))
+    r = _call(
+        svc,
+        body={
+            "grant_ref": "grt_main",
+            "audience": "pep_git_host",
+            "ttl_seconds": 300,
+            "pop": True,
+        },
+    )
+    assert r.status_code == 201
+    assert isinstance(r.body["pop_secret"], str) and r.body["pop_secret"] != ""
+
+
+def test_mint_without_pop_omits_pop_secret_from_201_body() -> None:
+    svc = InMemoryV1Service(grants=(_grant(),))
+    r = _call(svc)
+    assert r.status_code == 201
+    assert "pop_secret" not in r.body
+
+
+def test_mint_with_non_bool_pop_is_400() -> None:
+    svc = InMemoryV1Service(grants=(_grant(),))
+    r = _call(
+        svc,
+        body={
+            "grant_ref": "grt_main",
+            "audience": "pep_git_host",
+            "ttl_seconds": 300,
+            "pop": "yes",
+        },
+    )
+    assert r.status_code == 400
+    assert r.body["error"] == "invalid_request"

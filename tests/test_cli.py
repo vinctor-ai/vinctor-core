@@ -138,6 +138,29 @@ def test_vinctor_cli_agent_token_mint_with_binding(tmp_path: Path) -> None:
         _stop_service(handle)
 
 
+def test_vinctor_cli_agent_token_mint_with_pop(tmp_path: Path) -> None:
+    handle = _start_service(tmp_path, scopes=("write:repo/feature/*",))
+    try:
+        common = _common_args(handle, json_output=True)
+        result = _run(
+            [
+                *common,
+                "agent",
+                "token",
+                "mint",
+                "--grant-ref",
+                handle.grant_ref,
+                "--audience",
+                "pep_git_host",
+                "--pop",
+            ]
+        )
+        assert result["token"].startswith("vat_")
+        assert isinstance(result["pop_secret"], str) and result["pop_secret"] != ""
+    finally:
+        _stop_service(handle)
+
+
 def test_vinctor_cli_manual_review_flow_and_audit_filter(tmp_path: Path) -> None:
     handle = _start_service(tmp_path, scopes=("write:repo/vinctor-core/*",))
     try:
@@ -427,8 +450,8 @@ auto_approval_rules:
         "rules_updated": 0,
         "workspace_id": "ws_demo",
     }
-    assert service_info["schema_versions"] == [1, 2, 3, 4, 5, 6]
-    assert service_info["schema_version"] == 6
+    assert service_info["schema_versions"] == [1, 2, 3, 4, 5, 6, 7]
+    assert service_info["schema_version"] == 7
     assert exported["agent_bounds"] == 1
     assert exported["auto_approval_rules"] == 1
     assert bounds == ("execute:ci/test", "write:repo/vinctor-core/*")
@@ -529,11 +552,11 @@ def test_vinctor_cli_storage_backup_and_reset(tmp_path: Path) -> None:
 
     assert backup["output_path"] == str(backup_path)
     assert backup["bytes"] > 0
-    assert backup["schema_versions"] == [1, 2, 3, 4, 5, 6]
+    assert backup["schema_versions"] == [1, 2, 3, 4, 5, 6, 7]
     assert reset == {
         "db_path": str(db_path),
         "reset": True,
-        "schema_versions": [1, 2, 3, 4, 5, 6],
+        "schema_versions": [1, 2, 3, 4, 5, 6, 7],
     }
 
     backup_conn = sqlite3.connect(backup_path)
@@ -605,8 +628,8 @@ def test_vinctor_cli_service_info_reports_schema(tmp_path: Path) -> None:
 
     assert info["mode"] == "local"
     assert info["db_path"] == str(db_path)
-    assert info["schema_version"] == 6
-    assert info["schema_versions"] == [1, 2, 3, 4, 5, 6]
+    assert info["schema_version"] == 7
+    assert info["schema_versions"] == [1, 2, 3, 4, 5, 6, 7]
     assert info["key_storage_mode"] == "sqlite_hashes"
     assert "host" in info
     assert "port" in info
@@ -642,7 +665,7 @@ def test_vinctor_cli_storage_restore_roundtrip(tmp_path: Path) -> None:
         "db_path": str(db_path),
         "input_path": str(backup_path),
         "restored": True,
-        "schema_versions": [1, 2, 3, 4, 5, 6],
+        "schema_versions": [1, 2, 3, 4, 5, 6, 7],
     }
     conn = sqlite3.connect(db_path)
     try:
@@ -720,7 +743,7 @@ def test_vinctor_cli_storage_migrate_reports_versions(tmp_path: Path) -> None:
 
     migrate = _run(["--json", "--db", str(db_path), "operator", "storage", "migrate"])
 
-    assert migrate == {"db_path": str(db_path), "schema_versions": [1, 2, 3, 4, 5, 6]}
+    assert migrate == {"db_path": str(db_path), "schema_versions": [1, 2, 3, 4, 5, 6, 7]}
     conn = sqlite3.connect(db_path)
     try:
         grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
@@ -949,6 +972,22 @@ def test_vinctor_cli_tokens_list_revoke_then_delegated_enforce_denies(tmp_path: 
     assert denied.decision is None
 
 
+def test_vinctor_cli_tokens_list_does_not_leak_pop_secret(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+    token_id = _insert_pop_token(db_path)
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+
+    listed = _run([*common, "operator", "tokens", "list"])
+    assert len(listed["tokens"]) == 1
+    row = listed["tokens"][0]
+    assert row["token_id"] == token_id
+    assert "pop_secret" not in row
+    serialized = json.dumps(listed)
+    assert "pop_secret" not in serialized
+    assert "pop-secret-value" not in serialized
+
+
 def test_vinctor_cli_tokens_revoke_unknown_errors(tmp_path: Path) -> None:
     db_path = tmp_path / "vinctor.sqlite"
     _seed_storage_db(db_path)
@@ -987,6 +1026,31 @@ def _mint_subject_token(db_path: Path) -> tuple[str, str]:
         conn.close()
     assert result.status == "minted"
     return result.token, result.token_id
+
+
+def _insert_pop_token(db_path: Path) -> str:
+    from datetime import timedelta
+
+    from vinctor_service import SubjectToken
+
+    token = SubjectToken(
+        token_id="vtk_pop",
+        token_hash="hash_pop",
+        workspace_id="ws_demo",
+        agent_id="agent_runner",
+        grant_ref="grt_seed",
+        audience="pep_runner",
+        issued_at=NOW,
+        expires_at=NOW + timedelta(seconds=300),
+        created_by="agent_runner",
+        pop_secret="pop-secret-value",
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        SQLiteV1Service(conn).subject_token_repository.insert(token)
+    finally:
+        conn.close()
+    return token.token_id
 
 
 def _delegated_enforce(db_path: Path, raw: str):
