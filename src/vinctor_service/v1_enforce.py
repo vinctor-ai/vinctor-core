@@ -6,6 +6,7 @@ from datetime import datetime
 from vinctor_core.audit import (
     REASON_AGENT_GRANT_MISMATCH,
     REASON_SUBJECT_TOKEN_INVALID,
+    REASON_SUBJECT_TOKEN_REQUIRED,
     AuditEventInput,
     build_audit_event,
     build_rejection_audit_event,
@@ -187,6 +188,33 @@ def delegated_enforce_v1_contract(
             f"grant_ref {request.grant_ref} does not belong to the asserted subject",
         )
 
+    # require_subject_token mandate (mirror of require_boundary): when the subject
+    # is hardened, a delegated enforce MUST present a usable subject token. This runs
+    # AFTER grant-ownership and BEFORE the optional-token block. Empty == absent: a
+    # blank/whitespace token header counts as no token and is denied here.
+    require_subject_token = (
+        agent_enforcement_settings_repository.is_subject_token_required(
+            workspace_id=trusted_ws, agent_id=request.agent_id
+        )
+        if agent_enforcement_settings_repository is not None
+        else False
+    )
+    if require_subject_token and (
+        request.subject_token is None or request.subject_token.strip() == ""
+    ):
+        _record_rejection(
+            audit_writer,
+            reason_code=REASON_SUBJECT_TOKEN_REQUIRED,
+            workspace_id=trusted_ws,
+            agent_id=request.agent_id,
+            action=request.action,
+            resource=request.resource,
+            boundary_id=request.boundary_id,
+            now=now,
+            enforcing_principal=request.pep_id,
+        )
+        return _pre_audit_error(403, "forbidden", "a subject token is required")
+
     # ADR 0007 Model 2: proven-identity path. The token (if present) must agree
     # with the asserted body AND the resolved grant; any failure fails closed.
     # This block runs only after the grant is resolved and owned by the asserted
@@ -204,6 +232,22 @@ def delegated_enforce_v1_contract(
         except Exception:
             token = None
         if token is None:
+            _record_rejection(
+                audit_writer,
+                reason_code=REASON_SUBJECT_TOKEN_INVALID,
+                workspace_id=trusted_ws,
+                agent_id=request.agent_id,
+                action=request.action,
+                resource=request.resource,
+                boundary_id=request.boundary_id,
+                now=now,
+                enforcing_principal=request.pep_id,
+            )
+            return _pre_audit_error(403, "forbidden", "subject token is not valid")
+        # Revoked == invalid: an explicitly revoked token fails closed with the
+        # SAME generic result as any other invalid token (never reveal whether it
+        # was revoked vs expired).
+        if token.revoked_at is not None:
             _record_rejection(
                 audit_writer,
                 reason_code=REASON_SUBJECT_TOKEN_INVALID,

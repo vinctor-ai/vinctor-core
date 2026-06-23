@@ -196,3 +196,4 @@ class SubjectToken:
     issued_at: datetime
     expires_at: datetime
     created_by: str  # minting agent
+    revoked_at: datetime | None = None  # explicit revocation; null when active

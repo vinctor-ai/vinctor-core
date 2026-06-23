@@ -183,7 +183,8 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             audience TEXT NOT NULL,
             issued_at TEXT NOT NULL,
             expires_at TEXT NOT NULL,
-            created_by TEXT NOT NULL
+            created_by TEXT NOT NULL,
+            revoked_at TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_subject_tokens_hash
@@ -193,6 +194,7 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             workspace_id TEXT NOT NULL,
             agent_id TEXT NOT NULL,
             require_boundary INTEGER NOT NULL DEFAULT 0,
+            require_subject_token INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (workspace_id, agent_id)
         );
@@ -200,6 +202,8 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
     )
     _ensure_grant_request_metadata_columns(conn)
     _ensure_scope_bounds_max_ttl_column(conn)
+    _ensure_subject_tokens_revoked_at_column(conn)
+    _ensure_agent_enforcement_require_subject_token_column(conn)
     conn.execute(
         """
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
@@ -227,6 +231,13 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         VALUES (?, ?)
         """,
         (4, datetime.now(UTC).isoformat()),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (5, datetime.now(UTC).isoformat()),
     )
     conn.commit()
 
@@ -284,6 +295,26 @@ def _ensure_scope_bounds_max_ttl_column(conn: sqlite3.Connection) -> None:
     if "max_ttl_seconds" not in existing_columns:
         conn.execute(
             "ALTER TABLE agent_issuable_scope_bounds ADD COLUMN max_ttl_seconds INTEGER"
+        )
+
+
+def _ensure_subject_tokens_revoked_at_column(conn: sqlite3.Connection) -> None:
+    existing_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(subject_tokens)").fetchall()
+    }
+    if "revoked_at" not in existing_columns:
+        conn.execute("ALTER TABLE subject_tokens ADD COLUMN revoked_at TEXT")
+
+
+def _ensure_agent_enforcement_require_subject_token_column(conn: sqlite3.Connection) -> None:
+    existing_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(agent_enforcement_settings)").fetchall()
+    }
+    if "require_subject_token" not in existing_columns:
+        conn.execute(
+            "ALTER TABLE agent_enforcement_settings "
+            "ADD COLUMN require_subject_token INTEGER NOT NULL DEFAULT 0"
         )
 
 
@@ -500,6 +531,43 @@ class SQLiteAgentEnforcementSettingsRepository:
                 (workspace_id, agent_id, 1 if require_boundary else 0, now.isoformat()),
             )
 
+    def get_require_subject_token_setting(
+        self, *, workspace_id: str, agent_id: str
+    ) -> bool | None:
+        row = self._conn.execute(
+            """
+            SELECT require_subject_token FROM agent_enforcement_settings
+            WHERE workspace_id = ? AND agent_id = ?
+            """,
+            (workspace_id, agent_id),
+        ).fetchone()
+        return bool(row[0]) if row is not None else None
+
+    def is_subject_token_required(self, *, workspace_id: str, agent_id: str) -> bool:
+        agent = self.get_require_subject_token_setting(
+            workspace_id=workspace_id, agent_id=agent_id
+        )
+        if agent is not None:
+            return agent
+        ws = self.get_require_subject_token_setting(workspace_id=workspace_id, agent_id="")
+        return ws if ws is not None else False
+
+    def set_require_subject_token(
+        self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime
+    ) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO agent_enforcement_settings (
+                    workspace_id, agent_id, require_subject_token, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
+                    require_subject_token = excluded.require_subject_token,
+                    updated_at = excluded.updated_at
+                """,
+                (workspace_id, agent_id, 1 if require_subject_token else 0, now.isoformat()),
+            )
+
 
 class SQLiteGrantRequestRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
@@ -620,8 +688,8 @@ class SQLiteSubjectTokenRepository:
                 """
                 INSERT INTO subject_tokens (
                     token_id, token_hash, workspace_id, agent_id, grant_ref,
-                    audience, issued_at, expires_at, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    audience, issued_at, expires_at, created_by, revoked_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     token.token_id,
@@ -633,6 +701,7 @@ class SQLiteSubjectTokenRepository:
                     token.issued_at.isoformat(),
                     token.expires_at.isoformat(),
                     token.created_by,
+                    _datetime_to_storage(token.revoked_at),
                 ),
             )
 
@@ -640,13 +709,46 @@ class SQLiteSubjectTokenRepository:
         row = self._conn.execute(
             """
             SELECT token_id, token_hash, workspace_id, agent_id, grant_ref,
-                   audience, issued_at, expires_at, created_by
+                   audience, issued_at, expires_at, created_by, revoked_at
             FROM subject_tokens
             WHERE token_hash = ?
             """,
             (token_hash,),
         ).fetchone()
         return _subject_token_from_row(row)
+
+    def get_by_id(self, token_id: str) -> SubjectToken | None:
+        row = self._conn.execute(
+            """
+            SELECT token_id, token_hash, workspace_id, agent_id, grant_ref,
+                   audience, issued_at, expires_at, created_by, revoked_at
+            FROM subject_tokens
+            WHERE token_id = ?
+            """,
+            (token_id,),
+        ).fetchone()
+        return _subject_token_from_row(row)
+
+    def revoke(self, token_id: str, *, now: datetime) -> bool:
+        with self._conn:
+            cursor = self._conn.execute(
+                "UPDATE subject_tokens SET revoked_at = ? WHERE token_id = ?",
+                (_datetime_to_storage(now), token_id),
+            )
+        return cursor.rowcount > 0
+
+    def list_subject_tokens(self, workspace_id: str) -> tuple[SubjectToken, ...]:
+        rows = self._conn.execute(
+            """
+            SELECT token_id, token_hash, workspace_id, agent_id, grant_ref,
+                   audience, issued_at, expires_at, created_by, revoked_at
+            FROM subject_tokens
+            WHERE workspace_id = ?
+            ORDER BY issued_at
+            """,
+            (workspace_id,),
+        ).fetchall()
+        return tuple(token for row in rows if (token := _subject_token_from_row(row)) is not None)
 
 
 class SQLiteAutoApprovalRuleRepository:
@@ -1295,6 +1397,7 @@ def _subject_token_from_row(row: sqlite3.Row | tuple | None) -> SubjectToken | N
         issued_at=datetime.fromisoformat(row[6]),
         expires_at=datetime.fromisoformat(row[7]),
         created_by=row[8],
+        revoked_at=_datetime_from_storage(row[9]),
     )
 
 

@@ -236,6 +236,12 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
     show_bounds = bounds_commands.add_parser("show")
     show_bounds.add_argument("target_agent_id", nargs="?")
 
+    tokens = resources.add_parser("tokens")
+    token_commands = tokens.add_subparsers(dest="tokens_command", required=True)
+    token_commands.add_parser("list")
+    revoke_token = token_commands.add_parser("revoke")
+    revoke_token.add_argument("token_id")
+
     require_boundary = resources.add_parser("require-boundary")
     rb_commands = require_boundary.add_subparsers(dest="require_boundary_command", required=True)
     rb_enable = rb_commands.add_parser("enable")
@@ -247,6 +253,20 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
     rb_show = rb_commands.add_parser("show")
     rb_show.add_argument("target_agent_id", nargs="?")
     rb_show.add_argument("--workspace", action="store_true")
+
+    require_subject_token = resources.add_parser("require-subject-token")
+    rst_commands = require_subject_token.add_subparsers(
+        dest="require_subject_token_command", required=True
+    )
+    rst_enable = rst_commands.add_parser("enable")
+    rst_enable.add_argument("target_agent_id", nargs="?")
+    rst_enable.add_argument("--workspace", action="store_true")
+    rst_disable = rst_commands.add_parser("disable")
+    rst_disable.add_argument("target_agent_id", nargs="?")
+    rst_disable.add_argument("--workspace", action="store_true")
+    rst_show = rst_commands.add_parser("show")
+    rst_show.add_argument("target_agent_id", nargs="?")
+    rst_show.add_argument("--workspace", action="store_true")
 
     audit = resources.add_parser("audit")
     audit_commands = audit.add_subparsers(dest="audit_command", required=True)
@@ -461,8 +481,14 @@ def _operator(args: argparse.Namespace, *, stdout: TextIO) -> None:
     if resource == "bounds":
         _operator_bounds(args, stdout=stdout)
         return
+    if resource == "tokens":
+        _operator_tokens(args, stdout=stdout)
+        return
     if resource == "require-boundary":
         _operator_require_boundary(args, stdout=stdout)
+        return
+    if resource == "require-subject-token":
+        _operator_require_subject_token(args, stdout=stdout)
         return
     if resource == "audit":
         _operator_audit(args, stdout=stdout)
@@ -727,6 +753,80 @@ def _operator_require_boundary(args: argparse.Namespace, *, stdout: TextIO) -> N
         f"require_boundary workspace={args.workspace_id} agent={agent_id} value={value}",
         stdout=stdout,
     )
+
+
+def _operator_require_subject_token(args: argparse.Namespace, *, stdout: TextIO) -> None:
+    service = _sqlite_service(args.db)
+    if args.workspace and args.target_agent_id is not None:
+        raise CliError("require-subject-token --workspace cannot be combined with an agent id")
+    agent_id = "" if args.workspace else (args.target_agent_id or args.agent_id)
+    repo = service.agent_enforcement_settings_repository
+    if args.require_subject_token_command in ("enable", "disable"):
+        value = args.require_subject_token_command == "enable"
+        repo.set_require_subject_token(
+            workspace_id=args.workspace_id,
+            agent_id=agent_id,
+            require_subject_token=value,
+            now=datetime.now(UTC),
+        )
+    else:  # show
+        setting = repo.get_require_subject_token_setting(
+            workspace_id=args.workspace_id, agent_id=agent_id
+        )
+        value = bool(setting)
+    body = {
+        "workspace_id": args.workspace_id,
+        "agent_id": agent_id,
+        "require_subject_token": value,
+        "scope": "workspace" if args.workspace else "agent",
+    }
+    _emit(
+        args,
+        body,
+        f"require_subject_token workspace={args.workspace_id} agent={agent_id} value={value}",
+        stdout=stdout,
+    )
+
+
+def _operator_tokens(args: argparse.Namespace, *, stdout: TextIO) -> None:
+    repository = _sqlite_service(args.db).subject_token_repository
+    if args.tokens_command == "list":
+        tokens = repository.list_subject_tokens(args.workspace_id)
+        body = {"tokens": [_subject_token_row(token) for token in tokens]}
+        _emit(args, body, _tokens_list_text(tokens), stdout=stdout)
+        return
+    if args.tokens_command == "revoke":
+        revoked = repository.revoke(args.token_id, now=datetime.now(UTC))
+        if not revoked:
+            raise CliError(f"unknown subject token: {args.token_id}")
+        body = {"token_id": args.token_id, "revoked": True}
+        _emit(args, body, f"revoked subject token {args.token_id}", stdout=stdout)
+        return
+    raise CliError(f"unknown tokens command: {args.tokens_command}")
+
+
+def _subject_token_row(token: object) -> dict[str, object]:
+    return {
+        "token_id": token.token_id,
+        "agent_id": token.agent_id,
+        "grant_ref": token.grant_ref,
+        "audience": token.audience,
+        "expires_at": token.expires_at.isoformat(),
+        "revoked": token.revoked_at is not None,
+    }
+
+
+def _tokens_list_text(tokens: tuple[object, ...]) -> str:
+    if not tokens:
+        return "no subject tokens"
+    lines = []
+    for token in tokens:
+        lines.append(
+            f"{token.token_id} agent={token.agent_id} grant_ref={token.grant_ref} "
+            f"audience={token.audience} expires={token.expires_at.isoformat()} "
+            f"revoked={token.revoked_at is not None}"
+        )
+    return "\n".join(lines)
 
 
 def _operator_audit(args: argparse.Namespace, *, stdout: TextIO) -> None:

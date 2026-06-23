@@ -60,6 +60,7 @@ REASON_SCOPE_OUTSIDE_ISSUABLE_BOUNDS = "scope_outside_issuable_bounds"
 REASON_ISSUABLE_BOUNDS_NOT_FOUND = "issuable_bounds_not_found"
 REASON_TTL_EXCEEDS_ISSUABLE_MAX = "ttl_exceeds_issuable_max"
 REASON_SUBJECT_TOKEN_INVALID = "subject_token_invalid"
+REASON_SUBJECT_TOKEN_REQUIRED = "subject_token_required"
 
 
 def build_rejection_audit_event(

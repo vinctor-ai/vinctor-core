@@ -9,7 +9,11 @@ from threading import Thread
 
 import yaml
 
-from vinctor_service import GrantRequestCreateRequest, SQLiteV1Service
+from vinctor_service import (
+    GrantRequestCreateRequest,
+    SQLiteV1Service,
+    V1DelegatedEnforceRequest,
+)
 from vinctor_service.cli import run_vinctor
 from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.local_launcher import LocalLaunchConfig, prepare_local_service
@@ -397,8 +401,8 @@ auto_approval_rules:
         "rules_updated": 0,
         "workspace_id": "ws_demo",
     }
-    assert service_info["schema_versions"] == [1, 2, 3, 4]
-    assert service_info["schema_version"] == 4
+    assert service_info["schema_versions"] == [1, 2, 3, 4, 5]
+    assert service_info["schema_version"] == 5
     assert exported["agent_bounds"] == 1
     assert exported["auto_approval_rules"] == 1
     assert bounds == ("execute:ci/test", "write:repo/vinctor-core/*")
@@ -499,11 +503,11 @@ def test_vinctor_cli_storage_backup_and_reset(tmp_path: Path) -> None:
 
     assert backup["output_path"] == str(backup_path)
     assert backup["bytes"] > 0
-    assert backup["schema_versions"] == [1, 2, 3, 4]
+    assert backup["schema_versions"] == [1, 2, 3, 4, 5]
     assert reset == {
         "db_path": str(db_path),
         "reset": True,
-        "schema_versions": [1, 2, 3, 4],
+        "schema_versions": [1, 2, 3, 4, 5],
     }
 
     backup_conn = sqlite3.connect(backup_path)
@@ -575,8 +579,8 @@ def test_vinctor_cli_service_info_reports_schema(tmp_path: Path) -> None:
 
     assert info["mode"] == "local"
     assert info["db_path"] == str(db_path)
-    assert info["schema_version"] == 4
-    assert info["schema_versions"] == [1, 2, 3, 4]
+    assert info["schema_version"] == 5
+    assert info["schema_versions"] == [1, 2, 3, 4, 5]
     assert info["key_storage_mode"] == "sqlite_hashes"
     assert "host" in info
     assert "port" in info
@@ -612,7 +616,7 @@ def test_vinctor_cli_storage_restore_roundtrip(tmp_path: Path) -> None:
         "db_path": str(db_path),
         "input_path": str(backup_path),
         "restored": True,
-        "schema_versions": [1, 2, 3, 4],
+        "schema_versions": [1, 2, 3, 4, 5],
     }
     conn = sqlite3.connect(db_path)
     try:
@@ -690,7 +694,7 @@ def test_vinctor_cli_storage_migrate_reports_versions(tmp_path: Path) -> None:
 
     migrate = _run(["--json", "--db", str(db_path), "operator", "storage", "migrate"])
 
-    assert migrate == {"db_path": str(db_path), "schema_versions": [1, 2, 3, 4]}
+    assert migrate == {"db_path": str(db_path), "schema_versions": [1, 2, 3, 4, 5]}
     conn = sqlite3.connect(db_path)
     try:
         grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
@@ -859,6 +863,124 @@ def test_vinctor_cli_require_boundary_workspace_default(tmp_path) -> None:
     shown = _run([*common, "operator", "require-boundary", "show", "--workspace"])
     assert enabled["require_boundary"] is True and enabled["scope"] == "workspace"
     assert shown["require_boundary"] is True
+
+
+def test_vinctor_cli_operator_require_subject_token_enable_show(tmp_path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+    enabled = _run([*common, "operator", "require-subject-token", "enable", "agent_runner"])
+    shown = _run([*common, "operator", "require-subject-token", "show", "agent_runner"])
+    disabled = _run([*common, "operator", "require-subject-token", "disable", "agent_runner"])
+    shown_after = _run([*common, "operator", "require-subject-token", "show", "agent_runner"])
+
+    assert enabled["require_subject_token"] is True
+    assert shown["require_subject_token"] is True
+    assert disabled["require_subject_token"] is False
+    assert shown_after["require_subject_token"] is False
+
+
+def test_vinctor_cli_require_subject_token_workspace_default(tmp_path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+    enabled = _run([*common, "operator", "require-subject-token", "enable", "--workspace"])
+    shown = _run([*common, "operator", "require-subject-token", "show", "--workspace"])
+    assert enabled["require_subject_token"] is True and enabled["scope"] == "workspace"
+    assert shown["require_subject_token"] is True
+
+
+def test_vinctor_cli_tokens_list_revoke_then_delegated_enforce_denies(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+    raw, token_id = _mint_subject_token(db_path)
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+
+    listed = _run([*common, "operator", "tokens", "list"])
+    assert len(listed["tokens"]) == 1
+    row = listed["tokens"][0]
+    assert row["token_id"] == token_id
+    assert row["agent_id"] == "agent_runner"
+    assert row["grant_ref"] == "grt_seed"
+    assert row["audience"] == "pep_runner"
+    assert row["revoked"] is False
+    serialized = json.dumps(listed)
+    assert "token_hash" not in serialized
+    assert raw not in serialized
+
+    # Before revocation, the token proves identity on the delegated path.
+    assert _delegated_enforce(db_path, raw).decision == "permit"
+
+    revoked = _run([*common, "operator", "tokens", "revoke", token_id])
+    assert revoked["token_id"] == token_id
+    assert revoked["revoked"] is True
+
+    shown = _run([*common, "operator", "tokens", "list"])
+    assert shown["tokens"][0]["revoked"] is True
+
+    # After revocation, the same raw token fails closed (403, not a permit).
+    denied = _delegated_enforce(db_path, raw)
+    assert denied.status_code == 403
+    assert denied.error == "forbidden"
+    assert denied.decision is None
+
+
+def test_vinctor_cli_tokens_revoke_unknown_errors(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+
+    stdout = StringIO()
+    stderr = StringIO()
+    status = run_vinctor(
+        [
+            "--db",
+            str(db_path),
+            "--workspace-id",
+            "ws_demo",
+            "operator",
+            "tokens",
+            "revoke",
+            "vtk_nope",
+        ],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    assert status != 0
+
+
+def _mint_subject_token(db_path: Path) -> tuple[str, str]:
+    conn = sqlite3.connect(db_path)
+    try:
+        result = SQLiteV1Service(conn).mint_subject_token(
+            workspace_id="ws_demo",
+            agent_id="agent_runner",
+            grant_ref="grt_seed",
+            audience="pep_runner",
+            ttl_seconds=300,
+            now=NOW,
+        )
+    finally:
+        conn.close()
+    assert result.status == "minted"
+    return result.token, result.token_id
+
+
+def _delegated_enforce(db_path: Path, raw: str):
+    conn = sqlite3.connect(db_path)
+    try:
+        return SQLiteV1Service(conn).delegated_enforce(
+            V1DelegatedEnforceRequest(
+                pep_id="pep_runner",
+                workspace_id="ws_demo",
+                agent_id="agent_runner",
+                grant_ref="grt_seed",
+                action="execute",
+                resource="ci/test",
+                pep_workspace_id="ws_demo",
+                subject_token=raw,
+            ),
+            now=NOW,
+        )
+    finally:
+        conn.close()
 
 
 def _seed_storage_db(db_path: Path) -> None:

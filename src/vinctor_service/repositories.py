@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from typing import Protocol
 
@@ -50,6 +51,12 @@ class SubjectTokenRepository(Protocol):
 
     def get_by_hash(self, token_hash: str) -> SubjectToken | None: ...
 
+    def get_by_id(self, token_id: str) -> SubjectToken | None: ...
+
+    def revoke(self, token_id: str, *, now: datetime) -> bool: ...
+
+    def list_subject_tokens(self, workspace_id: str) -> tuple[SubjectToken, ...]: ...
+
 
 class AgentEnforcementSettingsRepository(Protocol):
     def get_require_boundary(self, *, workspace_id: str, agent_id: str) -> bool: ...
@@ -62,6 +69,16 @@ class AgentEnforcementSettingsRepository(Protocol):
 
     def set_require_boundary(
         self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime
+    ) -> None: ...
+
+    def get_require_subject_token_setting(
+        self, *, workspace_id: str, agent_id: str
+    ) -> bool | None: ...
+
+    def is_subject_token_required(self, *, workspace_id: str, agent_id: str) -> bool: ...
+
+    def set_require_subject_token(
+        self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime
     ) -> None: ...
 
 
@@ -180,10 +197,36 @@ class InMemorySubjectTokenRepository:
     def get_by_hash(self, token_hash: str) -> SubjectToken | None:
         return self._tokens_by_hash.get(token_hash)
 
+    def get_by_id(self, token_id: str) -> SubjectToken | None:
+        for token in self._tokens_by_hash.values():
+            if token.token_id == token_id:
+                return token
+        return None
+
+    def revoke(self, token_id: str, *, now: datetime) -> bool:
+        for token_hash, token in self._tokens_by_hash.items():
+            if token.token_id == token_id:
+                self._tokens_by_hash[token_hash] = replace(token, revoked_at=now)
+                return True
+        return False
+
+    def list_subject_tokens(self, workspace_id: str) -> tuple[SubjectToken, ...]:
+        return tuple(
+            sorted(
+                (
+                    token
+                    for token in self._tokens_by_hash.values()
+                    if token.workspace_id == workspace_id
+                ),
+                key=lambda token: token.issued_at,
+            )
+        )
+
 
 class InMemoryAgentEnforcementSettingsRepository:
     def __init__(self) -> None:
         self._require_boundary: dict[tuple[str, str], bool] = {}
+        self._require_subject_token: dict[tuple[str, str], bool] = {}
 
     def get_require_boundary(self, *, workspace_id: str, agent_id: str) -> bool:
         return self._require_boundary.get((workspace_id, agent_id), False)
@@ -210,3 +253,19 @@ class InMemoryAgentEnforcementSettingsRepository:
         self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime
     ) -> None:
         self._require_boundary[(workspace_id, agent_id)] = require_boundary
+
+    def get_require_subject_token_setting(
+        self, *, workspace_id: str, agent_id: str
+    ) -> bool | None:
+        return self._require_subject_token.get((workspace_id, agent_id))
+
+    def is_subject_token_required(self, *, workspace_id: str, agent_id: str) -> bool:
+        agent = self._require_subject_token.get((workspace_id, agent_id))
+        if agent is not None:
+            return agent
+        return self._require_subject_token.get((workspace_id, ""), False)
+
+    def set_require_subject_token(
+        self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime
+    ) -> None:
+        self._require_subject_token[(workspace_id, agent_id)] = require_subject_token
