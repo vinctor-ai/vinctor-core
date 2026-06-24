@@ -57,9 +57,10 @@ EXIT_SERVICE = 5
 
 
 class CliError(Exception):
-    def __init__(self, message: str, *, code: int = EXIT_USAGE):
+    def __init__(self, message: str, *, code: int = EXIT_USAGE, quiet_json: bool = False):
         super().__init__(message)
         self.code = code
+        self.quiet_json = quiet_json
 
 
 def run_vinctor(
@@ -449,7 +450,11 @@ def _agent(args: argparse.Namespace, *, stdout: TextIO) -> None:
         )
         if status == 403:
             _emit(args, body, f"deny action={args.action} resource={args.resource}", stdout=stdout)
-            raise CliError(str(body.get("reason") or "action_denied"), code=EXIT_DENIED)
+            raise CliError(
+                str(body.get("reason") or "action_denied"),
+                code=EXIT_DENIED,
+                quiet_json=True,
+            )
         _raise_for_status(status, body)
         summary = (
             f"{body['decision']} action={args.action} resource={args.resource} "
@@ -1617,6 +1622,10 @@ def _emit(
 
 def _emit_error(args: argparse.Namespace, error: CliError, *, stderr: TextIO) -> None:
     if getattr(args, "json", False) or getattr(args, "output", None) == "json":
+        if error.quiet_json:
+            # The caller already emitted a structured decision to stdout (e.g. the
+            # enforce-deny case); avoid printing a second JSON object to stderr.
+            return
         print(json.dumps({"ok": False, "error": str(error), "exit_code": error.code}), file=stderr)
     else:
         print(f"error: {error}", file=stderr)

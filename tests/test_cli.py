@@ -89,6 +89,39 @@ def test_vinctor_cli_agent_request_operator_evaluate_and_enforce(
         _stop_service(handle)
 
 
+def test_vinctor_cli_agent_enforce_json_deny_emits_single_object(tmp_path: Path) -> None:
+    from vinctor_service.cli import EXIT_DENIED
+
+    handle = _start_service(tmp_path, scopes=("execute:ci/test",))
+    try:
+        common = _common_args(handle, json_output=True)
+        stdout, stderr = StringIO(), StringIO()
+        status = run_vinctor(
+            [
+                *common,
+                "agent",
+                "enforce",
+                "--grant-ref",
+                handle.grant_ref,
+                "--action",
+                "write",
+                "--resource",
+                "repo/secret",
+            ],
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+        assert status == EXIT_DENIED
+        # stdout holds exactly one JSON object: the deny decision.
+        decision = json.loads(stdout.getvalue())
+        assert decision["decision"] == "deny"
+        # In JSON mode the deny case must not also print a second JSON object to stderr.
+        assert stderr.getvalue() == ""
+    finally:
+        _stop_service(handle)
+
+
 def test_vinctor_cli_agent_token_mint(tmp_path: Path) -> None:
     handle = _start_service(tmp_path, scopes=("write:repo/feature/*",))
     try:
@@ -457,7 +490,25 @@ auto_approval_rules:
     assert bounds == ("execute:ci/test", "write:repo/vinctor-core/*")
     assert rules[0].rule_id == "apr_ci"
     assert rules[0].max_ttl_seconds == 1800
-    assert exported_yaml["auto_approval_rules"][0]["rule_id"] == "apr_ci"
+    exported_rule = exported_yaml["auto_approval_rules"][0]
+    assert exported_rule["rule_id"] == "apr_ci"
+    # Export uses the same `max_ttl` key the input did (round-trip symmetry),
+    # as a string duration, and does NOT also emit max_ttl_seconds (apply
+    # rejects setting both).
+    assert exported_rule["max_ttl"] == "1800s"
+    assert "max_ttl_seconds" not in exported_rule
+    conn.close()
+
+    # Re-applying the exported document is idempotent: same rule updated in
+    # place (not re-created) and the stored TTL is unchanged.
+    reapplied = _run([*common, "operator", "policy", "apply", "--file", str(exported_path)])
+    assert reapplied["rules_updated"] == 1
+    assert reapplied["rules_created"] == 0
+
+    conn = sqlite3.connect(db_path)
+    service = SQLiteV1Service(conn)
+    rules_after = service.list_auto_approval_rules(workspace_id="ws_demo")
+    assert rules_after[0].max_ttl_seconds == 1800
     conn.close()
 
 

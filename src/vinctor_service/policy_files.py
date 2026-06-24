@@ -146,7 +146,12 @@ def export_policy_document(
                 "name": rule.name,
                 "target_agent_id": rule.target_agent_id,
                 "allowed_scopes": list(rule.allowed_scopes),
-                "max_ttl_seconds": rule.max_ttl_seconds,
+                # Emit the same `max_ttl` key the apply input uses (round-trip
+                # symmetry) as a string duration so re-apply's isinstance(str)
+                # path accepts it. apply rejects setting BOTH keys, so we emit
+                # exactly one; it still accepts the legacy max_ttl_seconds key
+                # for anyone who wrote it explicitly.
+                "max_ttl": f"{rule.max_ttl_seconds}s",
                 "status": rule.status,
             }
             for rule in service.list_auto_approval_rules(workspace_id=workspace_id)
