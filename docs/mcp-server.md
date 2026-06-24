@@ -31,6 +31,17 @@ The MVP is stdio-only and exposes these tools:
 - `vinctor_get_grant_request`
 - `vinctor_list_auto_approval_rules`
 - `vinctor_explain_denial`
+- `vinctor_grant_report`
+- `vinctor_boundary_report`
+
+`vinctor_grant_report` and `vinctor_boundary_report` are composite read tools
+(the `vinctor_explain_denial` synthesis pattern): they compose existing read
+methods and add only fixed string keys plus server-computed integer counts.
+`vinctor_grant_report` returns a grant plus its audit timeline partitioned into
+lifecycle (issued/revoked) and usage (enforcement decisions) events;
+`vinctor_boundary_report` returns a boundary plus a permit/deny summary and its
+recent audit events. They add no service surface and inherit the same
+allowlist shaping as the underlying read tools.
 
 The server does not expose approve, reject, revoke, grant issuance, rule
 mutation, rule evaluation, or `/v1/enforce`.

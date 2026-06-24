@@ -20,6 +20,8 @@ from vinctor_mcp_server.output_policy import (
     fields_for_mode,
 )
 
+_GRANT_LIFECYCLE_EVENT_TYPES = frozenset({"grant_issued", "grant_revoked"})
+
 
 class ReadOnlyVinctorClient(Protocol):
     def status(self) -> dict[str, Any]: ...
@@ -218,6 +220,28 @@ class VinctorReadOnlyTools:
             )
         return body
 
+    def grant_report(self, grant_ref: str) -> dict[str, Any]:
+        grant = self.get_grant(grant_ref)
+        events = self.list_audit_events(grant_ref=grant_ref)["audit_events"]
+        lifecycle = [
+            event for event in events if event.get("event_type") in _GRANT_LIFECYCLE_EVENT_TYPES
+        ]
+        usage = [
+            event for event in events if event.get("event_type") not in _GRANT_LIFECYCLE_EVENT_TYPES
+        ]
+        return {"grant": grant, "lifecycle": lifecycle, "usage": usage}
+
+    def boundary_report(self, boundary_id: str) -> dict[str, Any]:
+        boundary = self.get_boundary(boundary_id)
+        events = self.list_audit_events(boundary_id=boundary_id)["audit_events"]
+        permit = sum(1 for event in events if event.get("decision") == "permit")
+        deny = sum(1 for event in events if event.get("decision") == "deny")
+        return {
+            "boundary": boundary,
+            "activity": {"permit": permit, "deny": deny},
+            "recent": events,
+        }
+
     def _would_be_allowed_by(self, event: dict[str, Any]) -> list[str]:
         if self._output_mode != "diagnostic":
             return []
@@ -355,6 +379,23 @@ def register_read_only_tools(
             "Does not call /v1/enforce."
         ),
     )(tools.explain_denial)
+    mcp.tool(
+        name="vinctor_grant_report",
+        description=(
+            "Inspect a grant's authorization state: returns the grant (status, "
+            "expiry) plus its audit timeline partitioned into lifecycle "
+            "(issued/revoked) and usage (enforcement decisions). Read-only; output "
+            "is allowlist-shaped and omits raw keys, hashes, and service internals."
+        ),
+    )(tools.grant_report)
+    mcp.tool(
+        name="vinctor_boundary_report",
+        description=(
+            "Inspect a boundary's authorization activity: returns the boundary plus "
+            "a permit/deny summary and recent audit events for it. Read-only; output "
+            "is allowlist-shaped and omits raw keys, hashes, and service internals."
+        ),
+    )(tools.boundary_report)
     return tools
 
 

@@ -480,6 +480,185 @@ def test_explain_denial_keeps_missing_scope_empty_for_non_denial() -> None:
     assert explanation["explanation"] == "This audit event is not a denial."
 
 
+class ReportClient(FakeClient):
+    """A client whose audit feed mixes grant lifecycle events with enforcement
+    usage events (permit + deny), and smuggles leak bait into the grant,
+    boundary, and every audit event, to pin the report compose + leak discipline."""
+
+    def __init__(self) -> None:
+        self.get_grant_calls: list[str] = []
+        self.get_boundary_calls: list[str] = []
+        self.audit_calls: list[dict[str, Any]] = []
+
+    def get_grant(self, grant_ref: str) -> dict[str, Any]:
+        self.get_grant_calls.append(grant_ref)
+        return super().get_grant(grant_ref)
+
+    def get_boundary(self, boundary_id: str) -> dict[str, Any]:
+        self.get_boundary_calls.append(boundary_id)
+        return super().get_boundary(boundary_id)
+
+    def list_audit_events(
+        self,
+        *,
+        limit: int = 20,
+        event_type: str | None = None,
+        grant_ref: str | None = None,
+        boundary_id: str | None = None,
+        request_id: str | None = None,
+        agent_id: str | None = None,
+    ) -> dict[str, Any]:
+        self.audit_calls.append(
+            {
+                "limit": limit,
+                "event_type": event_type,
+                "grant_ref": grant_ref,
+                "boundary_id": boundary_id,
+                "request_id": request_id,
+                "agent_id": agent_id,
+            }
+        )
+
+        def event(
+            event_id: str,
+            etype: str,
+            decision: str | None,
+        ) -> dict[str, Any]:
+            return {
+                "event_id": event_id,
+                "event_type": etype,
+                "decision": decision,
+                "reason": etype,
+                "workspace_id": "ws_main",
+                "agent_id": "agent_release",
+                "grant_id": "grnt_main",
+                "grant_ref": grant_ref or "grt_main",
+                "action": "send",
+                "resource": "email/external",
+                "scope_attempted": "send:email/external",
+                "scope_matched": None,
+                "boundary_id": boundary_id,
+                "runtime": None,
+                "boundary_type": None,
+                "created_at": "2026-06-11T12:00:00+00:00",
+                "event_json": {"raw": "hidden"},
+                "raw_command": "send-secret",
+                "raw_key": "wsk_secret",
+                "key_hash": "hash_secret",
+                "raw_tool_input": {"secret": "hidden"},
+            }
+
+        return {
+            "audit_events": [
+                event("evt_issued", "grant_issued", None),
+                event("evt_permit", "action_permitted", "permit"),
+                event("evt_deny", "action_denied", "deny"),
+                event("evt_reject", "access_rejected", "deny"),
+                event("evt_revoked", "grant_revoked", None),
+            ]
+        }
+
+
+def test_grant_report_partitions_lifecycle_and_usage() -> None:
+    client = ReportClient()
+    tools = VinctorReadOnlyTools(client)
+
+    report = tools.grant_report("grt_x")
+
+    assert report["grant"] == {
+        "grant_id": "grnt_main",
+        "grant_ref": "grt_x",
+        "workspace_id": "ws_main",
+        "agent_id": "agent_release",
+        "status": "active",
+        "expires_at": "2026-06-11T12:00:00+00:00",
+    }
+    assert [e["event_id"] for e in report["lifecycle"]] == ["evt_issued", "evt_revoked"]
+    assert [e["event_id"] for e in report["usage"]] == [
+        "evt_permit",
+        "evt_deny",
+        "evt_reject",
+    ]
+    assert client.get_grant_calls == ["grt_x"]
+    assert len(client.audit_calls) == 1
+    assert client.audit_calls[0]["grant_ref"] == "grt_x"
+    assert client.audit_calls[0]["boundary_id"] is None
+
+
+def test_grant_report_never_leaks_raw_keys_hashes_or_internals() -> None:
+    for mode in ("safe", "diagnostic"):
+        tools = VinctorReadOnlyTools(ReportClient(), output_mode=mode)
+
+        blob = json.dumps(tools.grant_report("grt_x"))
+
+        for forbidden in (
+            "wsk_",
+            "hash_secret",
+            "raw_tool_input",
+            "raw_key",
+            "key_hash",
+            "event_json",
+            "raw_command",
+        ):
+            assert forbidden not in blob
+
+
+def test_boundary_report_summarizes_permit_deny_activity() -> None:
+    client = ReportClient()
+    tools = VinctorReadOnlyTools(client)
+
+    report = tools.boundary_report("bnd_x")
+
+    assert report["boundary"] == {
+        "boundary_id": "bnd_x",
+        "name": "codex-local",
+        "runtime": "codex",
+        "boundary_type": "pretooluse",
+        "mode": "fail_closed",
+        "status": "active",
+    }
+    assert report["activity"] == {"permit": 1, "deny": 2}
+    assert [e["event_id"] for e in report["recent"]] == [
+        "evt_issued",
+        "evt_permit",
+        "evt_deny",
+        "evt_reject",
+        "evt_revoked",
+    ]
+    assert client.get_boundary_calls == ["bnd_x"]
+    assert len(client.audit_calls) == 1
+    assert client.audit_calls[0]["boundary_id"] == "bnd_x"
+    assert client.audit_calls[0]["grant_ref"] is None
+
+
+def test_boundary_report_never_leaks_raw_keys_hashes_or_internals() -> None:
+    for mode in ("safe", "diagnostic"):
+        tools = VinctorReadOnlyTools(ReportClient(), output_mode=mode)
+
+        blob = json.dumps(tools.boundary_report("bnd_x"))
+
+        for forbidden in (
+            "wsk_",
+            "hash_secret",
+            "raw_tool_input",
+            "raw_key",
+            "key_hash",
+            "event_json",
+            "raw_command",
+            "raw_prompt",
+        ):
+            assert forbidden not in blob
+
+
+def test_report_tools_registered_as_read_tools_when_write_disabled() -> None:
+    mcp = FakeMcp()
+
+    register_read_only_tools(mcp, FakeClient())
+
+    assert "vinctor_grant_report" in mcp.tools
+    assert "vinctor_boundary_report" in mcp.tools
+
+
 def test_grant_request_tools_return_allowlisted_fields() -> None:
     tools = VinctorReadOnlyTools(FakeClient())
 
@@ -648,11 +827,13 @@ def test_registers_only_read_only_mvp_tools() -> None:
     register_read_only_tools(mcp, FakeClient())
 
     assert sorted(mcp.tools) == [
+        "vinctor_boundary_report",
         "vinctor_explain_denial",
         "vinctor_get_audit_event",
         "vinctor_get_boundary",
         "vinctor_get_grant",
         "vinctor_get_grant_request",
+        "vinctor_grant_report",
         "vinctor_list_audit_events",
         "vinctor_list_auto_approval_rules",
         "vinctor_list_boundaries",

@@ -43,11 +43,13 @@ NOW = datetime(2026, 6, 11, 12, 0, tzinfo=UTC)
 SRC_ROOT = str(Path(vinctor_mcp_server.__file__).resolve().parent.parent)
 
 EXPECTED_TOOLS = [
+    "vinctor_boundary_report",
     "vinctor_explain_denial",
     "vinctor_get_audit_event",
     "vinctor_get_boundary",
     "vinctor_get_grant",
     "vinctor_get_grant_request",
+    "vinctor_grant_report",
     "vinctor_list_audit_events",
     "vinctor_list_auto_approval_rules",
     "vinctor_list_boundaries",
@@ -208,8 +210,9 @@ async def _with_session(port: int, body):  # body: async (session) -> T
 
 
 def test_real_stdio_initialize_and_lists_only_read_only_tools() -> None:
-    """Over real stdio: the server advertises exactly the 7 read-only tools and
-    no mutate surface (approve/reject/revoke/issue/enforce) leaks through MCP."""
+    """Over real stdio: the server advertises exactly the read-only tools (see
+    EXPECTED_TOOLS) and no mutate surface (approve/reject/revoke/issue/enforce)
+    leaks through MCP."""
 
     async def body(session: ClientSession) -> None:
         listed = await asyncio.wait_for(session.list_tools(), timeout=20)

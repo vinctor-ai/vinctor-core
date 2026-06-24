@@ -166,11 +166,13 @@ def test_create_stdio_server_registers_read_only_tools_with_fastmcp() -> None:
     assert server.name == "vinctor-mcp-server"
     assert server.version == version("vinctor-core")
     assert sorted(server.tools) == [
+        "vinctor_boundary_report",
         "vinctor_explain_denial",
         "vinctor_get_audit_event",
         "vinctor_get_boundary",
         "vinctor_get_grant",
         "vinctor_get_grant_request",
+        "vinctor_grant_report",
         "vinctor_list_audit_events",
         "vinctor_list_auto_approval_rules",
         "vinctor_list_boundaries",

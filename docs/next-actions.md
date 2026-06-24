@@ -388,7 +388,21 @@ architecture.
 
 ### MCP Phase 3 - Operational UX and Authorization Visibility
 
-Status: Future work. Not implemented.
+Status: **Composite read-only reports shipped (2026-06)** — the zero-new-service-
+surface slice. Two composite read tools (`vinctor_grant_report`,
+`vinctor_boundary_report`) synthesize existing reads (the `vinctor_explain_denial`
+pattern): `grant_report` returns a grant plus its audit timeline partitioned into
+lifecycle (issued/revoked) and usage (enforcement decisions) events;
+`boundary_report` returns a boundary plus a permit/deny summary and recent audit
+events. Both are registered unconditionally as read tools, add only fixed keys +
+server-computed integer counts, and inherit the read tools' allowlist shaping.
+
+Deferred (each needs NEW service surface, out of this slice):
+
+- durable grant lifecycle timestamps (`issued_at` / `revoked_at`)
+- an authoritative boundary-to-grant join
+- server-side audit aggregation and time-range filtering
+- subject-token and workspace-settings read endpoints
 
 Goal: Improve operator understanding of runtime authorization state without
 expanding MCP into an execution platform.
