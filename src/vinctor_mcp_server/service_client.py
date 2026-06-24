@@ -127,6 +127,9 @@ class VinctorServiceClient:
             body=_decision_body(reason),
         )
 
+    def revoke_grant(self, grant_ref: str) -> dict[str, Any]:
+        return self._request_json("POST", f"/v1/grants/{_path_part(grant_ref)}/revoke")
+
     def _request_json(
         self,
         method: str,

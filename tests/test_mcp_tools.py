@@ -683,6 +683,7 @@ class FakeDecisionClient(FakeClient):
     def __init__(self) -> None:
         self.approved: list[tuple[str, str | None]] = []
         self.rejected: list[tuple[str, str | None]] = []
+        self.revoked: list[str] = []
 
     def _decision_response(self, request_id: str, status: str) -> dict[str, Any]:
         return {
@@ -737,6 +738,22 @@ class FakeDecisionClient(FakeClient):
         self.rejected.append((request_id, reason))
         return self._decision_response(request_id, "rejected")
 
+    def revoke_grant(self, grant_ref: str) -> dict[str, Any]:
+        self.revoked.append(grant_ref)
+        return {
+            "grant_id": "grnt_revoked",
+            "grant_ref": grant_ref,
+            "workspace_id": "ws_main",
+            "agent_id": "agent_release",
+            "scopes": ["write:repo/feature/*"],
+            "status": "revoked",
+            "expires_at": "2999-06-11T12:00:00+00:00",
+            "audit_event_id": "evt_revoke",
+            "raw_key": "wsk_secret",
+            "key_hash": "hash_secret",
+            "raw_tool_input": {"secret": "hidden"},
+        }
+
 
 def test_approve_grant_request_proxies_client_and_returns_allowlisted_fields() -> None:
     client = FakeDecisionClient()
@@ -782,6 +799,41 @@ def test_reject_grant_request_proxies_client_and_returns_allowlisted_fields() ->
     assert client.rejected == [("grq_x", "out of policy")]
     assert result["status"] == "rejected"
     assert result["audit_event_id"] == "evt_decision"
+
+
+def test_revoke_grant_proxies_client_and_returns_allowlisted_fields() -> None:
+    client = FakeDecisionClient()
+    tools = VinctorWriteTools(client)
+
+    result = tools.revoke_grant("grt_x")
+
+    assert client.revoked == ["grt_x"]
+    assert result == {
+        "grant_id": "grnt_revoked",
+        "grant_ref": "grt_x",
+        "workspace_id": "ws_main",
+        "agent_id": "agent_release",
+        "status": "revoked",
+        "expires_at": "2999-06-11T12:00:00+00:00",
+        "audit_event_id": "evt_revoke",
+    }
+
+
+def test_revoke_grant_diagnostic_mode_includes_scope_fields() -> None:
+    tools = VinctorWriteTools(FakeDecisionClient(), output_mode="diagnostic")
+
+    result = tools.revoke_grant("grt_x")
+
+    assert result["scopes"] == ["write:repo/feature/*"]
+
+
+def test_revoke_grant_never_leaks_raw_keys_hashes_or_internals() -> None:
+    tools = VinctorWriteTools(FakeDecisionClient(), output_mode="diagnostic")
+
+    blob = json.dumps(tools.revoke_grant("grt_x"))
+
+    for forbidden in ("wsk_", "hash_secret", "raw_tool_input", "raw_key"):
+        assert forbidden not in blob
 
 
 def test_decision_diagnostic_mode_includes_scope_fields() -> None:
@@ -834,6 +886,7 @@ def test_register_write_tools_adds_approve_and_reject() -> None:
     assert sorted(mcp.tools) == [
         "vinctor_approve_grant_request",
         "vinctor_reject_grant_request",
+        "vinctor_revoke_grant",
     ]
 
 
@@ -847,3 +900,13 @@ def test_write_tool_descriptions_state_operator_write_action() -> None:
         assert "operator" in description.lower()
         assert "audit" in description.lower()
         assert "own" in description.lower()
+
+
+def test_revoke_tool_description_states_operator_write_action() -> None:
+    mcp = FakeMcp()
+
+    register_write_tools(mcp, FakeDecisionClient())
+
+    description = mcp.descriptions["vinctor_revoke_grant"]
+    assert "operator" in description.lower()
+    assert "audit" in description.lower()

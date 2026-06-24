@@ -327,8 +327,9 @@ Remaining (deferred):
 Status: **Safe core shipped 2026-06 (`#69`)** — opt-in (`VINCTOR_MCP_WRITE`, default
 off) `vinctor_approve_grant_request` / `vinctor_reject_grant_request` proxying the
 workspace-key operator endpoints (the service audits and structurally prevents
-execution-agent self-approval). **Remaining:** `grants.revoke` (needs a new HTTP
-revoke endpoint first) and `grants.issue` (service-authorized only).
+execution-agent self-approval). `vinctor_revoke_grant` shipped 2026-06 (proxies the
+existing `POST /v1/grants/{grant_ref}/revoke` endpoint, same opt-in + audit
+discipline). **Remaining:** `grants.issue` (service-authorized only).
 
 Goal: Extend the MCP server from read-only inspection into a privileged approval
 and grant administration interface.

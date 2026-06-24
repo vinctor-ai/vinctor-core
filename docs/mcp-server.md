@@ -90,13 +90,14 @@ MCP client tokens through to `vinctor-service`.
 ### Opt-in write tools (Phase 2 safe core)
 
 The server is **read-only by default**. Setting `VINCTOR_MCP_WRITE=1` registers
-two additional **operator write tools** — `vinctor_approve_grant_request` and
-`vinctor_reject_grant_request` — which proxy the workspace-key-authed operator
-endpoints (`POST /v1/grant-requests/{id}/approve|reject`). The service
-authenticates, audits the decision (returns `audit_event_id`), and structurally
-prevents execution agents from approving their own requests; the MCP server mints
-or revokes nothing and adds no new credential. Output is allowlist-shaped like the
-read tools. Leave `VINCTOR_MCP_WRITE` unset for a strictly read-only deployment.
+three additional **operator write tools** — `vinctor_approve_grant_request`,
+`vinctor_reject_grant_request`, and `vinctor_revoke_grant` — which proxy the
+workspace-key-authed operator endpoints (`POST /v1/grant-requests/{id}/approve|reject`
+and `POST /v1/grants/{grant_ref}/revoke`). The service authenticates, audits the
+action (returns `audit_event_id`), and structurally prevents execution agents from
+approving their own requests; the MCP server mints nothing and adds no new
+credential. Output is allowlist-shaped like the read tools. Leave `VINCTOR_MCP_WRITE`
+unset for a strictly read-only deployment.
 
 ## Model-Visible Output Policy
 

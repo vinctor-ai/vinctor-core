@@ -72,6 +72,8 @@ class WriteVinctorClient(Protocol):
         reason: str | None = None,
     ) -> dict[str, Any]: ...
 
+    def revoke_grant(self, grant_ref: str) -> dict[str, Any]: ...
+
 
 class ToolRegistrar(Protocol):
     def tool(self, *, name: str, description: str) -> Any: ...
@@ -380,6 +382,13 @@ class VinctorWriteTools:
             self._client.reject_grant_request(request_id, reason=reason)
         )
 
+    def revoke_grant(self, grant_ref: str) -> dict[str, Any]:
+        body = self._client.revoke_grant(grant_ref)
+        return {
+            **allowlist_object(body, self._grant_fields()),
+            "audit_event_id": body.get("audit_event_id"),
+        }
+
     def _shape_decision(self, body: dict[str, Any]) -> dict[str, Any]:
         shaped: dict[str, Any] = {
             **allowlist_object(body, self._grant_request_fields()),
@@ -432,6 +441,16 @@ def register_write_tools(
             "is allowlist-shaped and omits raw keys, hashes, and service internals."
         ),
     )(tools.reject_grant_request)
+    mcp.tool(
+        name="vinctor_revoke_grant",
+        description=(
+            "Operator write action: revoke an active grant by grant_ref via the "
+            "workspace-key authorized operator endpoint. The service authenticates "
+            "and audits the revocation (returns audit_event_id); the MCP server "
+            "issues nothing. Output is allowlist-shaped and omits raw keys, hashes, "
+            "and service internals."
+        ),
+    )(tools.revoke_grant)
     return tools
 
 

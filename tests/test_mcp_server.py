@@ -73,6 +73,9 @@ class FakeClient:
     ) -> dict[str, object]:
         return {"request_id": request_id, "status": "rejected"}
 
+    def revoke_grant(self, grant_ref: str) -> dict[str, object]:
+        return {"grant_ref": grant_ref, "status": "revoked"}
+
 
 def test_load_config_requires_mcp_workspace_key_not_agent_key() -> None:
     with pytest.raises(ValueError, match="VINCTOR_MCP_WORKSPACE_KEY"):
@@ -189,8 +192,10 @@ def test_create_stdio_server_omits_write_tools_when_write_disabled() -> None:
 
     assert "vinctor_approve_grant_request" not in server.tools
     assert "vinctor_reject_grant_request" not in server.tools
+    assert "vinctor_revoke_grant" not in server.tools
     assert not any("approve" in name for name in server.tools)
     assert not any("reject" in name for name in server.tools)
+    assert not any("revoke" in name for name in server.tools)
 
 
 def test_create_stdio_server_registers_write_tools_when_write_enabled() -> None:
@@ -206,6 +211,7 @@ def test_create_stdio_server_registers_write_tools_when_write_enabled() -> None:
 
     assert "vinctor_approve_grant_request" in server.tools
     assert "vinctor_reject_grant_request" in server.tools
+    assert "vinctor_revoke_grant" in server.tools
 
 
 def test_server_module_entrypoint_invokes_main() -> None:

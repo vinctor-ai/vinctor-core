@@ -225,6 +225,31 @@ def test_client_rejects_grant_request_with_decision_reason() -> None:
     assert json.loads(request["body"]) == {"decision_reason": "out of policy"}
 
 
+def test_client_revokes_grant_sends_no_body() -> None:
+    client, conn = make_client(
+        FakeResponse(200, {"grant_ref": "grt_x", "status": "revoked"})
+    )
+
+    body = client.revoke_grant("grt_x")
+
+    assert body == {"grant_ref": "grt_x", "status": "revoked"}
+    request = conn.requests[0]
+    assert request["method"] == "POST"
+    assert request["path"] == "/v1/grants/grt_x/revoke"
+    assert request["headers"]["X-Workspace-Key"] == "wsk_demo"
+    assert request["body"] is None
+
+
+def test_client_revoke_encodes_path_preventing_traversal() -> None:
+    client, conn = make_client(FakeResponse(200, {"grant_ref": "x"}))
+
+    client.revoke_grant("../../../healthz")
+
+    path = conn.requests[0]["path"]
+    assert path == "/v1/grants/..%2F..%2F..%2Fhealthz/revoke"
+    assert "../" not in path
+
+
 def test_client_approves_without_reason_sends_no_body() -> None:
     client, conn = make_client(FakeResponse(200, {"request_id": "grq_x"}))
 
