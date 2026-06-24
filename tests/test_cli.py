@@ -1136,6 +1136,87 @@ def test_vinctor_cli_tokens_revoke_unknown_errors(tmp_path: Path) -> None:
     assert status != 0
 
 
+def test_vinctor_cli_operator_grants_revoke_then_enforce_denies(tmp_path: Path) -> None:
+    handle = _start_service(tmp_path, scopes=("execute:ci/test",))
+    try:
+        common = _common_args(handle, json_output=True)
+        revoked = _run([*common, "operator", "grants", "revoke", handle.grant_ref])
+        assert revoked["grant_ref"] == handle.grant_ref
+        assert revoked["status"] == "revoked"
+        assert revoked["audit_event_id"]
+
+        # The text summary surfaces the grant_ref + audit_event_id.
+        text_common = _common_args(handle, json_output=False)
+        summary = _run_text([*text_common, "operator", "grants", "revoke", handle.grant_ref])
+        assert handle.grant_ref in summary
+        assert "audit_event_id=" in summary
+
+        # A subsequent enforce on the revoked grant is denied with "is revoked".
+        stdout, stderr = StringIO(), StringIO()
+        status = run_vinctor(
+            [
+                *common,
+                "agent",
+                "enforce",
+                "--grant-ref",
+                handle.grant_ref,
+                "--action",
+                "execute",
+                "--resource",
+                "ci/test",
+            ],
+            stdout=stdout,
+            stderr=stderr,
+        )
+        assert status != 0
+        decision = json.loads(stdout.getvalue())
+        assert decision["decision"] == "deny"
+        assert "is revoked" in decision["reason"]
+    finally:
+        _stop_service(handle)
+
+
+def test_vinctor_cli_operator_grants_revoke_unknown_errors(tmp_path: Path) -> None:
+    handle = _start_service(tmp_path, scopes=("execute:ci/test",))
+    try:
+        common = _common_args(handle, json_output=True)
+        stdout, stderr = StringIO(), StringIO()
+        status = run_vinctor(
+            [*common, "operator", "grants", "revoke", "grt_does_not_exist"],
+            stdout=stdout,
+            stderr=stderr,
+        )
+        assert status != 0
+        assert stdout.getvalue() == ""
+        assert "Traceback" not in stderr.getvalue()
+        assert "404" in stderr.getvalue()
+    finally:
+        _stop_service(handle)
+
+
+def test_vinctor_cli_operator_grants_revoke_requires_workspace_key(tmp_path: Path) -> None:
+    handle = _start_service(tmp_path, scopes=("execute:ci/test",))
+    try:
+        stdout, stderr = StringIO(), StringIO()
+        status = run_vinctor(
+            [
+                "--endpoint",
+                handle.endpoint,
+                "operator",
+                "grants",
+                "revoke",
+                handle.grant_ref,
+            ],
+            stdout=stdout,
+            stderr=stderr,
+        )
+        assert status != 0
+        assert "Traceback" not in stderr.getvalue()
+        assert "workspace key is required" in stderr.getvalue()
+    finally:
+        _stop_service(handle)
+
+
 def _mint_subject_token(db_path: Path) -> tuple[str, str]:
     conn = sqlite3.connect(db_path)
     try:

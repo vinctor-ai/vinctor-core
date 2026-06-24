@@ -248,6 +248,11 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
     revoke_token = token_commands.add_parser("revoke")
     revoke_token.add_argument("token_id")
 
+    grants = resources.add_parser("grants")
+    grant_commands = grants.add_subparsers(dest="grants_command", required=True)
+    revoke_grant = grant_commands.add_parser("revoke")
+    revoke_grant.add_argument("grant_ref")
+
     require_boundary = resources.add_parser("require-boundary")
     rb_commands = require_boundary.add_subparsers(dest="require_boundary_command", required=True)
     rb_enable = rb_commands.add_parser("enable")
@@ -517,6 +522,9 @@ def _operator(args: argparse.Namespace, *, stdout: TextIO) -> None:
     if resource == "tokens":
         _operator_tokens(args, stdout=stdout)
         return
+    if resource == "grants":
+        _operator_grants(args, stdout=stdout)
+        return
     if resource == "require-boundary":
         _operator_require_boundary(args, stdout=stdout)
         return
@@ -655,6 +663,28 @@ def _operator_requests(args: argparse.Namespace, *, stdout: TextIO) -> None:
         _emit(args, body, summary, stdout=stdout)
         return
     raise CliError(f"unknown requests command: {command}")
+
+
+def _operator_grants(args: argparse.Namespace, *, stdout: TextIO) -> None:
+    command = args.grants_command
+    if command == "revoke":
+        status, body = _request_json(
+            args.endpoint,
+            "POST",
+            f"/v1/grants/{args.grant_ref}/revoke",
+            headers={"X-Workspace-Key": _required(args.workspace_key, "workspace key")},
+        )
+        _raise_for_status(status, body)
+        _emit(
+            args,
+            body,
+            f"revoked grant {body.get('grant_ref', args.grant_ref)} "
+            f"status={body.get('status', '-')} "
+            f"audit_event_id={body.get('audit_event_id', '-')}",
+            stdout=stdout,
+        )
+        return
+    raise CliError(f"unknown grants command: {command}")
 
 
 def _operator_rules(args: argparse.Namespace, *, stdout: TextIO) -> None:

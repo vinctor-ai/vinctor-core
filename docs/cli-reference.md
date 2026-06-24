@@ -271,14 +271,21 @@ and `timeline` views.
 
 **Consumed via** `--grant-ref` / `VINCTOR_GRANT_REF` when a call is enforced.
 
+**Revoked by** `vinctor operator grants revoke <grant_ref>` — like `operator
+requests`, this is an HTTP + workspace-key call (it POSTs `/v1/grants/{ref}/revoke`
+so the service authenticates and audits the revocation, returning an
+`audit_event_id`). It needs `--endpoint` / `VINCTOR_ENDPOINT` and `--workspace-key`
+/ `VINCTOR_WORKSPACE_KEY`.
+
+```bash
+vinctor operator grants revoke grt_…
+```
+
 > [!NOTE]
-> **Grant lookup and revoke are HTTP-only — there is no CLI subcommand yet.**
-> Call the service directly with the workspace key:
+> **Grant lookup is HTTP-only — there is no CLI subcommand yet.** Call the service
+> directly with the workspace key:
 >
 > ```bash
-> # revoke a grant by ref
-> curl -X POST "$VINCTOR_ENDPOINT/v1/grants/grt_…/revoke" \
->   -H "X-Workspace-Key: $VINCTOR_WORKSPACE_KEY"
 > # fetch a grant by ref
 > curl "$VINCTOR_ENDPOINT/v1/grants/grt_…" \
 >   -H "X-Workspace-Key: $VINCTOR_WORKSPACE_KEY"
@@ -422,6 +429,7 @@ recoverable** — capture them when shown. Rotate with `operator keys rotate`.
 | `operator rules` | `create`, `list`, `disable` |
 | `operator bounds` | `set`, `show` |
 | `operator tokens` | `list`, `revoke` |
+| `operator grants` | `revoke` |
 | `operator require-subject-token` | `enable`, `disable`, `show` |
 | `operator require-pop` | `enable`, `disable`, `show` |
 | `operator require-boundary` | `enable`, `disable`, `show` |
