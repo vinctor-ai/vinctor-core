@@ -271,8 +271,12 @@ V1 service contract boundary:
 - Deployment-ops runbooks (TLS/reverse proxy, firewall, systemd, logs, SQLite/
   volume backup) are written in `docs/deployment/operational-runbooks.md`.
   Opt-in structured access logging + a `/metrics` Prometheus endpoint shipped
-  (off by default, `#68`). Remaining deployment work: Docker image publishing /
-  tagged release artifacts (needs registry/PyPI credentials).
+  (off by default, `#68`). Tagged-release CI shipped (`.github/workflows/
+  release.yml`): a `v*` tag builds the sdist/wheel + GitHub Release artifacts and
+  pushes the GHCR image via the automatic `GITHUB_TOKEN` (no extra creds); PyPI
+  publish is opt-in (`PUBLISH_PYPI` repo variable + Trusted Publishing or a
+  `PYPI_API_TOKEN` secret). Remaining: the user cuts the first real tag when
+  ready, and (if desired) enables PyPI publishing.
 - Keep local config-file auto-reuse and OS keychain integration deferred until
   the local bootstrap UX is stable enough for a separate ADR-backed slice.
 - Keep production deployment hardening deferred. The current self-hosting

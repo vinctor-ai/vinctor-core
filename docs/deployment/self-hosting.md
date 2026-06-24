@@ -39,6 +39,40 @@ and runtime operations.
 For a concrete design-partner preview layout with Caddy TLS termination, see
 [Single-Node Preview Deployment](preview-runbook.md).
 
+## Container Images And Releases
+
+`.github/workflows/release.yml` cuts a release when you push a version tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Using the workflow's automatic `GITHUB_TOKEN` (no extra credentials), the tag build:
+
+- builds the sdist + wheel and attaches them to the GitHub Release, and
+- builds and pushes the container image to GHCR as
+  `ghcr.io/<owner>/vinctor-core:<version>` and `:latest`.
+
+Pull and run the published image (the `CMD` is `vinctor service serve`):
+
+```bash
+docker run -p 8765:8765 -v vinctor-data:/data ghcr.io/<owner>/vinctor-core:latest
+```
+
+A `workflow_dispatch` run is a build-only smoke check (it does not push or publish).
+
+**Publishing to PyPI is opt-in.** To enable it:
+
+1. Set the repository variable `PUBLISH_PYPI=true`.
+2. Create a GitHub Environment named `pypi` (the publish job declares
+   `environment: pypi`, so the job will not start until it exists; optionally add
+   required reviewers to gate publishes).
+3. Configure [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
+   for this repo (recommended — no stored token), or add a `PYPI_API_TOKEN` secret
+   and pass it to the publish step (see the commented `with:` block in
+   `release.yml`).
+
 ## What This Does Not Provide
 
 - hosted Vinctor service
