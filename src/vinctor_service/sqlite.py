@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -49,7 +50,6 @@ from vinctor_service.models import (
     V1EnforceRequest,
     V1EnforceResponse,
 )
-from vinctor_service.pop import PopReplayCache
 from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS
 from vinctor_service.subject_tokens import mint_subject_token
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
@@ -204,6 +204,15 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL,
             PRIMARY KEY (workspace_id, agent_id)
         );
+
+        CREATE TABLE IF NOT EXISTS pop_replay_nonces (
+            token_id TEXT NOT NULL,
+            nonce TEXT NOT NULL,
+            ts INTEGER NOT NULL,
+            PRIMARY KEY (token_id, nonce)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pop_replay_nonces_ts
+        ON pop_replay_nonces(ts);
         """
     )
     _ensure_grant_request_metadata_columns(conn)
@@ -268,6 +277,13 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         VALUES (?, ?)
         """,
         (8, datetime.now(UTC).isoformat()),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (9, datetime.now(UTC).isoformat()),
     )
     conn.commit()
 
@@ -769,6 +785,59 @@ class SQLiteGrantRequestRepository:
             )
 
 
+class SQLiteReplayStore:
+    """Durable, cross-process anti-replay for PoP nonces (ADR 0007 arc J).
+
+    Drop-in for :class:`vinctor_service.pop.PopReplayCache`: duck-typed on the
+    exact ``check_and_record`` signature, so ``verify_pop`` is unchanged. Unlike
+    the in-memory cache, state survives a restart and is correct across processes
+    because the ``(token_id, nonce)`` PRIMARY KEY enforces dedup at the db file.
+
+    A bad or stale proof never reaches this store: ``verify_pop`` calls
+    ``check_and_record`` only AFTER the mac compare + freshness window pass, so no
+    durable row is ever written for a forged or expired proof.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, max_entries: int = 10000) -> None:
+        self._conn = conn
+        self._max = max_entries
+        # The live SQLite service shares ONE connection (check_same_thread=False)
+        # across ThreadingHTTPServer threads; serialize the multi-statement
+        # transaction within-process. The PK + IntegrityError covers cross-process
+        # / cross-thread races that slip past the lock.
+        self._lock = threading.Lock()
+
+    def check_and_record(
+        self, *, token_id: str, nonce: str, ts: int, now_unix: int, skew: int
+    ) -> bool:
+        cutoff = now_unix - skew
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM pop_replay_nonces WHERE ts < ?", (cutoff,)
+            )
+            row = self._conn.execute(
+                "SELECT 1 FROM pop_replay_nonces WHERE token_id = ? AND nonce = ?",
+                (token_id, nonce),
+            ).fetchone()
+            if row is not None:
+                return False  # replay
+            count = self._conn.execute(
+                "SELECT COUNT(*) FROM pop_replay_nonces"
+            ).fetchone()[0]
+            if count >= self._max:
+                return False  # full of fresh entries -> fail closed
+            try:
+                self._conn.execute(
+                    "INSERT INTO pop_replay_nonces (token_id, nonce, ts) "
+                    "VALUES (?, ?, ?)",
+                    (token_id, nonce, ts),
+                )
+            except sqlite3.IntegrityError:
+                # concurrent insert (cross-process/thread) of the same key
+                return False  # replay
+        return True
+
+
 class SQLiteSubjectTokenRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
@@ -1091,7 +1160,7 @@ class SQLiteV1Service:
         self.agent_enforcement_settings_repository = SQLiteAgentEnforcementSettingsRepository(
             self.conn
         )
-        self._pop_replay = PopReplayCache()
+        self._pop_replay = SQLiteReplayStore(self.conn)
 
     def insert_grant(self, grant: Grant) -> None:
         insert_grant(self.conn, grant)

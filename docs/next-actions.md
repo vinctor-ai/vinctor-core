@@ -300,9 +300,17 @@ V1 service contract boundary:
 `#65`, per-action binding `#66`, stdlib HMAC PoP `#67`) and ADR 0009-B follow-ups
 (workspace-default + per-agent override + policy-file surface `#64`).
 
+**Shipped 2026-06** — durable/shared PoP replay cache: `SQLiteReplayStore`
+(schema v9, table `pop_replay_nonces`) drops in behind the existing
+`check_and_record` contract, so anti-replay is now restart-durable and
+cross-process-correct (the `(token_id, nonce)` PRIMARY KEY enforces dedup at the
+db file; the in-memory `PopReplayCache` stays for `in_memory.py` / tests). This
+closes the per-process replay residual. Multi-process throughput tuning
+(`PRAGMA journal_mode=WAL` + `busy_timeout`) remains an optional further
+follow-up; the PK-enforced atomic dedup is already cross-process-correct without
+it.
+
 Remaining (deferred):
-- **Shared/durable PoP replay cache** — the current cache is per-process, so
-  anti-replay is single-process only (a ~2×skew replay residual per extra worker).
 - **Opt-in `require_pop` mandate** — let an operator force PoP for a subject/
   workspace (mirrors `require_boundary` / `require_subject_token`).
 - **Asymmetric DPoP / mTLS PoP** (Vinctor never holds the secret) — needs a crypto
