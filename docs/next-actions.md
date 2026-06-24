@@ -261,6 +261,21 @@ V1 service contract boundary:
   - **E** MCP Phase 2 safe core — opt-in operator `approve`/`reject` write tools
     (`#69`).
   Test suite 351 → 484; dependencies still stdlib + PyYAML; SQLite schema v7.
+- 2026-06 backlog follow-on program (F–L), all merged to main and adversarially
+  reviewed:
+  - **F** MCP `vinctor_revoke_grant` (`#71`); **G** tagged-release CI — GHCR image
+    + GitHub Release artifacts on the automatic token, opt-in PyPI (`#72`).
+  - **H** MCP `vinctor_issue_grant` — completes the Phase 2 write set
+    (approve/reject/revoke/issue) (`#73`).
+  - **I** opt-in `require_pop` operator mandate (schema v8, the third enforcement
+    flag) (`#74`).
+  - **J** durable SQLite-backed PoP replay store (schema v9) — restart-durable +
+    cross-process-correct anti-replay (`#75`).
+  - **K** CLI cosmetics — `enforce -o json` single object on deny + `policy export`
+    round-trip symmetry (`#76`).
+  - **L** MCP Phase 3 composite read-only reports (`vinctor_grant_report` /
+    `vinctor_boundary_report`) — zero new service surface (`#77`).
+  Test suite 484 → 518; dependencies still stdlib + PyYAML; SQLite schema v7 → v9.
 
 ## Next
 
@@ -310,13 +325,21 @@ closes the per-process replay residual. Multi-process throughput tuning
 follow-up; the PK-enforced atomic dedup is already cross-process-correct without
 it.
 
-Remaining (deferred):
-- **Opt-in `require_pop` mandate** — let an operator force PoP for a subject/
-  workspace (mirrors `require_boundary` / `require_subject_token`).
+**Shipped 2026-06** — opt-in `require_pop` operator mandate (`#74`, schema v8, the
+third enforcement flag): when set for a (workspace, agent), a delegated enforce
+whose subject token is not PoP-bound (`pop_secret is None`) fails closed with the
+generic 403 + audit `reason_code=pop_required`. Single-purpose (composes with
+`require_subject_token` for "must present a PoP-bound token"); tenant-isolated on
+`trusted_ws`; `operator require-pop enable/disable/show`.
+
+Remaining (deferred — each needs a founder decision / posture change, NOT
+autonomously taken):
 - **Asymmetric DPoP / mTLS PoP** (Vinctor never holds the secret) — needs a crypto
-  dependency; the shipped symmetric HMAC-PoP fits the current minimal-dep posture.
+  dependency, which reverses the deliberate stdlib-only / symmetric-HMAC posture.
+  Needs an explicit founder decision before adoption.
 - **True single-use tokens** — deferred as retry-fragile; per-action binding +
-  revocation + short TTL + HMAC-PoP already bound the replay window.
+  revocation + short TTL + HMAC-PoP already bound the replay window. Revisit only
+  if a concrete single-use requirement appears.
 
 ### Measurement / adoption (not autonomously reproducible)
 
@@ -329,10 +352,13 @@ Remaining (deferred):
 
 ### Low-priority cosmetics
 
-- `vinctor agent enforce -o json` emits two JSON objects on a deny (stderr error
-  line + stdout decision); naive single-stream parsers may trip.
-- `vinctor operator policy export` emits `max_ttl_seconds` where the input used
-  `max_ttl` (round-trip remains faithful).
+**Both shipped 2026-06 (`#76`):**
+- `vinctor agent enforce -o json` now emits a single JSON object on deny (the
+  decision on stdout; the stderr error line is suppressed in JSON mode for the
+  deny case only, exit code unchanged).
+- `vinctor operator policy export` now emits the `max_ttl` key the input used (as
+  `"<N>s"`) for a symmetric, idempotent round-trip (apply still accepts the legacy
+  `max_ttl_seconds` key).
 
 ### MCP Phase 2 - Approval / Grant Administration
 
