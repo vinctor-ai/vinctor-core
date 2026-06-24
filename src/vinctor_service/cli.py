@@ -1639,15 +1639,19 @@ def _scopes(body: dict[str, object], key: str = "requested_scopes") -> str:
 
 
 def _request_text(body: dict[str, object]) -> str:
-    routing = body.get("routing_hint") or "-"
-    queue_reason = body.get("queue_reason") or body.get("routing_reason") or "-"
     metadata = _metadata_text(body)
-    return (
+    head = (
         f"{body['request_id']} status={body['status']} requester={body['requester_agent_id']} "
         f"target={body['target_agent_id']} ttl={body['requested_ttl_seconds']} "
         f"scopes={_scopes(body)} issued={body.get('issued_grant_ref') or '-'} "
-        f"routing={routing} queue_reason={queue_reason} {metadata} reason={body['reason']}"
     )
+    # Routing/queue_reason reflect the pending-review intake and are stale once the
+    # request is decided; status is authoritative, so omit them for decided requests.
+    if body.get("status") == "pending":
+        routing = body.get("routing_hint") or "-"
+        queue_reason = body.get("queue_reason") or body.get("routing_reason") or "-"
+        head += f"routing={routing} queue_reason={queue_reason} "
+    return f"{head}{metadata} reason={body['reason']}"
 
 
 def _request_list_text(requests: object) -> str:
@@ -1705,7 +1709,7 @@ def _inbox_text(requests: list[dict[str, object]]) -> str:
             f"{request['request_id']} risk={request['risk']} "
             f"recommended={request['recommended_action']} ttl={request['requested_ttl_seconds']} "
             f"reason={request.get('queue_reason') or request.get('routing_reason') or '-'} "
-            f"scopes={_scopes(request)} metadata={_metadata_text(request)}"
+            f"scopes={_scopes(request)} {_metadata_text(request)}"
         )
     return "\n".join(lines)
 

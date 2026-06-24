@@ -7,6 +7,7 @@ from typing import Protocol
 
 from vinctor_core.models import Grant
 from vinctor_service.boundary_http import WorkspaceIdentity
+from vinctor_service.grant_http import _BAD_REQUEST_REASONS
 from vinctor_service.models import (
     AutoApprovalEvaluationResult,
     GrantRequest,
@@ -316,8 +317,6 @@ def _auto_approve_grant_request(
     )
 
     if result.status == "failed":
-        if result.reason == "grant_request_not_found":
-            return _error(404, result.reason, result.reason)
         if result.reason in {
             "no_matching_rule",
             "scope_outside_rule",
@@ -336,7 +335,8 @@ def _auto_approve_grant_request(
                     },
                 },
             )
-        return _error(409, result.reason, result.reason)
+        status_code = _decision_failure_status(result.reason)
+        return _error(status_code, result.reason, result.reason)
 
     if result.request is None:
         return _error(503, "service_unavailable", "auto-approval failed")
@@ -383,7 +383,7 @@ def _decide_grant_request(
         )
 
     if result.status == "failed":
-        status_code = 404 if result.reason == "grant_request_not_found" else 409
+        status_code = _decision_failure_status(result.reason)
         return _error(status_code, result.reason, result.reason)
     if result.request is None:
         return _error(503, "service_unavailable", "grant request decision failed")
@@ -633,5 +633,28 @@ def _grant_body(grant: Grant) -> dict[str, object]:
     }
 
 
+def _decision_failure_status(reason: str) -> int:
+    if reason == "grant_request_not_found":
+        return 404
+    if reason == "grant_request_not_pending":
+        return 409
+    if reason in _ISSUABLE_BOUNDS_REASONS:
+        return 403
+    if reason in _BAD_REQUEST_REASONS:
+        return 400
+    # The issuance attempt was rejected (e.g. out of bounds); mirror the direct
+    # POST /v1/grants path (ADR 0008) and treat the residual as forbidden.
+    return 403
+
+
 def _error(status_code: int, error: str, reason: str) -> V1HttpResponse:
     return V1HttpResponse(status_code=status_code, body={"error": error, "reason": reason})
+
+
+# Issuable-bounds violations surfaced when the approval path attempts issuance.
+# These match the direct POST /v1/grants 403 mapping (grant_http.py, ADR 0008).
+_ISSUABLE_BOUNDS_REASONS = {
+    "scope_outside_issuable_bounds",
+    "ttl_exceeds_issuable_max",
+    "issuable_bounds_not_found",
+}

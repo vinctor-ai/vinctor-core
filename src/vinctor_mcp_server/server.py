@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import argparse
+import sys
+from collections.abc import Callable
 from importlib.metadata import version
 from inspect import signature
-from typing import Any
+from typing import Any, TextIO
 
 from vinctor_mcp_server.config import VinctorMcpConfig, load_config
 from vinctor_mcp_server.service_client import VinctorServiceClient
@@ -33,9 +36,27 @@ def create_stdio_server(
     return mcp
 
 
-def main() -> None:
-    mcp = create_stdio_server()
+def main(
+    argv: list[str] | None = None,
+    *,
+    create_server: Callable[[], Any] = create_stdio_server,
+    stderr: TextIO = sys.stderr,
+) -> int:
+    _parser().parse_args(argv)
+    try:
+        mcp = create_server()
+    except (ValueError, RuntimeError) as error:
+        print(f"error: {error}", file=stderr)
+        raise SystemExit(1) from None
     mcp.run(transport="stdio")
+    return 0
+
+
+def _parser() -> argparse.ArgumentParser:
+    return argparse.ArgumentParser(
+        prog="vinctor-mcp-server",
+        description="Run the Vinctor MCP stdio server.",
+    )
 
 
 def _load_fastmcp() -> type[Any]:

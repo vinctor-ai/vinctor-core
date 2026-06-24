@@ -308,6 +308,57 @@ def test_vinctor_cli_manual_review_flow_and_audit_filter(tmp_path: Path) -> None
         _stop_service(handle)
 
 
+def test_vinctor_cli_requests_text_display_no_doubled_metadata_or_stale_routing(
+    tmp_path: Path,
+) -> None:
+    handle = _start_service(tmp_path, scopes=("write:repo/vinctor-core/*",))
+    try:
+        common = _common_args(handle, json_output=True)
+        created = _run(
+            [
+                *common,
+                "agent",
+                "requests",
+                "create",
+                "--scope",
+                "write:repo/vinctor-core/README.md",
+                "--ttl",
+                "30m",
+                "--reason",
+                "edit core README",
+                "--task-id",
+                "task-docs",
+            ]
+        )
+        request_id = created["request_id"]
+        text_common = _common_args(handle, json_output=False)
+
+        inbox_text = _run_text([*text_common, "operator", "requests", "inbox"])
+        assert "metadata=metadata=" not in inbox_text
+        assert "metadata=task_id=task-docs" in inbox_text
+
+        _run(
+            [
+                *common,
+                "operator",
+                "requests",
+                "approve",
+                request_id,
+                "--reason",
+                "manual operator review",
+            ]
+        )
+
+        view_text = _run_text(
+            [*text_common, "operator", "requests", "view", request_id]
+        )
+        assert "status=approved" in view_text
+        assert "routing=" not in view_text
+        assert "queue_reason=" not in view_text
+    finally:
+        _stop_service(handle)
+
+
 def test_vinctor_cli_audit_export_writes_workspace_jsonl(tmp_path: Path) -> None:
     db_path = tmp_path / "vinctor.sqlite"
     export_path = tmp_path / "audit.jsonl"
