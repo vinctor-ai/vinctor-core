@@ -328,12 +328,15 @@ Remaining (deferred):
 
 ### MCP Phase 2 - Approval / Grant Administration
 
-Status: **Safe core shipped 2026-06 (`#69`)** — opt-in (`VINCTOR_MCP_WRITE`, default
+Status: **Write set complete 2026-06 (`#69`)** — opt-in (`VINCTOR_MCP_WRITE`, default
 off) `vinctor_approve_grant_request` / `vinctor_reject_grant_request` proxying the
 workspace-key operator endpoints (the service audits and structurally prevents
 execution-agent self-approval). `vinctor_revoke_grant` shipped 2026-06 (proxies the
 existing `POST /v1/grants/{grant_ref}/revoke` endpoint, same opt-in + audit
-discipline). **Remaining:** `grants.issue` (service-authorized only).
+discipline). `vinctor_issue_grant` shipped 2026-06 (proxies the existing
+`POST /v1/grants` endpoint; the service enforces the workspace's issuable-scope
+bounds and max TTL and audits the issuance, same opt-in discipline — the MCP mints
+nothing). **Phase 2 write set complete.**
 
 Goal: Extend the MCP server from read-only inspection into a privileged approval
 and grant administration interface.

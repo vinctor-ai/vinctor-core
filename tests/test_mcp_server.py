@@ -193,9 +193,11 @@ def test_create_stdio_server_omits_write_tools_when_write_disabled() -> None:
     assert "vinctor_approve_grant_request" not in server.tools
     assert "vinctor_reject_grant_request" not in server.tools
     assert "vinctor_revoke_grant" not in server.tools
+    assert "vinctor_issue_grant" not in server.tools
     assert not any("approve" in name for name in server.tools)
     assert not any("reject" in name for name in server.tools)
     assert not any("revoke" in name for name in server.tools)
+    assert not any("issue" in name for name in server.tools)
 
 
 def test_create_stdio_server_registers_write_tools_when_write_enabled() -> None:
@@ -212,6 +214,7 @@ def test_create_stdio_server_registers_write_tools_when_write_enabled() -> None:
     assert "vinctor_approve_grant_request" in server.tools
     assert "vinctor_reject_grant_request" in server.tools
     assert "vinctor_revoke_grant" in server.tools
+    assert "vinctor_issue_grant" in server.tools
 
 
 def test_server_module_entrypoint_invokes_main() -> None:

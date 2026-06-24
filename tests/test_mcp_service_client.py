@@ -250,6 +250,34 @@ def test_client_revoke_encodes_path_preventing_traversal() -> None:
     assert "../" not in path
 
 
+def test_client_issues_grant_sends_exact_body() -> None:
+    client, conn = make_client(
+        FakeResponse(
+            201,
+            {"grant_ref": "grt_x", "status": "active", "audit_event_id": "evt_issue"},
+        )
+    )
+
+    body = client.issue_grant(
+        agent_id="aid", scopes=["read:x/*"], ttl_seconds=3600
+    )
+
+    assert body == {
+        "grant_ref": "grt_x",
+        "status": "active",
+        "audit_event_id": "evt_issue",
+    }
+    request = conn.requests[0]
+    assert request["method"] == "POST"
+    assert request["path"] == "/v1/grants"
+    assert request["headers"]["X-Workspace-Key"] == "wsk_demo"
+    assert json.loads(request["body"]) == {
+        "agent_id": "aid",
+        "scopes": ["read:x/*"],
+        "ttl_seconds": 3600,
+    }
+
+
 def test_client_approves_without_reason_sends_no_body() -> None:
     client, conn = make_client(FakeResponse(200, {"request_id": "grq_x"}))
 

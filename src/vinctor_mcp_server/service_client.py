@@ -130,6 +130,15 @@ class VinctorServiceClient:
     def revoke_grant(self, grant_ref: str) -> dict[str, Any]:
         return self._request_json("POST", f"/v1/grants/{_path_part(grant_ref)}/revoke")
 
+    def issue_grant(
+        self, *, agent_id: str, scopes: list[str], ttl_seconds: int
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            "/v1/grants",
+            body={"agent_id": agent_id, "scopes": list(scopes), "ttl_seconds": ttl_seconds},
+        )
+
     def _request_json(
         self,
         method: str,

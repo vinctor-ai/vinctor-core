@@ -74,6 +74,10 @@ class WriteVinctorClient(Protocol):
 
     def revoke_grant(self, grant_ref: str) -> dict[str, Any]: ...
 
+    def issue_grant(
+        self, *, agent_id: str, scopes: list[str], ttl_seconds: int
+    ) -> dict[str, Any]: ...
+
 
 class ToolRegistrar(Protocol):
     def tool(self, *, name: str, description: str) -> Any: ...
@@ -389,6 +393,17 @@ class VinctorWriteTools:
             "audit_event_id": body.get("audit_event_id"),
         }
 
+    def issue_grant(
+        self, agent_id: str, scopes: list[str], ttl_seconds: int
+    ) -> dict[str, Any]:
+        body = self._client.issue_grant(
+            agent_id=agent_id, scopes=scopes, ttl_seconds=ttl_seconds
+        )
+        return {
+            **allowlist_object(body, self._grant_fields()),
+            "audit_event_id": body.get("audit_event_id"),
+        }
+
     def _shape_decision(self, body: dict[str, Any]) -> dict[str, Any]:
         shaped: dict[str, Any] = {
             **allowlist_object(body, self._grant_request_fields()),
@@ -451,6 +466,17 @@ def register_write_tools(
             "and service internals."
         ),
     )(tools.revoke_grant)
+    mcp.tool(
+        name="vinctor_issue_grant",
+        description=(
+            "Operator write action: issue a grant for an agent (agent_id, scopes, "
+            "ttl_seconds) via the workspace-key authorized operator endpoint. The "
+            "service authenticates, enforces the workspace's issuable-scope bounds "
+            "and max TTL, and audits the issuance (returns audit_event_id); the MCP "
+            "server mints nothing. Output is allowlist-shaped and omits raw keys, "
+            "hashes, and service internals."
+        ),
+    )(tools.issue_grant)
     return tools
 
 
