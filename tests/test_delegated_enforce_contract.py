@@ -1,18 +1,26 @@
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 from vinctor_core import Grant
 from vinctor_core.audit import (
     EVENT_ACCESS_REJECTED,
     REASON_AGENT_GRANT_MISMATCH,
+    REASON_POP_REQUIRED,
     REASON_SUBJECT_TOKEN_INVALID,
 )
 from vinctor_service import (
     InMemoryAuditWriter,
     InMemoryGrantRepository,
+    InMemoryV1Service,
+    SQLiteV1Service,
 )
 from vinctor_service.keys import _hash_key, _new_key
 from vinctor_service.models import SubjectToken, V1DelegatedEnforceRequest
-from vinctor_service.repositories import InMemorySubjectTokenRepository
+from vinctor_service.pop import pop_canonical, pop_mac
+from vinctor_service.repositories import (
+    InMemoryAgentEnforcementSettingsRepository,
+    InMemorySubjectTokenRepository,
+)
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
@@ -359,3 +367,148 @@ def test_no_token_legacy_path_unchanged() -> None:
     assert response.decision == "permit"
     assert audit.events[0].identity_proven is False
     assert "identity_proven" not in audit.events[0].to_dict()
+
+
+# ---- require_pop mandate ---------------------------------------------------
+# require_pop denies a PRESENTED non-PoP subject token (pop_secret is None). It is
+# single-purpose: it does NOT govern the no-token case (that stays under
+# require_subject_token). The deny is the SAME leak-free generic 403 forbidden as the
+# other token denies; only the audit reason_code (pop_required) distinguishes it.
+
+
+def _require_pop_settings() -> InMemoryAgentEnforcementSettingsRepository:
+    settings = InMemoryAgentEnforcementSettingsRepository()
+    settings.set_require_pop(
+        workspace_id="ws_main", agent_id="agent_release", require_pop=True, now=NOW
+    )
+    return settings
+
+
+def test_require_pop_denies_presented_non_pop_token() -> None:
+    # require_pop ON + a valid-but-non-PoP token (pop_secret is None) => generic
+    # 403 forbidden, audited pop_required, identity NOT proven.
+    audit = InMemoryAuditWriter()
+    raw, _token, repo = _raw_and_repo()
+    response = delegated_enforce_v1_contract(
+        request(subject_token=raw),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=audit,
+        subject_token_repository=repo,
+        agent_enforcement_settings_repository=_require_pop_settings(),
+    )
+    assert response.status_code == 403
+    assert response.error == "forbidden"
+    assert response.decision is None
+    assert audit.events[-1].reason_code == REASON_POP_REQUIRED
+    # The deny must not leak that PoP specifically was the missing piece.
+    assert "pop" not in (response.reason or "").lower() or "possession" in (
+        response.reason or ""
+    ).lower()
+    # identity was never proven on a denied non-PoP token.
+    assert audit.events[-1].identity_proven is not True
+
+
+def test_require_pop_permits_pop_token_with_valid_proof() -> None:
+    # require_pop ON + a PoP token (pop_secret set) + valid proof => unchanged permit.
+    svc = InMemoryV1Service(grants=(grant(),))
+    svc.agent_enforcement_settings_repository.set_require_pop(
+        workspace_id="ws_main", agent_id="agent_release", require_pop=True, now=NOW
+    )
+    result = svc.mint_subject_token(
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        grant_ref="grt_main",
+        audience="pep_git_host",
+        ttl_seconds=300,
+        now=NOW,
+        pop=True,
+    )
+    assert result.pop_secret is not None
+    ts = int(NOW.timestamp())
+    mac = pop_mac(
+        result.pop_secret,
+        pop_canonical("write", "repo/feature/readme", ts, "n-1", result.token_id),
+    )
+    proof = f"{ts}.n-1.{mac}"
+    # The local request() helper has no proof field; build directly so the PoP
+    # proof reaches the enforce contract.
+    pop_request = V1DelegatedEnforceRequest(
+        pep_id="pep_git_host",
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        grant_ref="grt_main",
+        action="write",
+        resource="repo/feature/readme",
+        pep_workspace_id="ws_main",
+        subject_token=result.token,
+        subject_token_proof=proof,
+    )
+    r = svc.delegated_enforce(pop_request, now=NOW)
+    assert r.decision == "permit"
+    assert svc.audit_events[-1].identity_proven is True
+
+
+def test_require_pop_off_permits_non_pop_token() -> None:
+    # Default-off regression: no require_pop row => a non-PoP token still permits.
+    audit = InMemoryAuditWriter()
+    raw, token, repo = _raw_and_repo()
+    response = delegated_enforce_v1_contract(
+        request(subject_token=raw),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=audit,
+        subject_token_repository=repo,
+        agent_enforcement_settings_repository=InMemoryAgentEnforcementSettingsRepository(),
+    )
+    assert response.decision == "permit"
+    assert audit.events[-1].identity_proven is True
+    assert audit.events[-1].token_id == token.token_id
+
+
+def test_require_pop_alone_does_not_deny_missing_token() -> None:
+    # SINGLE-PURPOSE: require_pop ON but require_subject_token OFF + NO token =>
+    # the no-token path is unchanged (legacy permit). require_pop only catches a
+    # PRESENTED non-PoP token, never a missing one.
+    audit = InMemoryAuditWriter()
+    response = delegated_enforce_v1_contract(
+        request(subject_token=None),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=audit,
+        subject_token_repository=InMemorySubjectTokenRepository(),
+        agent_enforcement_settings_repository=_require_pop_settings(),
+    )
+    assert response.decision == "permit"
+    assert audit.events[-1].identity_proven is False
+
+
+def test_sqlite_require_pop_denies_presented_non_pop_token(tmp_path) -> None:
+    # Pins the production (SQLite) wiring: the require_pop mandate is consulted on
+    # the SQLite delegated path too, not only InMemory.
+    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    service = SQLiteV1Service(conn)
+    service.insert_grant(grant())
+    service.agent_enforcement_settings_repository.set_require_pop(
+        workspace_id="ws_main", agent_id="agent_release", require_pop=True, now=NOW
+    )
+    result = service.mint_subject_token(
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        grant_ref="grt_main",
+        audience="pep_git_host",
+        ttl_seconds=300,
+        now=NOW,
+        pop=False,
+    )
+    assert result.pop_secret is None
+    r = service.delegated_enforce(
+        request(subject_token=result.token),
+        now=NOW,
+    )
+    assert r.status_code == 403
+    assert r.error == "forbidden"
+    assert r.decision is None
+    # On the SQLite path the operator-only rejection code round-trips via the
+    # persisted ``reason`` field (reason_code is mirrored into it on rejection).
+    assert service.audit_events[-1].reason == REASON_POP_REQUIRED

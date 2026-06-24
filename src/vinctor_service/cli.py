@@ -273,6 +273,18 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
     rst_show.add_argument("target_agent_id", nargs="?")
     rst_show.add_argument("--workspace", action="store_true")
 
+    require_pop = resources.add_parser("require-pop")
+    rp_commands = require_pop.add_subparsers(dest="require_pop_command", required=True)
+    rp_enable = rp_commands.add_parser("enable")
+    rp_enable.add_argument("target_agent_id", nargs="?")
+    rp_enable.add_argument("--workspace", action="store_true")
+    rp_disable = rp_commands.add_parser("disable")
+    rp_disable.add_argument("target_agent_id", nargs="?")
+    rp_disable.add_argument("--workspace", action="store_true")
+    rp_show = rp_commands.add_parser("show")
+    rp_show.add_argument("target_agent_id", nargs="?")
+    rp_show.add_argument("--workspace", action="store_true")
+
     audit = resources.add_parser("audit")
     audit_commands = audit.add_subparsers(dest="audit_command", required=True)
     audit_list = audit_commands.add_parser("list")
@@ -505,6 +517,9 @@ def _operator(args: argparse.Namespace, *, stdout: TextIO) -> None:
         return
     if resource == "require-subject-token":
         _operator_require_subject_token(args, stdout=stdout)
+        return
+    if resource == "require-pop":
+        _operator_require_pop(args, stdout=stdout)
         return
     if resource == "audit":
         _operator_audit(args, stdout=stdout)
@@ -800,6 +815,39 @@ def _operator_require_subject_token(args: argparse.Namespace, *, stdout: TextIO)
         args,
         body,
         f"require_subject_token workspace={args.workspace_id} agent={agent_id} value={value}",
+        stdout=stdout,
+    )
+
+
+def _operator_require_pop(args: argparse.Namespace, *, stdout: TextIO) -> None:
+    service = _sqlite_service(args.db)
+    if args.workspace and args.target_agent_id is not None:
+        raise CliError("require-pop --workspace cannot be combined with an agent id")
+    agent_id = "" if args.workspace else (args.target_agent_id or args.agent_id)
+    repo = service.agent_enforcement_settings_repository
+    if args.require_pop_command in ("enable", "disable"):
+        value = args.require_pop_command == "enable"
+        repo.set_require_pop(
+            workspace_id=args.workspace_id,
+            agent_id=agent_id,
+            require_pop=value,
+            now=datetime.now(UTC),
+        )
+    else:  # show
+        setting = repo.get_require_pop_setting(
+            workspace_id=args.workspace_id, agent_id=agent_id
+        )
+        value = bool(setting)
+    body = {
+        "workspace_id": args.workspace_id,
+        "agent_id": agent_id,
+        "require_pop": value,
+        "scope": "workspace" if args.workspace else "agent",
+    }
+    _emit(
+        args,
+        body,
+        f"require_pop workspace={args.workspace_id} agent={agent_id} value={value}",
         stdout=stdout,
     )
 

@@ -200,6 +200,7 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             agent_id TEXT NOT NULL,
             require_boundary INTEGER NOT NULL DEFAULT 0,
             require_subject_token INTEGER NOT NULL DEFAULT 0,
+            require_pop INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (workspace_id, agent_id)
         );
@@ -211,6 +212,7 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
     _ensure_subject_tokens_bound_columns(conn)
     _ensure_subject_tokens_pop_secret_column(conn)
     _ensure_agent_enforcement_require_subject_token_column(conn)
+    _ensure_agent_enforcement_require_pop_column(conn)
     conn.execute(
         """
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
@@ -259,6 +261,13 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         VALUES (?, ?)
         """,
         (7, datetime.now(UTC).isoformat()),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (8, datetime.now(UTC).isoformat()),
     )
     conn.commit()
 
@@ -354,6 +363,18 @@ def _ensure_agent_enforcement_require_subject_token_column(conn: sqlite3.Connect
         conn.execute(
             "ALTER TABLE agent_enforcement_settings "
             "ADD COLUMN require_subject_token INTEGER NOT NULL DEFAULT 0"
+        )
+
+
+def _ensure_agent_enforcement_require_pop_column(conn: sqlite3.Connection) -> None:
+    existing_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(agent_enforcement_settings)").fetchall()
+    }
+    if "require_pop" not in existing_columns:
+        conn.execute(
+            "ALTER TABLE agent_enforcement_settings "
+            "ADD COLUMN require_pop INTEGER NOT NULL DEFAULT 0"
         )
 
 
@@ -605,6 +626,39 @@ class SQLiteAgentEnforcementSettingsRepository:
                     updated_at = excluded.updated_at
                 """,
                 (workspace_id, agent_id, 1 if require_subject_token else 0, now.isoformat()),
+            )
+
+    def get_require_pop_setting(self, *, workspace_id: str, agent_id: str) -> bool | None:
+        row = self._conn.execute(
+            """
+            SELECT require_pop FROM agent_enforcement_settings
+            WHERE workspace_id = ? AND agent_id = ?
+            """,
+            (workspace_id, agent_id),
+        ).fetchone()
+        return bool(row[0]) if row is not None else None
+
+    def is_pop_required(self, *, workspace_id: str, agent_id: str) -> bool:
+        agent = self.get_require_pop_setting(workspace_id=workspace_id, agent_id=agent_id)
+        if agent is not None:
+            return agent
+        ws = self.get_require_pop_setting(workspace_id=workspace_id, agent_id="")
+        return ws if ws is not None else False
+
+    def set_require_pop(
+        self, *, workspace_id: str, agent_id: str, require_pop: bool, now: datetime
+    ) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO agent_enforcement_settings (
+                    workspace_id, agent_id, require_pop, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
+                    require_pop = excluded.require_pop,
+                    updated_at = excluded.updated_at
+                """,
+                (workspace_id, agent_id, 1 if require_pop else 0, now.isoformat()),
             )
 
 

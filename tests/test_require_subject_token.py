@@ -221,3 +221,31 @@ def test_sqlite_settings_distinguishes_absent_from_explicit_false(tmp_path) -> N
     assert (
         repo.get_require_boundary_setting(workspace_id="ws_main", agent_id="agent_release") is True
     )
+
+
+def test_sqlite_require_pop_upsert_does_not_clobber_other_flags(tmp_path) -> None:
+    # set_require_pop must not null out require_boundary / require_subject_token on the
+    # same (workspace, agent) row.
+    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    service = SQLiteV1Service(conn)
+    repo = service.agent_enforcement_settings_repository
+    repo.set_require_boundary(
+        workspace_id="ws_main", agent_id="agent_release", require_boundary=True, now=NOW
+    )
+    repo.set_require_subject_token(
+        workspace_id="ws_main", agent_id="agent_release", require_subject_token=True, now=NOW
+    )
+    repo.set_require_pop(
+        workspace_id="ws_main", agent_id="agent_release", require_pop=True, now=NOW
+    )
+    assert repo.get_require_pop_setting(workspace_id="ws_main", agent_id="agent_release") is True
+    # The other two flags must survive the require_pop upsert (no clobber).
+    assert (
+        repo.get_require_boundary_setting(workspace_id="ws_main", agent_id="agent_release") is True
+    )
+    assert (
+        repo.get_require_subject_token_setting(
+            workspace_id="ws_main", agent_id="agent_release"
+        )
+        is True
+    )

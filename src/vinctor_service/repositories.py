@@ -81,6 +81,14 @@ class AgentEnforcementSettingsRepository(Protocol):
         self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime
     ) -> None: ...
 
+    def get_require_pop_setting(self, *, workspace_id: str, agent_id: str) -> bool | None: ...
+
+    def is_pop_required(self, *, workspace_id: str, agent_id: str) -> bool: ...
+
+    def set_require_pop(
+        self, *, workspace_id: str, agent_id: str, require_pop: bool, now: datetime
+    ) -> None: ...
+
 
 class InMemoryGrantRepository:
     def __init__(self, grants: tuple[Grant, ...] = ()) -> None:
@@ -227,6 +235,7 @@ class InMemoryAgentEnforcementSettingsRepository:
     def __init__(self) -> None:
         self._require_boundary: dict[tuple[str, str], bool] = {}
         self._require_subject_token: dict[tuple[str, str], bool] = {}
+        self._require_pop: dict[tuple[str, str], bool] = {}
 
     def get_require_boundary(self, *, workspace_id: str, agent_id: str) -> bool:
         return self._require_boundary.get((workspace_id, agent_id), False)
@@ -269,3 +278,17 @@ class InMemoryAgentEnforcementSettingsRepository:
         self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime
     ) -> None:
         self._require_subject_token[(workspace_id, agent_id)] = require_subject_token
+
+    def get_require_pop_setting(self, *, workspace_id: str, agent_id: str) -> bool | None:
+        return self._require_pop.get((workspace_id, agent_id))
+
+    def is_pop_required(self, *, workspace_id: str, agent_id: str) -> bool:
+        agent = self._require_pop.get((workspace_id, agent_id))
+        if agent is not None:
+            return agent
+        return self._require_pop.get((workspace_id, ""), False)
+
+    def set_require_pop(
+        self, *, workspace_id: str, agent_id: str, require_pop: bool, now: datetime
+    ) -> None:
+        self._require_pop[(workspace_id, agent_id)] = require_pop

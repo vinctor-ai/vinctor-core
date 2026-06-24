@@ -450,8 +450,8 @@ auto_approval_rules:
         "rules_updated": 0,
         "workspace_id": "ws_demo",
     }
-    assert service_info["schema_versions"] == [1, 2, 3, 4, 5, 6, 7]
-    assert service_info["schema_version"] == 7
+    assert service_info["schema_versions"] == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert service_info["schema_version"] == 8
     assert exported["agent_bounds"] == 1
     assert exported["auto_approval_rules"] == 1
     assert bounds == ("execute:ci/test", "write:repo/vinctor-core/*")
@@ -552,11 +552,11 @@ def test_vinctor_cli_storage_backup_and_reset(tmp_path: Path) -> None:
 
     assert backup["output_path"] == str(backup_path)
     assert backup["bytes"] > 0
-    assert backup["schema_versions"] == [1, 2, 3, 4, 5, 6, 7]
+    assert backup["schema_versions"] == [1, 2, 3, 4, 5, 6, 7, 8]
     assert reset == {
         "db_path": str(db_path),
         "reset": True,
-        "schema_versions": [1, 2, 3, 4, 5, 6, 7],
+        "schema_versions": [1, 2, 3, 4, 5, 6, 7, 8],
     }
 
     backup_conn = sqlite3.connect(backup_path)
@@ -628,8 +628,8 @@ def test_vinctor_cli_service_info_reports_schema(tmp_path: Path) -> None:
 
     assert info["mode"] == "local"
     assert info["db_path"] == str(db_path)
-    assert info["schema_version"] == 7
-    assert info["schema_versions"] == [1, 2, 3, 4, 5, 6, 7]
+    assert info["schema_version"] == 8
+    assert info["schema_versions"] == [1, 2, 3, 4, 5, 6, 7, 8]
     assert info["key_storage_mode"] == "sqlite_hashes"
     assert "host" in info
     assert "port" in info
@@ -665,7 +665,7 @@ def test_vinctor_cli_storage_restore_roundtrip(tmp_path: Path) -> None:
         "db_path": str(db_path),
         "input_path": str(backup_path),
         "restored": True,
-        "schema_versions": [1, 2, 3, 4, 5, 6, 7],
+        "schema_versions": [1, 2, 3, 4, 5, 6, 7, 8],
     }
     conn = sqlite3.connect(db_path)
     try:
@@ -743,7 +743,7 @@ def test_vinctor_cli_storage_migrate_reports_versions(tmp_path: Path) -> None:
 
     migrate = _run(["--json", "--db", str(db_path), "operator", "storage", "migrate"])
 
-    assert migrate == {"db_path": str(db_path), "schema_versions": [1, 2, 3, 4, 5, 6, 7]}
+    assert migrate == {"db_path": str(db_path), "schema_versions": [1, 2, 3, 4, 5, 6, 7, 8]}
     conn = sqlite3.connect(db_path)
     try:
         grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
@@ -935,6 +935,29 @@ def test_vinctor_cli_require_subject_token_workspace_default(tmp_path) -> None:
     shown = _run([*common, "operator", "require-subject-token", "show", "--workspace"])
     assert enabled["require_subject_token"] is True and enabled["scope"] == "workspace"
     assert shown["require_subject_token"] is True
+
+
+def test_vinctor_cli_operator_require_pop_enable_show(tmp_path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+    enabled = _run([*common, "operator", "require-pop", "enable", "agent_runner"])
+    shown = _run([*common, "operator", "require-pop", "show", "agent_runner"])
+    disabled = _run([*common, "operator", "require-pop", "disable", "agent_runner"])
+    shown_after = _run([*common, "operator", "require-pop", "show", "agent_runner"])
+
+    assert enabled["require_pop"] is True
+    assert shown["require_pop"] is True
+    assert disabled["require_pop"] is False
+    assert shown_after["require_pop"] is False
+
+
+def test_vinctor_cli_require_pop_workspace_default(tmp_path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+    enabled = _run([*common, "operator", "require-pop", "enable", "--workspace"])
+    shown = _run([*common, "operator", "require-pop", "show", "--workspace"])
+    assert enabled["require_pop"] is True and enabled["scope"] == "workspace"
+    assert shown["require_pop"] is True
 
 
 def test_vinctor_cli_tokens_list_revoke_then_delegated_enforce_denies(tmp_path: Path) -> None:

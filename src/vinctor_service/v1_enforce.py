@@ -5,6 +5,7 @@ from datetime import datetime
 
 from vinctor_core.audit import (
     REASON_AGENT_GRANT_MISMATCH,
+    REASON_POP_REQUIRED,
     REASON_SUBJECT_TOKEN_INVALID,
     REASON_SUBJECT_TOKEN_REQUIRED,
     AuditEventInput,
@@ -218,6 +219,19 @@ def delegated_enforce_v1_contract(
         )
         return _pre_audit_error(403, "forbidden", "a subject token is required")
 
+    # require_pop mandate (mirror of require_subject_token / require_boundary): when
+    # set, a PRESENTED subject token that is NOT proof-of-possession bound is denied.
+    # Single-purpose: this does NOT govern the no-token case (that stays under
+    # require_subject_token above); it only catches a presented non-PoP token in the
+    # token block below. Read with the trusted workspace (never request.workspace_id).
+    is_pop_required = (
+        agent_enforcement_settings_repository.is_pop_required(
+            workspace_id=trusted_ws, agent_id=request.agent_id
+        )
+        if agent_enforcement_settings_repository is not None
+        else False
+    )
+
     # ADR 0007 Model 2: proven-identity path. The token (if present) must agree
     # with the asserted body AND the resolved grant; any failure fails closed.
     # This block runs only after the grant is resolved and owned by the asserted
@@ -323,6 +337,26 @@ def delegated_enforce_v1_contract(
                     enforcing_principal=request.pep_id,
                 )
                 return _pre_audit_error(403, "forbidden", "subject token is not valid")
+        # require_pop mandate: a PRESENTED token that is NOT proof-of-possession
+        # bound (pop_secret IS None — a strict identity check, never `not ...`) is
+        # denied when the operator has hardened this (workspace, agent). The external
+        # response is the SAME generic leak-free `forbidden` as the other token denies;
+        # only the operator-only audit reason_code (pop_required) reveals the cause.
+        if is_pop_required and token.pop_secret is None:
+            _record_rejection(
+                audit_writer,
+                reason_code=REASON_POP_REQUIRED,
+                workspace_id=trusted_ws,
+                agent_id=request.agent_id,
+                action=request.action,
+                resource=request.resource,
+                boundary_id=request.boundary_id,
+                now=now,
+                enforcing_principal=request.pep_id,
+            )
+            return _pre_audit_error(
+                403, "forbidden", "subject token must be proof-of-possession bound"
+            )
         identity_proven = True
         proven_token_id = token.token_id
 
