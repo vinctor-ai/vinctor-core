@@ -24,8 +24,18 @@ pipx install .
 python3.11 -m venv .venv && .venv/bin/python -m pip install .
 
 vinctor --help
-vinctor local start        # bootstrap a local service and print VINCTOR_* exports
+vinctor local start --db .vinctor-local.sqlite   # bootstrap a local service and print VINCTOR_* exports
 ```
+
+`--db` is required by `vinctor local start`; the snippet above writes the local
+service state to `.vinctor-local.sqlite`.
+
+The base `pip install .` / `pipx install .` ships the `vinctor-mcp-server`
+command, but running it needs the `[mcp]` extra (the MCP SDK). Install
+`pipx install ".[mcp]"` (or `pip install "vinctor-core[mcp]"`) to run it.
+Without the extra it exits with a clean one-line error
+(`error: MCP SDK is required to run vinctor-mcp-server. Install with
+vinctor-core[mcp].`).
 
 Once published to PyPI this becomes `pipx install vinctor-core`. To **contribute**
 (editable install + dev tools + tests), see [Testing](#testing).

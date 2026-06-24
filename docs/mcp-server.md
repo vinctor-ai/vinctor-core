@@ -59,8 +59,23 @@ Install the optional MCP dependency when you want to run the server:
 ```
 
 Start a local `vinctor-service` first, then point the MCP server at that
-service endpoint. For local demos, `vinctor local start` prints the
-`VINCTOR_MCP_ENDPOINT` and `VINCTOR_MCP_WORKSPACE_KEY` values to export.
+service endpoint. For local demos, `vinctor local start` prints
+`VINCTOR_ENDPOINT` and `VINCTOR_WORKSPACE_KEY` (the service/operator names,
+shared with the CLI and hooks). The MCP server reads its own
+`VINCTOR_MCP_*` names, so map the printed values across:
+
+| Printed by `vinctor local start` | Set for the MCP server     |
+| -------------------------------- | -------------------------- |
+| `VINCTOR_ENDPOINT`               | `VINCTOR_MCP_ENDPOINT`     |
+| `VINCTOR_WORKSPACE_KEY`          | `VINCTOR_MCP_WORKSPACE_KEY` |
+
+```bash
+export VINCTOR_MCP_ENDPOINT="$VINCTOR_ENDPOINT"
+export VINCTOR_MCP_WORKSPACE_KEY="$VINCTOR_WORKSPACE_KEY"
+```
+
+`vinctor local start` also prints `VINCTOR_AGENT_KEY` and `VINCTOR_GRANT_REF`;
+the MCP server does not use those — do not pass them to it.
 
 Run over stdio:
 

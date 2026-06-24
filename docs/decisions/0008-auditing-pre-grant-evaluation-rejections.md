@@ -42,7 +42,12 @@ are not part of the caller-facing response, so they are not a caller leak:
 3. **out-of-bounds grant issuance** → `grant_issue_rejected`, for the
    scope-outside-bounds (`reason_code=scope_outside_issuable_bounds`),
    bounds-not-found (`reason_code=issuable_bounds_not_found`), and TTL-over-max
-   (`reason_code=ttl_exceeds_issuable_max`) ceilings.
+   (`reason_code=ttl_exceeds_issuable_max`) ceilings. The status code is **403**
+   on **both** issuance paths: the direct `POST /v1/grants`
+   (`grant_http.py`) and the approval path that issues on approve
+   (`grant_request_http._decision_failure_status`, which maps these three reasons
+   via `_ISSUABLE_BOUNDS_REASONS` to 403 to match the direct path). The approval
+   path returned 409 before the 2026-06-24 cold-e2e fix.
 4. **Malformed input** (e.g. `scope_invalid`) remains deliberately un-audited.
 
 ## Context

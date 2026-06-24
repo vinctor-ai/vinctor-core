@@ -13,9 +13,15 @@ is None`) fails closed. Default off → backward-compatible.
 `require_subject_token`: the "no subject token at all" case stays governed by
 `require_subject_token`. An operator wanting "must present a PoP-bound token" enables
 BOTH flags. This keeps each flag single-purpose and consistent with the existing two
-mandates. The deny is the SAME leak-free generic `403 forbidden` external response as
-the other token denies; only the audit `reason_code` (`pop_required`) distinguishes
-it.
+mandates. The deny is `403` with a uniform external `error == "forbidden"` — the same
+fail-closed, non-disclosing class as the other token denies. The external `reason`
+string names the mandate class (`"subject token must be proof-of-possession bound"`,
+exactly as `require_subject_token` returns `"a subject token is required"`); this is
+acceptable because `error` is uniformly `forbidden` and it reveals only that an
+operator policy was unmet, not whether any token/grant/agent exists. The genuinely
+oracle-free, no-leak path is `subject_token_invalid` (`"subject token is not valid"`),
+which stays generic across all token-validity failures. `reason_code` (`pop_required`)
+is the structured operator-only audit signal.
 
 **Why this is the natural complement:** today a PoP token forces a proof
 (`v1_enforce.py` PoP-proof block), but an operator cannot force agents to USE PoP
@@ -100,10 +106,12 @@ schema_migrations row + SQLiteAgentEnforcementSettingsRepository methods),
 - [ ] **Step 5 — deny slot:** inside the `if request.subject_token is not None:`
   block, AFTER the existing PoP-proof block and BEFORE `identity_proven = True`, add:
   if `is_pop_required and token.pop_secret is None:` → record the rejection
-  (`reason_code=REASON_POP_REQUIRED`) and return the generic `_pre_audit_error(403,
+  (`reason_code=REASON_POP_REQUIRED`) and return `_pre_audit_error(403,
   "forbidden", "subject token must be proof-of-possession bound")` — matching the
-  exact leak-free shape of the other token denies (external error stays `forbidden`;
-  only the audit reason_code differs). Use the explicit `is None` identity check (NOT
+  shape of the sibling `require_subject_token` deny (uniform external
+  `error == "forbidden"`; the `reason` string names the mandate class, mirroring
+  `"a subject token is required"`; the operator-only audit reason_code is what
+  records the precise cause). Use the explicit `is None` identity check (NOT
   `not token.pop_secret`).
 - [ ] **Step 6 — run tests + full suite + ruff; commit** `feat(enforce): require_pop deny on non-PoP subject token`.
 
@@ -141,6 +149,9 @@ schema_migrations row + SQLiteAgentEnforcementSettingsRepository methods),
   (sets `pop_secret`). `require_pop` is purely operator-side.
 - The PoP-proof block already covers "PoP token present but bad proof". `require_pop`
   is orthogonal — it forces the token to BE a PoP token.
-- Generic external response is mandatory: the deny must look identical to the other
-  token denies (`error == "forbidden"`); the only distinguishing signal is the
-  operator-only audit `reason_code`.
+- Non-disclosing external response is mandatory: the deny carries the uniform
+  external `error == "forbidden"`, the same fail-closed class as the other token
+  denies. The `reason` string may name the mandate class (as `require_subject_token`
+  already does), since `error` stays uniform and it leaks no token/grant/agent
+  existence; the truly generic, oracle-free family remains `subject_token_invalid`.
+  The structured distinguishing signal is the operator-only audit `reason_code`.

@@ -146,8 +146,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GrantRequestDecision"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/AuthRequired"
+        "403":
+          $ref: "#/components/responses/IssuableBoundsForbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/GrantRequestNotPending"
   /v1/grant-requests/{request_id}/approve:
     post:
       summary: Manually approve a grant request.
@@ -168,8 +176,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GrantRequestDecision"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/AuthRequired"
+        "403":
+          $ref: "#/components/responses/IssuableBoundsForbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/GrantRequestNotPending"
   /v1/grant-requests/{request_id}/reject:
     post:
       summary: Reject a grant request.
@@ -190,8 +206,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GrantRequestDecision"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/AuthRequired"
+        "403":
+          $ref: "#/components/responses/IssuableBoundsForbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/GrantRequestNotPending"
   /v1/grants:
     post:
       summary: Issue a workspace grant.
@@ -384,6 +408,22 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
     NotFound:
       description: Object not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    IssuableBoundsForbidden:
+      description: >-
+        Issuance was refused because the request falls outside the workspace
+        issuable bounds. Reason is one of scope_outside_issuable_bounds,
+        ttl_exceeds_issuable_max, or issuable_bounds_not_found. Mirrors the
+        direct POST /v1/grants 403 mapping.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    GrantRequestNotPending:
+      description: Grant request is not pending (reason grant_request_not_pending).
       content:
         application/json:
           schema:

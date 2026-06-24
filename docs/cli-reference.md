@@ -23,8 +23,10 @@ The five roles are `service`, `local`, `agent`, `operator`, and `demo`.
 > [!IMPORTANT]
 > **Global options come before the role.** `vinctor --endpoint http://… operator
 > audit list` works; `vinctor operator audit list --endpoint http://…` does not —
-> `--endpoint` is a global option, not an `audit list` option. In practice you set
-> the environment variables below once and omit the global flags.
+> `--endpoint` is a global option, not an `audit list` option. This applies to
+> output flags too: `vinctor -o json agent enforce …` works, but
+> `vinctor agent enforce -o json …` is rejected as an unknown option. In practice
+> you set the environment variables below once and omit the global flags.
 
 ### Global options and their environment defaults
 
@@ -60,11 +62,19 @@ determines its required inputs:
   - `operator requests …` and `operator rules …` → the **workspace key**
     (`wsk_…` / `VINCTOR_WORKSPACE_KEY`). Keep it in an operator-only shell.
 - **Directly on the SQLite database** (needs `--db` and `--workspace-id`; no key,
-  no endpoint): `operator bounds`, `operator audit`, `operator policy`,
-  `operator storage`, `operator service`, and `operator keys`.
+  no endpoint): `operator bounds`, `operator audit list`, `operator policy`,
+  `operator storage`, `operator service`, `operator keys`, `operator tokens`, and
+  the `operator require-subject-token` / `require-pop` / `require-boundary`
+  mandates.
 
-(One mix: `operator requests timeline` is HTTP for the request but also reads the
-`--db` for the audit trail.)
+Two commands are **hybrid** — they read the `--db` directly but still require a
+key to scope the result:
+
+- `operator requests timeline` is HTTP for the request but also reads the `--db`
+  for the audit trail.
+- `operator audit export` reads the `--db` but resolves the workspace from the
+  **`--workspace-key`** (it does *not* take `--workspace-id`), so it needs both
+  `--db` and the workspace key.
 
 ---
 
@@ -117,8 +127,9 @@ authorizes every `operator` command.
 - **Listed by** `vinctor operator keys list`; **revoked by**
   `vinctor operator keys revoke <key_id>`.
 - **Consumed via** `--workspace-key` / `VINCTOR_WORKSPACE_KEY` by the HTTP
-  `operator` commands (`requests`, `rules`); the direct-DB `operator` commands
-  (`bounds`, `audit`, `policy`, `storage`, `service`, `keys`) take `--workspace-id`
+  `operator` commands (`requests`, `rules`) and the hybrid `operator audit export`;
+  the direct-DB `operator` commands (`bounds`, `audit list`, `policy`, `storage`,
+  `service`, `keys`, `tokens`, and the `require-*` mandates) take `--workspace-id`
   against the `--db` instead.
 
 ---
@@ -155,6 +166,67 @@ Vinctor to authorize a tool call **on behalf of** a subject agent, via
 - The mechanism authorizes against the asserted grant; it does **not** by itself
   prove the call originates from the asserted agent — identity proof is an open
   decision (ADR 0007).
+
+---
+
+## Subject token (`vat_…` raw token, `vtk_…` token id)
+
+A subject token is a short-lived credential an agent mints against one of its
+grants and hands to a resource server, so a delegated enforce can *prove* the
+call originates from the asserted agent (ADR 0007 Model 2), not merely assert it.
+
+**Minted by the agent** (over HTTP, `POST /v1/tokens`, authenticated by the
+agent key):
+
+```bash
+vinctor agent token mint --grant-ref grt_… --audience svc-files --ttl 5m \
+  --action write --resource repo/feature/README.md --pop
+```
+
+- `--grant-ref` and `--audience` are **required**; `--ttl` defaults to **300s**
+  (5 minutes) and accepts the same `<n>s|m|h` / plain-seconds forms as other
+  duration flags. `--action` / `--resource` optionally bind the token to a
+  single call. `--pop` mints a proof-of-possession token.
+- The raw token (`vat_…`) is printed **once** alongside its public id (`vtk_…`)
+  and `expires_at`; it is not recoverable afterward. With `--pop`, a `pop_secret`
+  is also printed once.
+- **Consumed via** the `X-Subject-Token` header on `POST /v1/enforce/delegated`
+  (the raw `vat_…` value); the service hashes it and never stores the raw token.
+
+**Listed / revoked by the operator** — these run **directly on the `--db`**
+(direct-DB, take `--workspace-id`; no key, no endpoint):
+
+```bash
+vinctor operator tokens list                 # lists the workspace's subject tokens
+vinctor operator tokens revoke <token_id>    # the vtk_… id, not the raw vat_… token
+```
+
+---
+
+## Subject-token / PoP / boundary hardening (`operator require-*`)
+
+Three per-`(workspace, agent)` mandates harden enforce. All run **directly on
+the `--db`** (direct-DB, take `--workspace-id`) and each has the same
+`{enable, disable, show}` shape. **Each defaults to off.** A bare invocation
+targets the agent from `--agent-id` (or a positional `target_agent_id`); pass
+`--workspace` to set the **workspace default** instead (the per-agent value
+overrides it). `--workspace` cannot be combined with an agent id.
+
+```bash
+# per agent
+vinctor operator require-subject-token enable agent_ci
+vinctor operator require-subject-token show   agent_ci
+vinctor operator require-subject-token disable agent_ci
+# workspace default (applies to agents without an explicit override)
+vinctor operator require-pop enable --workspace
+vinctor operator require-boundary show --workspace
+```
+
+| Mandate | What it denies (403) |
+| --- | --- |
+| `require-subject-token` | a delegated enforce that presents **no** usable subject token |
+| `require-pop` | a **presented** subject token that is **not** proof-of-possession bound — it does *not* govern the no-token case, so it composes with `require-subject-token` |
+| `require-boundary` | an enforce with no `boundary_id` (see [ADR 0009](decisions/0009-mandatory-boundary-enforcement.md)) |
 
 ---
 
@@ -198,6 +270,19 @@ and `timeline` views.
 > --grant-ttl-hours` is a separate integer-hours flag.)
 
 **Consumed via** `--grant-ref` / `VINCTOR_GRANT_REF` when a call is enforced.
+
+> [!NOTE]
+> **Grant lookup and revoke are HTTP-only — there is no CLI subcommand yet.**
+> Call the service directly with the workspace key:
+>
+> ```bash
+> # revoke a grant by ref
+> curl -X POST "$VINCTOR_ENDPOINT/v1/grants/grt_…/revoke" \
+>   -H "X-Workspace-Key: $VINCTOR_WORKSPACE_KEY"
+> # fetch a grant by ref
+> curl "$VINCTOR_ENDPOINT/v1/grants/grt_…" \
+>   -H "X-Workspace-Key: $VINCTOR_WORKSPACE_KEY"
+> ```
 
 ---
 
@@ -258,7 +343,12 @@ vinctor operator audit export --format jsonl --file audit.jsonl
 ```
 
 All `audit list` filters are optional. `audit export` currently supports
-`--format jsonl`.
+`--format jsonl`, and writes to stdout when `--file` is omitted.
+
+> [!NOTE]
+> `audit list` is direct-DB (takes `--workspace-id`), but `audit export` is
+> **hybrid**: it reads the `--db` yet resolves the workspace from the
+> `--workspace-key`, so it requires the workspace key rather than `--workspace-id`.
 
 ---
 
@@ -298,6 +388,11 @@ vinctor demo check                   # local self-check
 vinctor demo service --scenario …    # scripted demonstration service
 ```
 
+> [!NOTE]
+> `operator service info` reports the **configured default port** (from the
+> runtime config / `VINCTOR_PORT`), not the live port a running `service serve`
+> was started with via `--port`.
+
 ---
 
 ## How values are created
@@ -322,10 +417,14 @@ recoverable** — capture them when shown. Rotate with `operator keys rotate`.
 | --- | --- |
 | `service` | `serve` |
 | `local` | `start`, `env` |
-| `agent` | `requests create`, `requests status`, `enforce` |
+| `agent` | `requests create`, `requests status`, `enforce`, `token mint` |
 | `operator requests` | `list`, `inbox`, `timeline`, `view`, `approve`, `reject`, `evaluate` |
 | `operator rules` | `create`, `list`, `disable` |
 | `operator bounds` | `set`, `show` |
+| `operator tokens` | `list`, `revoke` |
+| `operator require-subject-token` | `enable`, `disable`, `show` |
+| `operator require-pop` | `enable`, `disable`, `show` |
+| `operator require-boundary` | `enable`, `disable`, `show` |
 | `operator audit` | `list`, `export` |
 | `operator policy` | `apply`, `export` |
 | `operator storage` | `backup`, `reset`, `restore`, `migrate` |
