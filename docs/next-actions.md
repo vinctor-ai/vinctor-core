@@ -276,6 +276,29 @@ V1 service contract boundary:
   - **L** MCP Phase 3 composite read-only reports (`vinctor_grant_report` /
     `vinctor_boundary_report`) — zero new service surface (`#77`).
   Test suite 484 → 518; dependencies still stdlib + PyYAML; SQLite schema v7 → v9.
+- 2026-06-25 **v0.1.0 release prep**, all merged to main:
+  - `operator grants revoke` CLI (`#81`); golden-path demo `vinctor demo block` +
+    hero GIF (`#82`).
+  - **Security hardening** from the multi-agent audit (`#83`): pre-auth request-body
+    cap + handler timeout + parse-pop-skew-once (the release-gate HIGH);
+    grant-existence oracle closed (unknown vs foreign grant now an identical
+    `403 forbidden`, enforce 404→403, mismatch audit attributed to the caller's own
+    workspace); naive `expires_at` coerced to UTC; container runs non-root;
+    GitHub Action `uses:` pinned to commit SHAs; bundled compose binds `127.0.0.1`.
+  - **CLI UX quick-wins** (`#84`): global/output flags accepted after the subcommand,
+    `vinctor --version`, malformed-credential → clean error, help text across the tree.
+  Test suite 518 → 551; deps still stdlib + PyYAML; version `0.1.0`.
+
+### Deferred to v0.1.1 (from the security audit + CLI review)
+- **Security (audit, deferred):** audit list/export SQL pushdown (full-table scan →
+  WHERE/LIMIT + index); PoP replay per-token/per-workspace partition (today a global
+  fail-closed-when-full cap is a cross-tenant DoS lever); pin the Docker base image
+  by digest (needs a docker-equipped CI run); pop_secret encryption at rest; a real
+  per-source request rate limiter; SBOM/provenance + image HEALTHCHECK.
+- **CLI bigger calls (need a decision, breaking):** unify the HTTP-vs-direct-DB
+  operator transport split; collapse the three `require-*` mandates into one
+  `operator mandate` noun; rename `operator bounds` to a ceiling-signalling name;
+  reconsider the agent/operator persona split. (All need a deprecation window.)
 
 ## Next
 
