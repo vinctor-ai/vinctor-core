@@ -308,6 +308,50 @@ def test_pop_cache_full_of_fresh_entries_rejects() -> None:
     ) is False
 
 
+def test_pop_cache_token_flood_does_not_lock_out_other_token() -> None:
+    # Parity with the durable store: token A flooding its own nonces past its
+    # per-token cap stays bounded to its own footprint and must not lock out a
+    # fresh proof for a different token B (the generous global cap is untouched).
+    cache = PopReplayCache(max_entries=100, max_per_token=1)
+    now_unix = _now_unix()
+    assert cache.check_and_record(
+        token_id="A", nonce="a1", ts=now_unix, now_unix=now_unix, skew=SKEW
+    ) is True
+    for i in range(2, 50):
+        assert cache.check_and_record(
+            token_id="A", nonce=f"a{i}", ts=now_unix, now_unix=now_unix, skew=SKEW
+        ) is True
+    assert cache.check_and_record(
+        token_id="B", nonce="b1", ts=now_unix, now_unix=now_unix, skew=SKEW
+    ) is True
+
+
+def test_pop_cache_per_token_cap_evicts_own_oldest_not_others() -> None:
+    cache = PopReplayCache(max_entries=100, max_per_token=2)
+    t = _now_unix()
+    assert cache.check_and_record(
+        token_id="A", nonce="a1", ts=t, now_unix=t, skew=SKEW
+    ) is True
+    assert cache.check_and_record(
+        token_id="B", nonce="b1", ts=t, now_unix=t, skew=SKEW
+    ) is True
+    assert cache.check_and_record(
+        token_id="A", nonce="a2", ts=t + 1, now_unix=t, skew=SKEW
+    ) is True
+    # A at cap: a3 evicts A's oldest (a1).
+    assert cache.check_and_record(
+        token_id="A", nonce="a3", ts=t + 2, now_unix=t, skew=SKEW
+    ) is True
+    # a1 evicted -> fresh again.
+    assert cache.check_and_record(
+        token_id="A", nonce="a1", ts=t + 3, now_unix=t, skew=SKEW
+    ) is True
+    # B untouched -> still a replay.
+    assert cache.check_and_record(
+        token_id="B", nonce="b1", ts=t, now_unix=t, skew=SKEW
+    ) is False
+
+
 def test_pop_token_without_cache_wired_fails_closed() -> None:
     svc, raw, secret, token_id = _pop_svc()
     proof = make_proof(secret, action="write", resource="repo/feature/readme",

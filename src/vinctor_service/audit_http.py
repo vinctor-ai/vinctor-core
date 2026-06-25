@@ -17,6 +17,18 @@ class AuditReadService(Protocol):
 
     def get_audit_event(self, event_id: str) -> AuditEvent | None: ...
 
+    def list_filtered(
+        self,
+        workspace_id: str,
+        *,
+        event_type: str | None = None,
+        grant_ref: str | None = None,
+        boundary_id: str | None = None,
+        agent_id: str | None = None,
+        request_id: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[AuditEvent, ...]: ...
+
 
 WorkspaceIdentityResolver = Callable[[str, datetime], WorkspaceIdentity | None]
 
@@ -57,11 +69,15 @@ def handle_v1_audit_events_http(
         filters = _parse_filters(query_string)
         if isinstance(filters, V1HttpResponse):
             return filters
-        events = [
-            event
-            for event in service.audit_events
-            if event.workspace_id == identity.workspace_id and _event_matches(event, filters)
-        ][-filters.limit :]
+        events = service.list_filtered(
+            identity.workspace_id,
+            event_type=filters.event_type,
+            grant_ref=filters.grant_ref,
+            boundary_id=filters.boundary_id,
+            agent_id=filters.agent_id,
+            request_id=filters.request_id,
+            limit=filters.limit,
+        )
         return V1HttpResponse(
             status_code=200,
             body={"audit_events": [_audit_event_body(event) for event in events]},
@@ -136,22 +152,6 @@ def _parse_filters(query_string: str) -> AuditEventFilters | V1HttpResponse:
         request_id=values["request_id"],
         limit=limit,
     )
-
-
-def _event_matches(event: AuditEvent, filters: AuditEventFilters) -> bool:
-    if filters.agent_id is not None and event.agent_id != filters.agent_id:
-        return False
-    if filters.event_type is not None and event.event_type != filters.event_type:
-        return False
-    if filters.grant_ref is not None and event.grant_ref != filters.grant_ref:
-        return False
-    if filters.boundary_id is not None and event.boundary_id != filters.boundary_id:
-        return False
-    return filters.request_id is None or _matches_request_id(event, filters.request_id)
-
-
-def _matches_request_id(event: AuditEvent, request_id: str) -> bool:
-    return event.resource == f"grant_request/{request_id}" or event.grant_ref == request_id
 
 
 def _audit_event_body(event: AuditEvent) -> dict[str, str | None]:

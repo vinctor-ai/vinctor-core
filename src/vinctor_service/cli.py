@@ -1358,9 +1358,7 @@ def _operator_audit_export(args: argparse.Namespace, *, stdout: TextIO) -> None:
     if identity is None:
         raise CliError("valid workspace key is required for audit export", code=EXIT_AUTH)
 
-    events = [
-        event for event in service.audit_events if event.workspace_id == identity.workspace_id
-    ]
+    events = service.list_filtered(identity.workspace_id)
     payload = "\n".join(json.dumps(_audit_body(event), sort_keys=True) for event in events)
     if args.file is not None:
         args.file.parent.mkdir(parents=True, exist_ok=True)

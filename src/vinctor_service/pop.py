@@ -38,9 +38,13 @@ def pop_mac(pop_secret: str, canonical: bytes) -> str:
 class PopReplayCache:
     """Per-process anti-replay for PoP nonces. Single-node only (see spec Risks)."""
 
-    def __init__(self, max_entries: int = 10000) -> None:
+    def __init__(self, max_entries: int = 10000, max_per_token: int = 256) -> None:
         self._seen: dict[tuple[str, str], int] = {}
         self._max = max_entries
+        # Per-token-id cap mirrors SQLiteReplayStore: one token's nonce flood is
+        # bounded to its own footprint and evicts only its own oldest within-window
+        # nonce, so it can never saturate the global cap against other tokens.
+        self._max_per_token = max_per_token
 
     def check_and_record(
         self, *, token_id: str, nonce: str, ts: int, now_unix: int, skew: int
@@ -52,7 +56,16 @@ class PopReplayCache:
         key = (token_id, nonce)
         if key in self._seen:
             return False  # replay
-        if len(self._seen) >= self._max:
+        token_keys = [k for k in self._seen if k[0] == token_id]
+        if len(token_keys) >= self._max_per_token:
+            # This token is at its own cap: evict its OWN oldest within-window
+            # nonce (min ts; insertion order as the FIFO tie-break) — net-zero on
+            # the global count, never touching another token's row.
+            # token_keys is already in insertion order; min is stable, so an
+            # equal-ts tie resolves to the earliest-inserted (FIFO) key.
+            oldest = min(token_keys, key=lambda k: self._seen[k])
+            del self._seen[oldest]
+        elif len(self._seen) >= self._max:
             return False  # full of fresh entries -> fail closed
         self._seen[key] = ts
         return True

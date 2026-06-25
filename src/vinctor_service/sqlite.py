@@ -213,6 +213,9 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_pop_replay_nonces_ts
         ON pop_replay_nonces(ts);
+
+        CREATE INDEX IF NOT EXISTS idx_audit_events_workspace
+        ON audit_events(workspace_id);
         """
     )
     _ensure_grant_request_metadata_columns(conn)
@@ -284,6 +287,13 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         VALUES (?, ?)
         """,
         (9, datetime.now(UTC).isoformat()),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (10, datetime.now(UTC).isoformat()),
     )
     conn.commit()
 
@@ -798,9 +808,21 @@ class SQLiteReplayStore:
     durable row is ever written for a forged or expired proof.
     """
 
-    def __init__(self, conn: sqlite3.Connection, max_entries: int = 10000) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        max_entries: int = 10000,
+        max_per_token: int = 256,
+    ) -> None:
         self._conn = conn
         self._max = max_entries
+        # Per-token-id row cap. The global cap alone couples tenants: one token
+        # could mint distinct fresh nonces up to ``max_entries`` and lock out
+        # every OTHER token's fresh proof. Bounding each token_id's live footprint
+        # to ``max_per_token`` keeps that flood self-contained — a token at its own
+        # cap evicts its OWN oldest within-window nonce, never another token's row
+        # — so the global cap stays a generous backstop, not a cross-tenant lever.
+        self._max_per_token = max_per_token
         # The live SQLite service shares ONE connection (check_same_thread=False)
         # across ThreadingHTTPServer threads; serialize the multi-statement
         # transaction within-process. The PK + IntegrityError covers cross-process
@@ -821,11 +843,30 @@ class SQLiteReplayStore:
             ).fetchone()
             if row is not None:
                 return False  # replay
-            count = self._conn.execute(
-                "SELECT COUNT(*) FROM pop_replay_nonces"
+            per_token = self._conn.execute(
+                "SELECT COUNT(*) FROM pop_replay_nonces WHERE token_id = ?",
+                (token_id,),
             ).fetchone()[0]
-            if count >= self._max:
-                return False  # full of fresh entries -> fail closed
+            if per_token >= self._max_per_token:
+                # This token is at its own cap: make room by evicting THIS token's
+                # oldest within-window nonce (min ts; rowid tie-break for stable
+                # FIFO). Net-zero on the global count, and it never touches another
+                # token's rows — so the flood can never lock out other tenants.
+                self._conn.execute(
+                    "DELETE FROM pop_replay_nonces WHERE rowid = ("
+                    "  SELECT rowid FROM pop_replay_nonces WHERE token_id = ?"
+                    "  ORDER BY ts ASC, rowid ASC LIMIT 1"
+                    ")",
+                    (token_id,),
+                )
+            else:
+                # Below the per-token cap: a new row would GROW the global count,
+                # so honor the global backstop (fail closed when saturated).
+                count = self._conn.execute(
+                    "SELECT COUNT(*) FROM pop_replay_nonces"
+                ).fetchone()[0]
+                if count >= self._max:
+                    return False  # full of fresh entries -> fail closed
             try:
                 self._conn.execute(
                     "INSERT INTO pop_replay_nonces (token_id, nonce, ts) "
@@ -1062,6 +1103,63 @@ class SQLiteAuditWriter:
             """
         ).fetchall()
         return [_audit_event_from_json(row[0]) for row in rows]
+
+    def list_filtered(
+        self,
+        workspace_id: str,
+        *,
+        event_type: str | None = None,
+        grant_ref: str | None = None,
+        boundary_id: str | None = None,
+        agent_id: str | None = None,
+        request_id: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[AuditEvent, ...]:
+        """Workspace-scoped, SQL-pushed audit filter.
+
+        Mirrors the HTTP/operator Python-side filter EXACTLY (same WHERE
+        semantics, same ordering) but lets SQLite do the work: a parameterized
+        ``WHERE workspace_id = ? [AND ...] ORDER BY rowid DESC [LIMIT ?]`` so the
+        whole table is never materialized into Python. The most-recent ``limit``
+        rows are selected via ``rowid DESC LIMIT`` and then returned oldest-first
+        within that window, matching the legacy ``[-limit:]`` slice of
+        insertion-ordered events. ``limit=None`` returns every matching row.
+
+        Workspace scoping is mandatory: results never cross tenants. Every value
+        travels as a bound parameter (no string interpolation into SQL).
+        """
+        clauses = ["workspace_id = ?"]
+        params: list[object] = [workspace_id]
+        if event_type is not None:
+            clauses.append("event_type = ?")
+            params.append(event_type)
+        if grant_ref is not None:
+            clauses.append("grant_ref = ?")
+            params.append(grant_ref)
+        if boundary_id is not None:
+            clauses.append("boundary_id = ?")
+            params.append(boundary_id)
+        if agent_id is not None:
+            clauses.append("agent_id = ?")
+            params.append(agent_id)
+        if request_id is not None:
+            clauses.append("(resource = ? OR grant_ref = ?)")
+            params.append(f"grant_request/{request_id}")
+            params.append(request_id)
+
+        sql = (
+            "SELECT event_json FROM audit_events "
+            f"WHERE {' AND '.join(clauses)} "
+            "ORDER BY rowid DESC"
+        )
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+
+        rows = self._conn.execute(sql, tuple(params)).fetchall()
+        # rows are most-recent-first; return oldest-first within the window to
+        # match the legacy insertion-ordered `[-limit:]` output.
+        return tuple(_audit_event_from_json(row[0]) for row in reversed(rows))
 
 
 class SQLiteBoundaryRegistry:
@@ -1383,6 +1481,27 @@ class SQLiteV1Service:
 
     def get_audit_event(self, event_id: str) -> AuditEvent | None:
         return self.audit_writer.get(event_id)
+
+    def list_filtered(
+        self,
+        workspace_id: str,
+        *,
+        event_type: str | None = None,
+        grant_ref: str | None = None,
+        boundary_id: str | None = None,
+        agent_id: str | None = None,
+        request_id: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[AuditEvent, ...]:
+        return self.audit_writer.list_filtered(
+            workspace_id,
+            event_type=event_type,
+            grant_ref=grant_ref,
+            boundary_id=boundary_id,
+            agent_id=agent_id,
+            request_id=request_id,
+            limit=limit,
+        )
 
     def register_boundary(
         self,

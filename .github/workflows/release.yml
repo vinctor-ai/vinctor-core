@@ -79,6 +79,9 @@ jobs:
           push: ${{ startsWith(github.ref, 'refs/tags/') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Supply-chain attestations attached to the pushed image.
+          provenance: true
+          sbom: true
 
   pypi:
     name: Publish to PyPI (opt-in)

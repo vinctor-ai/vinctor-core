@@ -556,8 +556,8 @@ auto_approval_rules:
         "rules_updated": 0,
         "workspace_id": "ws_demo",
     }
-    assert service_info["schema_versions"] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
-    assert service_info["schema_version"] == 9
+    assert service_info["schema_versions"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    assert service_info["schema_version"] == 10
     assert exported["agent_bounds"] == 1
     assert exported["auto_approval_rules"] == 1
     assert bounds == ("execute:ci/test", "write:repo/vinctor-core/*")
@@ -676,11 +676,11 @@ def test_vinctor_cli_storage_backup_and_reset(tmp_path: Path) -> None:
 
     assert backup["output_path"] == str(backup_path)
     assert backup["bytes"] > 0
-    assert backup["schema_versions"] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert backup["schema_versions"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     assert reset == {
         "db_path": str(db_path),
         "reset": True,
-        "schema_versions": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "schema_versions": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     }
 
     backup_conn = sqlite3.connect(backup_path)
@@ -752,8 +752,8 @@ def test_vinctor_cli_service_info_reports_schema(tmp_path: Path) -> None:
 
     assert info["mode"] == "local"
     assert info["db_path"] == str(db_path)
-    assert info["schema_version"] == 9
-    assert info["schema_versions"] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert info["schema_version"] == 10
+    assert info["schema_versions"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     assert info["key_storage_mode"] == "sqlite_hashes"
     assert "host" in info
     assert "port" in info
@@ -789,7 +789,7 @@ def test_vinctor_cli_storage_restore_roundtrip(tmp_path: Path) -> None:
         "db_path": str(db_path),
         "input_path": str(backup_path),
         "restored": True,
-        "schema_versions": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "schema_versions": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     }
     conn = sqlite3.connect(db_path)
     try:
@@ -867,7 +867,7 @@ def test_vinctor_cli_storage_migrate_reports_versions(tmp_path: Path) -> None:
 
     migrate = _run(["--json", "--db", str(db_path), "operator", "storage", "migrate"])
 
-    assert migrate == {"db_path": str(db_path), "schema_versions": [1, 2, 3, 4, 5, 6, 7, 8, 9]}
+    assert migrate == {"db_path": str(db_path), "schema_versions": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]}
     conn = sqlite3.connect(db_path)
     try:
         grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(

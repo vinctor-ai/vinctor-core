@@ -22,6 +22,10 @@ ENV VINCTOR_LOG_LEVEL=info
 
 EXPOSE 8765
 
+# Probe the service health endpoint with the stdlib (no curl in python-slim).
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s CMD \
+    python -c "import urllib.request,os;urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('VINCTOR_PORT','8765')+'/healthz').read()"
+
 USER vinctor
 
 CMD ["vinctor", "service", "serve"]

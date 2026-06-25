@@ -92,6 +92,41 @@ class InMemoryV1Service:
             None,
         )
 
+    def list_filtered(
+        self,
+        workspace_id: str,
+        *,
+        event_type: str | None = None,
+        grant_ref: str | None = None,
+        boundary_id: str | None = None,
+        agent_id: str | None = None,
+        request_id: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[AuditEvent, ...]:
+        """Workspace-scoped audit filter; reference impl for the SQLite pushdown.
+
+        Same WHERE semantics + ordering as :meth:`SQLiteV1Service.list_filtered`:
+        events are kept in insertion order and the most-recent ``limit`` are
+        returned (the legacy ``[-limit:]`` slice), oldest-first within that
+        window. Workspace scoping is mandatory. ``limit=None`` returns all matches.
+        """
+        matched = [
+            event
+            for event in self.audit_writer.events
+            if event.workspace_id == workspace_id
+            and _audit_event_matches(
+                event,
+                event_type=event_type,
+                grant_ref=grant_ref,
+                boundary_id=boundary_id,
+                agent_id=agent_id,
+                request_id=request_id,
+            )
+        ]
+        if limit is not None:
+            matched = matched[-limit:]
+        return tuple(matched)
+
     def record_auth_failure(self, *, surface: str, boundary_id: str | None, now: datetime) -> None:
         self._auth_failures.record(
             self.audit_writer, surface=surface, boundary_id=boundary_id, now=now
@@ -388,3 +423,27 @@ class InMemoryV1Service:
             pop_replay_cache=self._pop_replay,
             pop_skew_seconds=pop_skew_seconds,
         )
+
+
+def _audit_event_matches(
+    event: AuditEvent,
+    *,
+    event_type: str | None,
+    grant_ref: str | None,
+    boundary_id: str | None,
+    agent_id: str | None,
+    request_id: str | None,
+) -> bool:
+    if agent_id is not None and event.agent_id != agent_id:
+        return False
+    if event_type is not None and event.event_type != event_type:
+        return False
+    if grant_ref is not None and event.grant_ref != grant_ref:
+        return False
+    if boundary_id is not None and event.boundary_id != boundary_id:
+        return False
+    if request_id is None:
+        return True
+    return (
+        event.resource == f"grant_request/{request_id}" or event.grant_ref == request_id
+    )
