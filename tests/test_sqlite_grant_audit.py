@@ -14,6 +14,7 @@ from vinctor_service import (
     init_sqlite_schema,
     insert_grant,
 )
+from vinctor_service.sqlite import _grant_from_row
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -99,7 +100,7 @@ def test_sqlite_insert_grant_rejects_duplicate_grant_ref(tmp_path: Path) -> None
         conn.close()
 
 
-def test_sqlite_unknown_grant_returns_v1_404_without_audit(tmp_path: Path) -> None:
+def test_sqlite_unknown_grant_returns_v1_403_without_audit(tmp_path: Path) -> None:
     conn = connect_db(tmp_path)
     insert_grant(conn, grant())
 
@@ -110,8 +111,8 @@ def test_sqlite_unknown_grant_returns_v1_404_without_audit(tmp_path: Path) -> No
         audit_writer=SQLiteAuditWriter(conn),
     )
 
-    assert response.status_code == 404
-    assert response.error == "grant_not_found"
+    assert response.status_code == 403
+    assert response.error == "forbidden"
     assert response.decision is None
     assert audit_count(conn) == 0
     conn.close()
@@ -213,3 +214,38 @@ def test_sqlite_audit_schema_does_not_store_raw_tool_or_prompt_fields(
     event_data = json.loads(row["event_json"])
     assert event_data.keys().isdisjoint(forbidden)
     conn.close()
+
+
+def test_grant_from_row_coerces_naive_expires_at_to_utc() -> None:
+    # Defense-in-depth: a tz-naive expires_at in storage must be coerced to UTC so
+    # the enforce comparison (now is always tz-aware) cannot TypeError.
+    row = (
+        "grnt_main",
+        "grt_main",
+        "ws_main",
+        "agent_release",
+        json.dumps(["write:repo/feature/*"]),
+        "active",
+        "2026-06-10T13:00:00",  # naive (no tzinfo)
+    )
+
+    loaded = _grant_from_row(row)
+
+    assert loaded.expires_at is not None
+    assert loaded.expires_at.tzinfo is UTC
+
+
+def test_grant_from_row_preserves_aware_expires_at() -> None:
+    row = (
+        "grnt_main",
+        "grt_main",
+        "ws_main",
+        "agent_release",
+        json.dumps(["write:repo/feature/*"]),
+        "active",
+        "2026-06-10T13:00:00+00:00",
+    )
+
+    loaded = _grant_from_row(row)
+
+    assert loaded.expires_at == datetime(2026, 6, 10, 13, 0, tzinfo=UTC)

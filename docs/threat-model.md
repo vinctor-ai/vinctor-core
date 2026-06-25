@@ -169,8 +169,9 @@ the PEP key's own workspace, preserving tenant isolation. See
   cross-workspace request, so a PEP for workspace A can never authorize a
   subject or grant in workspace B.
 - **Non-disclosure preserved.** The delegated response leaks no more than
-  `/v1/enforce`; cross-workspace and bad-subject requests fail closed with a
-  generic `forbidden`/`grant_not_found` and write no audit event.
+  `/v1/enforce`; an unknown grant_ref and an existing-but-foreign grant_ref are
+  indistinguishable — both fail closed with the same generic `403 forbidden`
+  (no grant_ref echoed, closing the grant-existence oracle).
 - **Honest audit of who-asked vs who-it's-about.** Audit records the enforcing
   PEP principal separately from the subject `agent_id`.
 

@@ -184,7 +184,7 @@ def test_v1_http_unknown_grant_uses_v1_response_without_audit() -> None:
 
     response = call(svc, request_body=body(grant_ref="grt_missing"))
 
-    assert response.status_code == 404
-    assert response.body["error"] == "grant_not_found"
+    assert response.status_code == 403
+    assert response.body["error"] == "forbidden"
     assert "decision" not in response.body
     assert svc.audit_events == ()

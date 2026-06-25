@@ -3,5 +3,10 @@
 # normal ACME certificate issuance. Keep vinctor-service behind this proxy.
 
 {$VINCTOR_PREVIEW_HOSTNAME:localhost} {
+	# Cap request bodies at the proxy. Legitimate Vinctor bodies are tiny JSON;
+	# this matches the server-side MAX_BODY_BYTES (64 KiB) defense-in-depth.
+	request_body {
+		max_size 64KB
+	}
 	reverse_proxy vinctor:8765
 }

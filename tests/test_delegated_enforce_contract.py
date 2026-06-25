@@ -227,7 +227,7 @@ def test_delegated_enforce_subject_mismatch_records_rejection_audit() -> None:
     assert "grt_" not in str(event.to_dict())
 
 
-def test_delegated_enforce_missing_grant_returns_404_without_audit() -> None:
+def test_delegated_enforce_missing_grant_returns_403_without_audit() -> None:
     audit = InMemoryAuditWriter()
 
     response = delegated_enforce_v1_contract(
@@ -237,10 +237,57 @@ def test_delegated_enforce_missing_grant_returns_404_without_audit() -> None:
         audit_writer=audit,
     )
 
-    assert response.status_code == 404
-    assert response.error == "grant_not_found"
+    # Existence oracle closed: an unknown grant returns the same generic 403
+    # forbidden as a foreign grant, and writes NO mismatch audit.
+    assert response.status_code == 403
+    assert response.error == "forbidden"
     assert response.decision is None
+    assert "grt_missing" not in (response.reason or "")
     assert audit.events == []
+
+
+def test_delegated_enforce_unknown_and_foreign_grant_are_indistinguishable() -> None:
+    # A probe with a nonexistent grant_ref and a probe with an existing-but-foreign
+    # grant_ref (here: belonging to a different agent in the trusted workspace) must
+    # receive an IDENTICAL caller-facing response. Existence cannot be inferred.
+    unknown = delegated_enforce_v1_contract(
+        request(grant_ref="grt_missing"),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=InMemoryAuditWriter(),
+    )
+    foreign = delegated_enforce_v1_contract(
+        request(agent_id="agent_other"),
+        grant_repository=repository(grant(agent_id="agent_release")),
+        now=NOW,
+        audit_writer=InMemoryAuditWriter(),
+    )
+
+    assert unknown.status_code == foreign.status_code == 403
+    assert unknown.error == foreign.error == "forbidden"
+    assert unknown.reason == foreign.reason
+    assert unknown.decision is foreign.decision is None
+
+
+def test_delegated_enforce_foreign_grant_audit_uses_trusted_workspace() -> None:
+    # The mismatch audit for an existing-but-foreign grant must be attributed to the
+    # caller's OWN authenticated (trusted) workspace, never the victim grant's
+    # workspace, so a probe cannot write into another workspace's audit trail.
+    audit = InMemoryAuditWriter()
+
+    response = delegated_enforce_v1_contract(
+        request(agent_id="agent_other", pep_workspace_id="ws_main"),
+        grant_repository=repository(grant(workspace_id="ws_main", agent_id="agent_release")),
+        now=NOW,
+        audit_writer=audit,
+    )
+
+    assert response.status_code == 403
+    assert response.error == "forbidden"
+    assert len(audit.events) == 1
+    assert audit.events[0].reason_code == REASON_AGENT_GRANT_MISMATCH
+    assert audit.events[0].workspace_id == "ws_main"
+    assert audit.events[0].enforcing_principal == "pep_git_host"
 
 
 def test_delegated_enforce_does_not_disclose_grant_ref_in_response() -> None:

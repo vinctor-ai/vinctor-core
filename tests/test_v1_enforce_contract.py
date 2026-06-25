@@ -107,7 +107,7 @@ def test_v1_enforce_scope_deny_writes_audit_event() -> None:
     assert audit.events[0].reason == "action_denied"
 
 
-def test_v1_enforce_grant_not_found_returns_404_without_audit() -> None:
+def test_v1_enforce_grant_not_found_returns_403_without_audit() -> None:
     audit = InMemoryAuditWriter()
 
     response = enforce_v1_contract(
@@ -117,10 +117,36 @@ def test_v1_enforce_grant_not_found_returns_404_without_audit() -> None:
         audit_writer=audit,
     )
 
-    assert response.status_code == 404
-    assert response.error == "grant_not_found"
+    # Existence oracle closed: an unknown grant returns the same generic 403
+    # forbidden as a foreign grant, and writes NO mismatch audit.
+    assert response.status_code == 403
+    assert response.error == "forbidden"
     assert response.decision is None
+    assert "grt_missing" not in (response.reason or "")
     assert audit.events == []
+
+
+def test_v1_enforce_unknown_and_foreign_grant_are_indistinguishable() -> None:
+    # A probe with a nonexistent grant_ref and a probe with an existing-but-foreign
+    # grant_ref must receive an IDENTICAL caller-facing response (status + body),
+    # so existence cannot be inferred from the response.
+    unknown = enforce_v1_contract(
+        request(grant_ref="grt_missing"),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=InMemoryAuditWriter(),
+    )
+    foreign = enforce_v1_contract(
+        request(agent_id="agent_other"),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=InMemoryAuditWriter(),
+    )
+
+    assert unknown.status_code == foreign.status_code == 403
+    assert unknown.error == foreign.error == "forbidden"
+    assert unknown.reason == foreign.reason
+    assert unknown.decision is foreign.decision is None
 
 
 def test_v1_enforce_grant_lookup_failure_returns_503_without_audit() -> None:
@@ -149,8 +175,8 @@ def test_v1_enforce_missing_grant_precedes_invalid_request_validation() -> None:
         audit_writer=audit,
     )
 
-    assert response.status_code == 404
-    assert response.error == "grant_not_found"
+    assert response.status_code == 403
+    assert response.error == "forbidden"
     assert response.decision is None
     assert audit.events == []
 

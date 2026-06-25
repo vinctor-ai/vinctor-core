@@ -35,6 +35,12 @@ from vinctor_service.repositories import (
     SubjectTokenRepository,
 )
 
+# Single generic caller-facing message for every "grant is not usable by you" deny
+# (unknown grant_ref, foreign grant, or caller-asserted-workspace disagreement). It
+# echoes no grant_ref and draws no exist-vs-belong distinction, so the response cannot
+# be used as a grant-existence oracle (ADR 0008 non-disclosure).
+_GRANT_FORBIDDEN_MESSAGE = "grant is not accessible for this request"
+
 
 def enforce_v1_contract(
     request: V1EnforceRequest,
@@ -54,14 +60,16 @@ def enforce_v1_contract(
             "grant lookup failed; no decision was recorded",
         )
 
-    if grant is None:
-        return _pre_audit_error(
-            404,
-            "grant_not_found",
-            f"grant_ref {request.grant_ref} does not exist",
-        )
-
-    if grant.workspace_id != request.workspace_id or grant.agent_id != request.agent_id:
+    # Existence oracle closed (ADR 0008): an unknown grant_ref and an existing-but-
+    # foreign grant_ref return an IDENTICAL caller-facing 403 forbidden with a generic
+    # message (no grant_ref echoed, no exist-vs-belong distinction). Only the genuine
+    # existing-but-foreign case writes the operator-only mismatch audit, attributed to
+    # the caller's own authenticated workspace (request.workspace_id is forced from the
+    # agent key by the HTTP handler), so a probe cannot infer existence nor write into a
+    # victim workspace's audit trail. The nonexistent case writes no audit.
+    if grant is not None and (
+        grant.workspace_id != request.workspace_id or grant.agent_id != request.agent_id
+    ):
         _record_rejection(
             audit_writer,
             reason_code=REASON_AGENT_GRANT_MISMATCH,
@@ -72,11 +80,10 @@ def enforce_v1_contract(
             boundary_id=request.boundary_id,
             now=now,
         )
-        return _pre_audit_error(
-            403,
-            "forbidden",
-            f"grant_ref {request.grant_ref} does not belong to the requesting agent",
-        )
+    if grant is None or (
+        grant.workspace_id != request.workspace_id or grant.agent_id != request.agent_id
+    ):
+        return _pre_audit_error(403, "forbidden", _GRANT_FORBIDDEN_MESSAGE)
 
     require_boundary = (
         agent_enforcement_settings_repository.is_boundary_required(
@@ -150,11 +157,7 @@ def delegated_enforce_v1_contract(
             now=now,
             enforcing_principal=request.pep_id,
         )
-        return _pre_audit_error(
-            403,
-            "forbidden",
-            f"grant_ref {request.grant_ref} does not belong to the asserted subject",
-        )
+        return _pre_audit_error(403, "forbidden", _GRANT_FORBIDDEN_MESSAGE)
 
     try:
         grant = grant_repository.get_by_ref(request.grant_ref)
@@ -165,16 +168,20 @@ def delegated_enforce_v1_contract(
             "grant lookup failed; no decision was recorded",
         )
 
-    if grant is None:
-        return _pre_audit_error(
-            404,
-            "grant_not_found",
-            f"grant_ref {request.grant_ref} does not exist",
-        )
-
+    # Existence oracle closed (ADR 0008): an unknown grant_ref and an existing-but-
+    # foreign grant_ref (wrong trusted workspace and/or wrong asserted subject) return
+    # an IDENTICAL caller-facing 403 forbidden with a generic message (no grant_ref
+    # echoed, no exist-vs-belong distinction). Only the genuine existing-but-foreign
+    # case writes the operator-only mismatch audit, attributed to the caller's own
+    # authenticated TRUSTED workspace (never the caller-asserted one, never the victim
+    # grant's workspace), so a probe cannot infer existence nor write into a victim
+    # workspace's audit trail. The nonexistent case writes no audit.
+    #
     # Tenant isolation: authorize against the TRUSTED workspace, and require the
     # grant to belong to the asserted subject within it.
-    if grant.workspace_id != trusted_ws or grant.agent_id != request.agent_id:
+    if grant is not None and (
+        grant.workspace_id != trusted_ws or grant.agent_id != request.agent_id
+    ):
         _record_rejection(
             audit_writer,
             reason_code=REASON_AGENT_GRANT_MISMATCH,
@@ -186,11 +193,10 @@ def delegated_enforce_v1_contract(
             now=now,
             enforcing_principal=request.pep_id,
         )
-        return _pre_audit_error(
-            403,
-            "forbidden",
-            f"grant_ref {request.grant_ref} does not belong to the asserted subject",
-        )
+    if grant is None or (
+        grant.workspace_id != trusted_ws or grant.agent_id != request.agent_id
+    ):
+        return _pre_audit_error(403, "forbidden", _GRANT_FORBIDDEN_MESSAGE)
 
     # require_subject_token mandate (mirror of require_boundary): when the subject
     # is hardened, a delegated enforce MUST present a usable subject token. This runs

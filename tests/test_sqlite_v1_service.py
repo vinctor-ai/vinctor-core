@@ -119,8 +119,8 @@ def test_sqlite_v1_service_preserves_unknown_grant_no_audit(
         now=NOW,
     )
 
-    assert response.status_code == 404
-    assert response.error == "grant_not_found"
+    assert response.status_code == 403
+    assert response.error == "forbidden"
     assert response.decision is None
     assert audit_count(conn) == 0
     conn.close()

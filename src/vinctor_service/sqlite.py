@@ -1498,6 +1498,12 @@ def _boundary_from_row(row: sqlite3.Row | tuple | None) -> Boundary | None:
 
 
 def _grant_from_row(row: sqlite3.Row | tuple[object, ...]) -> Grant:
+    expires_at = _datetime_from_storage(row[6])
+    # Defense-in-depth: coerce a tz-naive expires_at to UTC so the enforce
+    # comparison against a tz-aware ``now`` cannot raise TypeError (it already
+    # fails closed on error, but we normalize rather than rely on that).
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
     return Grant(
         grant_id=row[0],
         grant_ref=row[1],
@@ -1505,7 +1511,7 @@ def _grant_from_row(row: sqlite3.Row | tuple[object, ...]) -> Grant:
         agent_id=row[3],
         scopes=tuple(json.loads(row[4])),
         status=row[5],
-        expires_at=_datetime_from_storage(row[6]),
+        expires_at=expires_at,
     )
 
 

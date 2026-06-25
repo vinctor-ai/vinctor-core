@@ -47,6 +47,15 @@ from vinctor_service.v1_http import (
 
 Clock = Callable[[], datetime]
 
+# All legitimate request bodies are tiny JSON payloads. Cap the read so a hostile
+# (or merely huge) Content-Length cannot pin a worker thread or exhaust memory
+# before authentication. Applied by every body-accepting route.
+MAX_BODY_BYTES = 64 * 1024
+
+# Reap idle/slow/blocked connections so a slow-loris or a connection that stalls
+# mid-body cannot hold a worker thread indefinitely.
+HANDLER_TIMEOUT_SECONDS = 15
+
 
 def create_v1_http_server(
     address: tuple[str, int],
@@ -98,8 +107,11 @@ def create_v1_http_handler(
     pep_keys = dict(pep_identities or {})
     now = clock or _utc_now
 
+    pop_skew_seconds = _resolve_pop_skew_seconds()
+
     class V1Handler(BaseHTTPRequestHandler):
         server_version = "VinctorLocalHTTP/0.1"
+        timeout = HANDLER_TIMEOUT_SECONDS
 
         def do_POST(self) -> None:
             self._dispatch("POST")
@@ -330,12 +342,7 @@ def create_v1_http_handler(
             pep_identity_resolver=pep_identity_resolver,
             service=cast(V1DelegatedEnforceService, service),
             now=now(),
-            pop_skew_seconds=int(
-                os.environ.get(
-                    "VINCTOR_SUBJECT_TOKEN_POP_SKEW_SECONDS",
-                    DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS,
-                )
-            ),
+            pop_skew_seconds=pop_skew_seconds,
         )
         _send_json(handler, response)
 
@@ -539,6 +546,22 @@ def _route_label(path: str) -> str:
     return "other"
 
 
+def _resolve_pop_skew_seconds() -> int:
+    """Parse VINCTOR_SUBJECT_TOKEN_POP_SKEW_SECONDS once at handler construction.
+
+    An invalid value falls back to the documented default rather than raising a
+    per-request 500 on the delegated enforce path.
+    """
+    raw = os.environ.get(
+        "VINCTOR_SUBJECT_TOKEN_POP_SKEW_SECONDS",
+        DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS,
+    )
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return int(DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS)
+
+
 def _read_optional_json_body(handler: BaseHTTPRequestHandler) -> object | V1HttpResponse:
     length_header = handler.headers.get("Content-Length")
     if length_header is None or length_header == "0":
@@ -559,7 +582,27 @@ def _read_json_body(handler: BaseHTTPRequestHandler) -> object | V1HttpResponse:
             },
         )
 
-    raw_body = handler.rfile.read(length)
+    # Bound the read BEFORE touching the socket: reject a negative length (which
+    # would make rfile.read(-1) drain the connection) and any length above the
+    # cap, with a clean response instead of buffering a hostile body.
+    if length < 0:
+        return V1HttpResponse(
+            status_code=400,
+            body={
+                "error": "invalid_request",
+                "reason": "Content-Length must not be negative",
+            },
+        )
+    if length > MAX_BODY_BYTES:
+        return V1HttpResponse(
+            status_code=413,
+            body={
+                "error": "payload_too_large",
+                "reason": f"request body must not exceed {MAX_BODY_BYTES} bytes",
+            },
+        )
+
+    raw_body = handler.rfile.read(min(length, MAX_BODY_BYTES))
     try:
         return json.loads(raw_body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):

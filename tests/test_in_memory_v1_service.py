@@ -70,8 +70,8 @@ def test_in_memory_v1_service_preserves_pre_audit_failures() -> None:
         now=NOW,
     )
 
-    assert response.status_code == 404
-    assert response.error == "grant_not_found"
+    assert response.status_code == 403
+    assert response.error == "forbidden"
     assert service.audit_events == ()
 
 

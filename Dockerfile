@@ -1,3 +1,5 @@
+# TODO: pin by digest (FROM python:3.11-slim@sha256:<digest>  # 3.11-slim) once
+# a digest can be resolved in CI (e.g. `docker buildx imagetools inspect`).
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -7,7 +9,10 @@ COPY src ./src
 
 RUN python -m pip install --no-cache-dir .
 
-RUN mkdir -p /data
+# Run as an unprivileged system user; own the data directory it writes to.
+RUN useradd --system --uid 10001 vinctor \
+    && mkdir -p /data \
+    && chown vinctor:vinctor /data
 
 ENV VINCTOR_HOST=0.0.0.0
 ENV VINCTOR_PORT=8765
@@ -16,5 +21,7 @@ ENV VINCTOR_SERVICE_MODE=self_hosted
 ENV VINCTOR_LOG_LEVEL=info
 
 EXPOSE 8765
+
+USER vinctor
 
 CMD ["vinctor", "service", "serve"]

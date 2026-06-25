@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -8,6 +9,8 @@ from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from threading import Thread
 from typing import Any
+
+import pytest
 
 from vinctor_core import BoundaryRegistrationInput, Grant, register_boundary
 from vinctor_core.models import AuditEvent
@@ -18,6 +21,7 @@ from vinctor_service import (
     Metrics,
     PepIdentity,
     WorkspaceIdentity,
+    create_v1_http_handler,
     create_v1_http_server,
 )
 
@@ -1162,3 +1166,122 @@ def test_local_http_metrics_endpoint_absent_without_metrics() -> None:
 
     assert status == 404
     assert json.loads(response)["error"] == "not_found"
+
+
+def _raw_socket_post(
+    server: ThreadingHTTPServer,
+    *,
+    content_length: str,
+    body: bytes,
+    path: str = "/v1/enforce",
+) -> tuple[int, dict[str, Any]]:
+    """Send a hand-rolled POST so Content-Length can lie about the body length.
+
+    Returns (status, parsed-json-body). Used to exercise the bounded-body guard
+    without actually transmitting a huge payload.
+    """
+    host, port = server.server_address
+    request = (
+        f"POST {path} HTTP/1.1\r\n"
+        f"Host: {host}:{port}\r\n"
+        "X-Agent-Key: agent_key_main\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {content_length}\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+    ).encode("ascii") + body
+    sock = socket.create_connection((host, port), timeout=5)
+    try:
+        sock.sendall(request)
+        chunks: list[bytes] = []
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        sock.close()
+    raw = b"".join(chunks)
+    head, _, payload = raw.partition(b"\r\n\r\n")
+    status_line = head.split(b"\r\n", 1)[0].decode("ascii")
+    status = int(status_line.split(" ", 2)[1])
+    return status, json.loads(payload.decode("utf-8"))
+
+
+def test_local_http_rejects_oversized_content_length_before_reading() -> None:
+    # A Content-Length far above the cap must be rejected with 413 BEFORE the
+    # server attempts to buffer it. We advertise 10 MB but send only a few bytes;
+    # a server that tried rfile.read(10_000_000) would block until our socket
+    # timeout instead of returning a clean response.
+    svc = service()
+
+    with running_server(svc) as server:
+        status, response = _raw_socket_post(
+            server,
+            content_length=str(10_000_000),
+            body=b"{}",
+        )
+
+    assert status == 413
+    assert response["error"] == "payload_too_large"
+    assert svc.audit_events == ()
+
+
+def test_local_http_rejects_negative_content_length() -> None:
+    # A negative Content-Length must be rejected cleanly and must NOT reach
+    # rfile.read(-1), which would drain the socket.
+    svc = service()
+
+    with running_server(svc) as server:
+        status, response = _raw_socket_post(
+            server,
+            content_length="-1",
+            body=b"",
+        )
+
+    assert status in (400, 413)
+    assert response["error"] in ("payload_too_large", "invalid_request")
+    assert svc.audit_events == ()
+
+
+def test_local_http_accepts_normal_small_body() -> None:
+    # Regression: a normal small JSON body still works after the cap is added.
+    svc = service()
+
+    with running_server(svc) as server:
+        status, response = post_json(server)
+
+    assert status == 200
+    assert response["decision"] == "permit"
+
+
+def test_v1_handler_has_finite_timeout() -> None:
+    handler = create_v1_http_handler(
+        service=service(),
+        agent_identities=identities(),
+    )
+    assert handler.timeout is not None
+    assert handler.timeout > 0
+
+
+def test_local_http_invalid_pop_skew_does_not_500_delegated_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An invalid VINCTOR_SUBJECT_TOKEN_POP_SKEW_SECONDS must not 500 the
+    # delegated enforce path per request: it is validated once / falls back to
+    # the documented default rather than crashing on an unguarded int().
+    monkeypatch.setenv("VINCTOR_SUBJECT_TOKEN_POP_SKEW_SECONDS", "30s")
+    svc = service()
+
+    with running_server(svc, pep_keys=pep_identities()) as server:
+        status, response = post_json(
+            server,
+            payload=delegated_body(),
+            headers={"X-PEP-Key": "pep_key_main"},
+            path="/v1/enforce/delegated",
+        )
+
+    assert status != 500
+    assert response.get("error") != "internal_error"
+    assert status == 200
+    assert response["decision"] == "permit"

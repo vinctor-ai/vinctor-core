@@ -57,7 +57,10 @@ Body:
 Responses:
 
 - `200` with `decision: permit`
-- `403` with `decision: deny`
+- `403` with `decision: deny`, or `403 forbidden` when the grant_ref is unknown
+  or not owned by the requesting agent (the two are indistinguishable — no
+  grant_ref is echoed and no exist-vs-belong distinction is made, closing the
+  grant-existence oracle)
 - `400` for malformed body
 - `401` for missing or invalid agent key
 

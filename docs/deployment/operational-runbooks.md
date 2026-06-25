@@ -128,6 +128,26 @@ curl -sS http://127.0.0.1:8765/healthz
 The health response intentionally omits keys, grant refs, database paths, and
 internal configuration.
 
+The bundled `compose.yaml` publishes the port as `127.0.0.1:8765:8765`, so the
+raw server stays host-local; put a reverse proxy in front for any network
+exposure (see TLS / Reverse Proxy below).
+
+## Container Hardening
+
+The image runs as an unprivileged system user (`vinctor`, uid `10001`), not
+root, and the build `chown`s `/data` to that user. A fresh `vinctor-data`
+volume inherits the correct ownership automatically.
+
+If you attach a **pre-existing** named volume (or a host bind mount) created by
+an older root-running image, its files may still be owned by root and the
+non-root process will fail to write. Fix ownership once with a one-off root
+container before starting the service:
+
+```bash
+# Re-own a pre-existing volume to the non-root container user (uid 10001).
+docker compose run --rm --user 0 vinctor chown -R 10001:10001 /data
+```
+
 ## TLS / Reverse Proxy
 
 Run Vinctor bound to localhost and put a reverse proxy in front for TLS. Keep
@@ -143,6 +163,10 @@ server {
     ssl_certificate     /etc/ssl/vinctor/fullchain.pem;
     ssl_certificate_key /etc/ssl/vinctor/privkey.pem;
 
+    # Cap request bodies at the proxy. Legitimate Vinctor bodies are tiny JSON;
+    # this matches the server-side body cap (64 KiB) as defense-in-depth.
+    client_max_body_size 64k;
+
     location / {
         proxy_pass http://127.0.0.1:8765;
         proxy_set_header Host $host;
@@ -156,6 +180,10 @@ Caddy (automatic certificates):
 
 ```caddy
 vinctor.example.internal {
+    # Match the server-side body cap (64 KiB) at the proxy.
+    request_body {
+        max_size 64KB
+    }
     reverse_proxy 127.0.0.1:8765
 }
 ```
