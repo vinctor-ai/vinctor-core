@@ -7,6 +7,27 @@ database, or HTTP stack.
 
 > Status: early prototype. APIs and package boundaries may change.
 
+## See it
+
+The same action is allowed or denied by **context** — grant, resource,
+environment — not by a denylist of scary commands:
+
+![Vinctor golden-path demo: the same action allowed or denied by context](docs/assets/golden-path-demo.gif)
+
+```bash
+# boot a local service with a staging-scoped grant
+vinctor local start --db demo.sqlite --port 0 \
+  --scope 'send:net/internal/*' --scope 'deploy:staging/*' \
+  --boundary-name claude-code-local > vinctor.env &
+source vinctor.env
+
+vinctor agent enforce --action send   --resource net/internal/orders-api    # ✅ ALLOW
+vinctor agent enforce --action send   --resource net/external/pastebin.com  # 🛑 DENY (exfil)
+vinctor agent enforce --action deploy --resource production/web             # 🛑 DENY (prod)
+```
+
+Vinctor authorizes mediated tool calls; it is not a sandbox.
+
 ## Install
 
 Vinctor is a Python ≥ 3.11 package that installs two console commands —

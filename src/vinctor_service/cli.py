@@ -344,6 +344,7 @@ def _add_demo_commands(roles: argparse._SubParsersAction) -> None:
     parser = roles.add_parser("demo", help="Run local demonstration checks.")
     commands = parser.add_subparsers(dest="demo_command", required=True)
     commands.add_parser("check")
+    commands.add_parser("block")
     service = commands.add_parser("service")
     service.add_argument("--scenario", default="ci")
 
@@ -454,7 +455,13 @@ def _agent(args: argparse.Namespace, *, stdout: TextIO) -> None:
             },
         )
         if status == 403:
-            _emit(args, body, f"deny action={args.action} resource={args.resource}", stdout=stdout)
+            _emit(
+                args,
+                body,
+                f"{_decision_label('deny', stdout=stdout)}  "
+                f"action={args.action} resource={args.resource}",
+                stdout=stdout,
+            )
             raise CliError(
                 str(body.get("reason") or "action_denied"),
                 code=EXIT_DENIED,
@@ -462,7 +469,8 @@ def _agent(args: argparse.Namespace, *, stdout: TextIO) -> None:
             )
         _raise_for_status(status, body)
         summary = (
-            f"{body['decision']} action={args.action} resource={args.resource} "
+            f"{_decision_label(str(body['decision']), stdout=stdout)}  "
+            f"action={args.action} resource={args.resource} "
             f"audit_event_id={body.get('audit_event_id')}"
         )
         _emit(args, body, summary, stdout=stdout)
@@ -1183,6 +1191,9 @@ def _demo(args: argparse.Namespace, *, stdout: TextIO) -> None:
     if args.demo_command == "service":
         _demo_service(args, stdout=stdout)
         return
+    if args.demo_command == "block":
+        _demo_block(args, stdout=stdout)
+        return
     if args.demo_command != "check":
         raise CliError(f"unknown demo command: {args.demo_command}")
     with TemporaryDirectory() as temp_dir:
@@ -1522,6 +1533,127 @@ def _demo_service_text(body: dict[str, object]) -> str:
     )
 
 
+# Golden-path demo: the same kind of action allowed or denied by context (grant +
+# resource + environment), not by a denylist. Packages existing parts
+# (prepare_local_service + enforce); adds no new authorization behavior. See
+# docs/superpowers/specs/2026-06-25-golden-path-demo-design.md.
+_DEMO_BLOCK_GRANT_SCOPES = ("send:net/internal/*", "deploy:staging/*")
+_DEMO_BLOCK_BEATS = (
+    {
+        "action": "send",
+        "resource": "net/internal/orders-api",
+        "headline": "agent fetches  net/internal/orders-api",
+        "note": None,
+    },
+    {
+        "action": "send",
+        "resource": "net/external/pastebin.com",
+        "headline": "agent fetches  net/external/pastebin.com",
+        "note": "same fetch, external destination (exfil)",
+    },
+    {
+        "action": "deploy",
+        "resource": "production/web",
+        "headline": "agent runs     deploy -> production/web",
+        "note": "granted deploy:staging/*, never production",
+    },
+)
+
+
+def _demo_block(args: argparse.Namespace, *, stdout: TextIO) -> None:
+    with TemporaryDirectory() as temp_dir:
+        handle = prepare_local_service(
+            LocalLaunchConfig(
+                db_path=Path(temp_dir) / "vinctor.sqlite",
+                port=0,
+                workspace_id="ws_demo",
+                agent_id="agent_runner",
+                workspace_key="wsk_demo",
+                agent_key="aak_demo",
+                grant_ref="grt_bootstrap",
+                scopes=_DEMO_BLOCK_GRANT_SCOPES,
+                boundary_name="claude-code-local",
+            ),
+            now=datetime.now(UTC),
+        )
+        thread = Thread(target=handle.server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            boundary_id = handle.boundary.boundary_id if handle.boundary else None
+            beats: list[dict[str, object]] = []
+            for beat in _DEMO_BLOCK_BEATS:
+                _, enforced = _request_json(
+                    handle.endpoint,
+                    "POST",
+                    "/v1/enforce",
+                    headers=_agent_headers(handle, boundary_id),
+                    body={
+                        "grant_ref": "grt_bootstrap",
+                        "action": beat["action"],
+                        "resource": beat["resource"],
+                    },
+                )
+                event = handle.service.audit_events[-1]
+                beats.append(
+                    {
+                        "action": beat["action"],
+                        "resource": beat["resource"],
+                        "headline": beat["headline"],
+                        "note": beat["note"],
+                        "decision": enforced["decision"],
+                        "reason": enforced.get("reason"),
+                        "audit_event_id": event.event_id,
+                    }
+                )
+            decision_events = [
+                event
+                for event in handle.service.audit_events
+                if event.event_type in ("action_permitted", "action_denied")
+            ]
+            body = {
+                "ok": True,
+                "endpoint": handle.endpoint,
+                "grant_scopes": list(_DEMO_BLOCK_GRANT_SCOPES),
+                "beats": beats,
+                "audit_event_count": len(decision_events),
+            }
+            _emit(args, body, _demo_block_text(body), stdout=stdout)
+        finally:
+            handle.server.shutdown()
+            thread.join(timeout=5)
+            handle.close()
+
+
+def _demo_block_text(body: dict[str, object]) -> str:
+    scopes = ",  ".join(body["grant_scopes"])
+    lines = [
+        f"▸ Vinctor running. this agent's grant:  {scopes}",
+        "  the SAME action is allowed or denied by context -- this is not a denylist.",
+        "",
+    ]
+    for beat in body["beats"]:
+        scope = f"{beat['action']}:{beat['resource']}"
+        lines.append(f"▸ {beat['headline']}")
+        if beat["decision"] == "permit":
+            lines.append(f"  ✅ ALLOW   {scope} -- within grant")
+        else:
+            lines.append(
+                f"  \U0001f6d1 DENY    {scope} -- outside grant     "
+                f"audit ✓ {beat['audit_event_id']}"
+            )
+            if beat["note"]:
+                lines.append(f"            {beat['note']}")
+        lines.append("")
+    lines.append(
+        f"▸ {len(body['beats'])} decisions · {body['audit_event_count']} "
+        "audit records · nothing out-of-scope ran."
+    )
+    lines.append(
+        "  Vinctor authorizes mediated tool calls; it is not a sandbox."
+    )
+    return "\n".join(lines)
+
+
 def _local_config(args: argparse.Namespace) -> LocalLaunchConfig:
     return LocalLaunchConfig(
         db_path=args.db,
@@ -1659,6 +1791,22 @@ def _emit_error(args: argparse.Namespace, error: CliError, *, stderr: TextIO) ->
         print(json.dumps({"ok": False, "error": str(error), "exit_code": error.code}), file=stderr)
     else:
         print(f"error: {error}", file=stderr)
+
+
+def _decision_label(decision: str, *, stdout: TextIO) -> str:
+    """Human-readable ALLOW/DENY prefix for enforce output.
+
+    Colored only when stdout is a real terminal, so piped/captured output (and
+    JSON mode, which never uses this) stays free of escape codes.
+    """
+    if decision == "permit":
+        label, ansi = "✅ ALLOW", "\033[1;32m"
+    else:
+        label, ansi = "🛑 DENY", "\033[1;31m"
+    isatty = getattr(stdout, "isatty", None)
+    if callable(isatty) and isatty():
+        return f"{ansi}{label}\033[0m"
+    return label
 
 
 def _scopes(body: dict[str, object], key: str = "requested_scopes") -> str:

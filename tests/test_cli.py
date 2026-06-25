@@ -438,6 +438,19 @@ def test_vinctor_demo_service_runs_user_facing_flow() -> None:
     assert result["sibling_repo_decision"] == "deny"
 
 
+def test_vinctor_demo_block_shows_context_dependent_decisions() -> None:
+    result = _run(["--json", "demo", "block"])
+
+    assert result["ok"] is True
+    assert result["audit_event_count"] == 3
+    decisions = [beat["decision"] for beat in result["beats"]]
+    assert decisions == ["permit", "deny", "deny"]
+    # the allow and the first deny are the SAME action (send), separated only by
+    # resource -- the "context decides, not a denylist" point.
+    assert result["beats"][0]["action"] == result["beats"][1]["action"] == "send"
+    assert all(beat["audit_event_id"] for beat in result["beats"])
+
+
 def test_vinctor_local_env_formats_existing_values() -> None:
     stdout = StringIO()
     stderr = StringIO()

@@ -464,6 +464,41 @@ Important:
 Deliverable: Improved operational visibility, debugging, and explainability for
 Vinctor authorization state while preserving existing enforcement boundaries.
 
+### Onboarding / first-run friction (2026-06-25 OSS 5-min experience audit)
+
+A fresh-clone walkthrough of the public install→demo path (venv `pip install .`
+on vinctor-core + `npm install && npm run build` on vinctor-claude-code-hook).
+Everything builds, the demos pass, and the claims hold — the gap is that the
+"dangerous action blocked" aha is buried. Captured as the funnel-critical
+pre-promotion backlog.
+
+- **[core+hook] No single "watch a dangerous action get blocked" golden-path
+  demo (epic, funnel-critical).** Seeing a real `deny: action_denied` today
+  requires two repos, two package managers (pip + npm), manual `VINCTOR_*`
+  export copying, and a `settings.json` edit — there is no one-command scene to
+  record as a GIF / README hero. Direction: a single golden path (a
+  `vinctor demo block`-style command or quickstart script) that starts the local
+  service, issues a grant, then shows a dangerous call DENIED with a
+  human-readable reason and an allowed call passing. Packaging of existing parts,
+  not new authz behavior.
+- **[hook] Offline deny reason reads as a setup error, not a security block
+  (med).** Without a running service a mapped dangerous call (`cat .env`,
+  `git push --force`) returns `deny: missing_auth_env`, which a first-time reader
+  sees as "missing env" rather than "classified as `read:secret/env` and would be
+  denied." Direction: in demo/eval context surface the classification
+  (action/resource) alongside the fail-closed reason, or drive the demo through a
+  live local service so it shows `action_denied`.
+- **[core] Recommended `pipx` install path has no fallback when pipx is absent
+  (low-med).** README leads with `pipx install .` but a machine without pipx
+  stops there; the venv path exists lower down. Direction: note "no pipx? use
+  venv" inline, or add the one-line pipx bootstrap.
+- **[core] `vinctor demo service` output is abstract (low).**
+  `auto_approved_request=… decision=permit` works but doesn't dramatize the
+  value. Direction: human-readable narration with explicit ALLOW/DENY labels.
+- **[hook] `explain` does not accept stdin (`-`) (low, DX).** The hook itself
+  reads an event on stdin, but `explain` only takes a file path, so
+  `… | explain -` fails. Direction: let `explain -` read stdin for parity.
+
 ## Open Questions
 
 - Should `unresolved` remain service-layer only, or become a future core outcome?
