@@ -1903,25 +1903,38 @@ def _agent_headers(handle: object, boundary_id: str | None) -> dict[str, str]:
     return headers
 
 
+def _demo_verdict_label(decision: object) -> str:
+    text = str(decision)
+    if text == "permit":
+        return "✅ ALLOW"
+    if text == "deny":
+        return "🛑 DENY"
+    return text
+
+
 def _demo_service_text(body: dict[str, object]) -> str:
+    verdict = _demo_verdict_label
     return "\n".join(
         [
-            "demo service passed",
-            f"endpoint={body['endpoint']}",
+            f"▸ Vinctor demo service running @ {body['endpoint']}",
+            "  each request gets a decision — auto-approval, manual review, a boundary check:",
+            "",
             (
-                f"auto_approved_request={body['auto_approved_request_id']} "
-                f"decision={body['ci_decision']}"
+                f"  {verdict(body['ci_decision'])}   CI test request — auto-approved by rule "
+                f"({body['auto_approved_request_id']})"
             ),
             (
-                f"manual_review_request={body['manual_review_request_id']} "
-                f"auto_reason={body['deploy_auto_approval_reason']} "
-                f"decision={body['deploy_decision']}"
+                f"  {verdict(body['deploy_decision'])}   deploy request — "
+                f"{body['deploy_auto_approval_reason']}, then decided "
+                f"({body['manual_review_request_id']})"
             ),
             (
-                f"repo_boundary_request={body['repo_boundary_request_id']} "
-                f"core={body['repo_core_decision']} sibling={body['sibling_repo_decision']}"
+                f"  {verdict(body['repo_core_decision'])}   in-boundary repo edit      "
+                f"{verdict(body['sibling_repo_decision'])}   sibling repo, out of boundary "
+                f"({body['repo_boundary_request_id']})"
             ),
-            f"audit_events={body['audit_event_count']}",
+            "",
+            f"  {body['audit_event_count']} audit records — every decision recorded.",
         ]
     )
 

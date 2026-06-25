@@ -41,7 +41,7 @@ virtualenv — no `PYTHONPATH` or `python -m …` invocation needed:
 pipx install .
 # include the MCP control plane:  pipx install ".[mcp]"
 
-# …or into a virtualenv:
+# …no pipx on this machine? install into a virtualenv instead:
 python3.11 -m venv .venv && .venv/bin/python -m pip install .
 
 vinctor --help
