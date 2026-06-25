@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import os
 import sqlite3
@@ -92,20 +93,17 @@ def _parser() -> argparse.ArgumentParser:
         description="Operate the local Vinctor prototype.",
         allow_abbrev=False,
     )
-    parser.add_argument("--endpoint", default=os.environ.get("VINCTOR_ENDPOINT"))
-    parser.add_argument("--workspace-key", default=os.environ.get("VINCTOR_WORKSPACE_KEY"))
-    parser.add_argument("--agent-key", default=os.environ.get("VINCTOR_AGENT_KEY"))
-    parser.add_argument("--grant-ref", default=os.environ.get("VINCTOR_GRANT_REF"))
-    parser.add_argument("--boundary-id", default=os.environ.get("VINCTOR_BOUNDARY_ID"))
+    # The persistent flags live on the root (with real env defaults) so the
+    # historical `vinctor --db X <role> ...` form keeps working, and they are
+    # ALSO attached to every leaf subparser (with default=argparse.SUPPRESS) so
+    # `vinctor <role> ... --db X` works too. See _add_global_flags.
+    _add_global_flags(parser, defaults=True)
     parser.add_argument(
-        "--db",
-        type=Path,
-        default=Path(os.environ["VINCTOR_DB"]) if "VINCTOR_DB" in os.environ else None,
+        "--version",
+        action="version",
+        version=f"vinctor {importlib.metadata.version('vinctor-core')}",
+        help="Print the vinctor version and exit.",
     )
-    parser.add_argument("--workspace-id", default="ws_local")
-    parser.add_argument("--agent-id", default="agent_local")
-    parser.add_argument("--json", action="store_true", help="Write JSON to stdout.")
-    parser.add_argument("-o", "--output", choices=("text", "json"), default=None)
 
     roles = parser.add_subparsers(dest="role", required=True)
     _add_service_commands(roles)
@@ -113,7 +111,108 @@ def _parser() -> argparse.ArgumentParser:
     _add_agent_commands(roles)
     _add_operator_commands(roles)
     _add_demo_commands(roles)
+
+    # Attach the global flags to every leaf subparser so they may also appear
+    # AFTER the subcommand, not only before the role.
+    for leaf in _leaf_subparsers(parser):
+        _add_global_flags(leaf, defaults=False)
     return parser
+
+
+def _leaf_subparsers(
+    parser: argparse.ArgumentParser,
+) -> list[argparse.ArgumentParser]:
+    """Return every leaf subparser reachable from ``parser`` (a leaf has no
+    further subcommands of its own)."""
+    sub_actions = [
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    ]
+    if not sub_actions:
+        return [parser]
+    leaves: list[argparse.ArgumentParser] = []
+    for action in sub_actions:
+        for child in action.choices.values():
+            leaves.extend(_leaf_subparsers(child))
+    return leaves
+
+
+def _add_global_flags(parser: argparse.ArgumentParser, *, defaults: bool) -> None:
+    """Attach the persistent global/output flags to ``parser``.
+
+    On the root parser (``defaults=True``) the real env-backed defaults are
+    used. On a leaf subparser (``defaults=False``) every flag uses
+    ``default=argparse.SUPPRESS`` so that an OMITTED leaf flag never appears in
+    the namespace and therefore cannot clobber the root-provided value (the
+    classic argparse parent-parser gotcha). When a leaf flag IS supplied it
+    overwrites the root value, so the trailing form wins — which is the intended
+    behaviour. Any global flag whose option string a leaf already defines (with
+    its own distinct ``dest``/semantics) is skipped so argparse does not raise a
+    conflicting-option error.
+    """
+
+    def add(option_strings: list[str], **kwargs: object) -> None:
+        if not defaults:
+            existing = {
+                option
+                for action in parser._actions
+                for option in action.option_strings
+            }
+            if any(option in existing for option in option_strings):
+                return
+            kwargs["default"] = argparse.SUPPRESS
+        parser.add_argument(*option_strings, **kwargs)
+
+    add(
+        ["--endpoint"],
+        default=os.environ.get("VINCTOR_ENDPOINT"),
+        help="Base URL of the running service, e.g. http://127.0.0.1:8765 "
+        "(env: VINCTOR_ENDPOINT).",
+    )
+    add(
+        ["--workspace-key"],
+        default=os.environ.get("VINCTOR_WORKSPACE_KEY"),
+        help="Operator/workspace API key for operator-side calls "
+        "(env: VINCTOR_WORKSPACE_KEY).",
+    )
+    add(
+        ["--agent-key"],
+        default=os.environ.get("VINCTOR_AGENT_KEY"),
+        help="Agent API key for agent-side calls (env: VINCTOR_AGENT_KEY).",
+    )
+    add(
+        ["--grant-ref"],
+        default=os.environ.get("VINCTOR_GRANT_REF"),
+        help="Default grant reference to enforce/audit against "
+        "(env: VINCTOR_GRANT_REF).",
+    )
+    add(
+        ["--boundary-id"],
+        default=os.environ.get("VINCTOR_BOUNDARY_ID"),
+        help="Boundary (PEP) id to attach to enforce calls (env: VINCTOR_BOUNDARY_ID).",
+    )
+    add(
+        ["--db"],
+        type=Path,
+        default=Path(os.environ["VINCTOR_DB"]) if "VINCTOR_DB" in os.environ else None,
+        help="SQLite database path for direct-DB operator commands (env: VINCTOR_DB).",
+    )
+    add(["--workspace-id"], default="ws_local", help="Workspace id (default: ws_local).")
+    add(["--agent-id"], default="agent_local", help="Agent id (default: agent_local).")
+    add(
+        ["--json"],
+        action="store_true",
+        default=False,
+        help="Write JSON to stdout. Alias for `-o json`; --json wins if both are given.",
+    )
+    add(
+        ["-o", "--output"],
+        choices=("text", "json"),
+        default=None,
+        help="Output format (default: text). `--json` is an alias for `-o json` and "
+        "takes precedence over --output.",
+    )
 
 
 def _add_service_commands(roles: argparse._SubParsersAction) -> None:
@@ -163,12 +262,25 @@ def _add_local_start_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_agent_commands(roles: argparse._SubParsersAction) -> None:
-    parser = roles.add_parser("agent", help="Request and consume scoped grants.")
+    parser = roles.add_parser(
+        "agent",
+        help="Request and consume scoped grants.",
+        description="Agent-side commands: request grants, enforce actions against a "
+        "grant, and mint delegated subject tokens.",
+    )
     commands = parser.add_subparsers(dest="agent_command", required=True)
 
-    requests = commands.add_parser("requests")
+    requests = commands.add_parser(
+        "requests",
+        help="Create grant requests and check their status.",
+        description="Create grant requests and check their status.",
+    )
     request_commands = requests.add_subparsers(dest="requests_command", required=True)
-    create = request_commands.add_parser("create")
+    create = request_commands.add_parser(
+        "create",
+        help="Submit a new grant request for the configured agent.",
+        description="Submit a new grant request for the configured agent.",
+    )
     create.add_argument("--scope", action="append", dest="scopes", required=True)
     create.add_argument("--ttl", required=True)
     create.add_argument("--reason", required=True)
@@ -178,17 +290,36 @@ def _add_agent_commands(roles: argparse._SubParsersAction) -> None:
     create.add_argument("--runtime", dest="requester_runtime")
     create.add_argument("--repo")
     create.add_argument("--worktree")
-    status = request_commands.add_parser("status")
+    status = request_commands.add_parser(
+        "status",
+        help="Show the current status of one grant request.",
+        description="Show the current status of one grant request.",
+    )
     status.add_argument("request_id")
 
-    enforce = commands.add_parser("enforce")
+    enforce = commands.add_parser(
+        "enforce",
+        help="Ask the service to permit or deny an action against a grant.",
+        description="Ask the service to permit or deny an action/resource against a "
+        "grant. Exits non-zero (denied) when the decision is deny.",
+    )
     enforce.add_argument("--grant-ref", dest="enforce_grant_ref")
     enforce.add_argument("--action", required=True)
     enforce.add_argument("--resource", required=True)
 
-    token = commands.add_parser("token")
+    token = commands.add_parser(
+        "token",
+        help="Mint delegated subject tokens.",
+        description="Mint delegated subject tokens (proof of the calling agent's "
+        "identity) for a downstream resource server.",
+    )
     token_commands = token.add_subparsers(dest="token_command", required=True)
-    mint = token_commands.add_parser("mint")
+    mint = token_commands.add_parser(
+        "mint",
+        help="Mint a subject token bound to a grant and audience.",
+        description="Mint a subject token bound to a grant and audience. The raw "
+        "token is printed once and cannot be recovered later.",
+    )
     mint.add_argument("--grant-ref", dest="token_grant_ref", required=True)
     mint.add_argument("--audience", required=True)
     mint.add_argument("--ttl")
@@ -198,154 +329,418 @@ def _add_agent_commands(roles: argparse._SubParsersAction) -> None:
 
 
 def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
-    parser = roles.add_parser("operator", help="Operate request queues, rules, bounds, and audit.")
+    parser = roles.add_parser(
+        "operator",
+        help="Operate request queues, rules, bounds, mandates, and audit.",
+        description="Operator/workspace-side administration: triage and decide grant "
+        "requests, manage auto-approval rules, set issuable-scope bounds, toggle "
+        "enforcement mandates (require-*), and inspect audit/keys/storage.",
+    )
     resources = parser.add_subparsers(dest="operator_resource", required=True)
 
-    requests = resources.add_parser("requests")
+    requests = resources.add_parser(
+        "requests",
+        help="Triage and decide grant requests.",
+        description="Triage and decide grant requests: list/inbox to review, "
+        "view/timeline to inspect, approve/reject/evaluate to decide.",
+    )
     request_commands = requests.add_subparsers(dest="requests_command", required=True)
-    list_requests = request_commands.add_parser("list")
+    list_requests = request_commands.add_parser(
+        "list",
+        help="List all grant requests (optionally filtered by --status).",
+        description="List the full grant-request queue, optionally filtered by status. "
+        "Use `inbox` for just the pending requests with triage recommendations.",
+    )
     list_requests.add_argument(
         "--status",
         choices=("pending", "approved", "rejected", "cancelled", "expired"),
     )
-    request_commands.add_parser("inbox")
-    timeline = request_commands.add_parser("timeline")
+    request_commands.add_parser(
+        "inbox",
+        help="Show pending requests with risk + triage recommendations.",
+        description="Show only the pending requests, each annotated with a risk level "
+        "and a recommended action to help triage. Use `list` for the full queue.",
+    )
+    timeline = request_commands.add_parser(
+        "timeline",
+        help="Show the chain of audit events for one request.",
+        description="Show the ordered chain of audit events tied to one request "
+        "(its history). Use `view` for the single request snapshot.",
+    )
     timeline.add_argument("request_id")
-    view = request_commands.add_parser("view")
+    view = request_commands.add_parser(
+        "view",
+        help="Show a single request's current snapshot.",
+        description="Show the current snapshot of a single request (status, scopes, "
+        "metadata). Use `timeline` for its audit-event history.",
+    )
     view.add_argument("request_id")
-    approve = request_commands.add_parser("approve")
+    approve = request_commands.add_parser(
+        "approve",
+        help="Manually approve a request and issue its grant.",
+        description="Manually approve a request and issue the grant. Use `evaluate` "
+        "to apply auto-approval rules instead of deciding by hand.",
+    )
     approve.add_argument("request_id")
     approve.add_argument("--reason")
-    reject = request_commands.add_parser("reject")
+    reject = request_commands.add_parser(
+        "reject",
+        help="Manually reject a request.",
+        description="Manually reject a request, optionally with a decision reason.",
+    )
     reject.add_argument("request_id")
     reject.add_argument("--reason")
-    evaluate = request_commands.add_parser("evaluate")
+    evaluate = request_commands.add_parser(
+        "evaluate",
+        help="Run auto-approval rules against a request.",
+        description="Run the workspace auto-approval rules against a request; it is "
+        "approved automatically only if a rule matches, otherwise it stays pending "
+        "for manual review. Use `approve` for an explicit manual decision.",
+    )
     evaluate.add_argument("request_id")
 
-    rules = resources.add_parser("rules")
+    rules = resources.add_parser(
+        "rules",
+        help="Manage auto-approval rules.",
+        description="Manage auto-approval rules that let matching requests be approved "
+        "automatically (see `requests evaluate`).",
+    )
     rule_commands = rules.add_subparsers(dest="rules_command", required=True)
-    create = rule_commands.add_parser("create")
+    create = rule_commands.add_parser(
+        "create",
+        help="Create an auto-approval rule.",
+        description="Create an auto-approval rule for a target agent, scopes, and "
+        "maximum TTL.",
+    )
     create.add_argument("--name", required=True)
     create.add_argument("--target-agent-id", required=True)
     create.add_argument("--scope", action="append", dest="scopes", required=True)
     create.add_argument("--max-ttl", required=True)
-    rule_commands.add_parser("list")
-    disable = rule_commands.add_parser("disable")
+    rule_commands.add_parser(
+        "list",
+        help="List auto-approval rules.",
+        description="List the workspace's auto-approval rules.",
+    )
+    disable = rule_commands.add_parser(
+        "disable",
+        help="Disable an auto-approval rule.",
+        description="Disable an auto-approval rule by id.",
+    )
     disable.add_argument("rule_id")
 
-    bounds = resources.add_parser("bounds")
+    bounds = resources.add_parser(
+        "bounds",
+        help="Set the ceiling of scopes/TTL an agent may ever be issued.",
+        description="Set or show the issuable-scope bounds: the maximum set of scopes "
+        "(and optional max TTL) an agent may EVER be granted. This is a ceiling on "
+        "what can be issued, not an enforcement mandate -- see `require-boundary` for "
+        "the at-enforce-time boundary requirement.",
+    )
     bounds_commands = bounds.add_subparsers(dest="bounds_command", required=True)
-    set_bounds = bounds_commands.add_parser("set")
+    set_bounds = bounds_commands.add_parser(
+        "set",
+        help="Set the issuable-scope ceiling (and optional max TTL) for an agent.",
+        description="Set the issuable-scope ceiling (and optional maximum TTL) for an "
+        "agent. Requests exceeding these bounds cannot be granted.",
+    )
     set_bounds.add_argument("target_agent_id", nargs="?")
     set_bounds.add_argument("--scope", action="append", dest="scopes", required=True)
     set_bounds.add_argument("--max-ttl", dest="max_ttl")
-    show_bounds = bounds_commands.add_parser("show")
+    show_bounds = bounds_commands.add_parser(
+        "show",
+        help="Show the current issuable-scope ceiling for an agent.",
+        description="Show the current issuable-scope bounds (ceiling) for an agent.",
+    )
     show_bounds.add_argument("target_agent_id", nargs="?")
 
-    tokens = resources.add_parser("tokens")
+    tokens = resources.add_parser(
+        "tokens",
+        help="List and revoke issued subject tokens.",
+        description="List and revoke delegated subject tokens that agents have minted.",
+    )
     token_commands = tokens.add_subparsers(dest="tokens_command", required=True)
-    token_commands.add_parser("list")
-    revoke_token = token_commands.add_parser("revoke")
+    token_commands.add_parser(
+        "list",
+        help="List subject tokens for the workspace.",
+        description="List subject tokens for the workspace.",
+    )
+    revoke_token = token_commands.add_parser(
+        "revoke",
+        help="Revoke a subject token by id.",
+        description="Revoke a subject token by id.",
+    )
     revoke_token.add_argument("token_id")
 
-    grants = resources.add_parser("grants")
+    grants = resources.add_parser(
+        "grants",
+        help="Manage issued grants.",
+        description="Manage issued grants.",
+    )
     grant_commands = grants.add_subparsers(dest="grants_command", required=True)
-    revoke_grant = grant_commands.add_parser("revoke")
+    revoke_grant = grant_commands.add_parser(
+        "revoke",
+        help="Revoke an issued grant by reference.",
+        description="Revoke an issued grant by its grant reference.",
+    )
     revoke_grant.add_argument("grant_ref")
 
-    require_boundary = resources.add_parser("require-boundary")
+    require_boundary = resources.add_parser(
+        "require-boundary",
+        help="Mandate: enforce calls must carry a boundary (PEP) id.",
+        description="Enforcement mandate. When enabled, enforce calls for the target "
+        "agent (or whole workspace) are denied unless they present a boundary (PEP) "
+        "id. Distinct from `bounds`, which caps issuable scopes.",
+    )
     rb_commands = require_boundary.add_subparsers(dest="require_boundary_command", required=True)
-    rb_enable = rb_commands.add_parser("enable")
+    rb_enable = rb_commands.add_parser(
+        "enable",
+        help="Require a boundary id at enforce time.",
+        description="Enable the require-boundary mandate for an agent or --workspace.",
+    )
     rb_enable.add_argument("target_agent_id", nargs="?")
     rb_enable.add_argument("--workspace", action="store_true")
-    rb_disable = rb_commands.add_parser("disable")
+    rb_disable = rb_commands.add_parser(
+        "disable",
+        help="Stop requiring a boundary id at enforce time.",
+        description="Disable the require-boundary mandate for an agent or --workspace.",
+    )
     rb_disable.add_argument("target_agent_id", nargs="?")
     rb_disable.add_argument("--workspace", action="store_true")
-    rb_show = rb_commands.add_parser("show")
+    rb_show = rb_commands.add_parser(
+        "show",
+        help="Show the require-boundary setting.",
+        description="Show the require-boundary mandate for an agent or --workspace.",
+    )
     rb_show.add_argument("target_agent_id", nargs="?")
     rb_show.add_argument("--workspace", action="store_true")
 
-    require_subject_token = resources.add_parser("require-subject-token")
+    require_subject_token = resources.add_parser(
+        "require-subject-token",
+        help="Mandate: enforce calls must carry a delegated subject token.",
+        description="Enforcement mandate. When enabled, enforce calls for the target "
+        "agent (or whole workspace) are denied unless they present a valid subject "
+        "token proving the calling identity.",
+    )
     rst_commands = require_subject_token.add_subparsers(
         dest="require_subject_token_command", required=True
     )
-    rst_enable = rst_commands.add_parser("enable")
+    rst_enable = rst_commands.add_parser(
+        "enable",
+        help="Require a subject token at enforce time.",
+        description="Enable the require-subject-token mandate for an agent or "
+        "--workspace.",
+    )
     rst_enable.add_argument("target_agent_id", nargs="?")
     rst_enable.add_argument("--workspace", action="store_true")
-    rst_disable = rst_commands.add_parser("disable")
+    rst_disable = rst_commands.add_parser(
+        "disable",
+        help="Stop requiring a subject token at enforce time.",
+        description="Disable the require-subject-token mandate for an agent or "
+        "--workspace.",
+    )
     rst_disable.add_argument("target_agent_id", nargs="?")
     rst_disable.add_argument("--workspace", action="store_true")
-    rst_show = rst_commands.add_parser("show")
+    rst_show = rst_commands.add_parser(
+        "show",
+        help="Show the require-subject-token setting.",
+        description="Show the require-subject-token mandate for an agent or "
+        "--workspace.",
+    )
     rst_show.add_argument("target_agent_id", nargs="?")
     rst_show.add_argument("--workspace", action="store_true")
 
-    require_pop = resources.add_parser("require-pop")
+    require_pop = resources.add_parser(
+        "require-pop",
+        help="Mandate: subject tokens must use proof-of-possession (PoP).",
+        description="Enforcement mandate. When enabled, the target agent (or whole "
+        "workspace) must present proof-of-possession (PoP) bound subject tokens; "
+        "bearer-only tokens are rejected at enforce time.",
+    )
     rp_commands = require_pop.add_subparsers(dest="require_pop_command", required=True)
-    rp_enable = rp_commands.add_parser("enable")
+    rp_enable = rp_commands.add_parser(
+        "enable",
+        help="Require proof-of-possession (PoP) tokens at enforce time.",
+        description="Enable the require-pop mandate for an agent or --workspace.",
+    )
     rp_enable.add_argument("target_agent_id", nargs="?")
     rp_enable.add_argument("--workspace", action="store_true")
-    rp_disable = rp_commands.add_parser("disable")
+    rp_disable = rp_commands.add_parser(
+        "disable",
+        help="Stop requiring proof-of-possession (PoP) tokens.",
+        description="Disable the require-pop mandate for an agent or --workspace.",
+    )
     rp_disable.add_argument("target_agent_id", nargs="?")
     rp_disable.add_argument("--workspace", action="store_true")
-    rp_show = rp_commands.add_parser("show")
+    rp_show = rp_commands.add_parser(
+        "show",
+        help="Show the require-pop setting.",
+        description="Show the require-pop mandate for an agent or --workspace.",
+    )
     rp_show.add_argument("target_agent_id", nargs="?")
     rp_show.add_argument("--workspace", action="store_true")
 
-    audit = resources.add_parser("audit")
+    audit = resources.add_parser(
+        "audit",
+        help="Inspect and export the audit log.",
+        description="Inspect and export the workspace audit log.",
+    )
     audit_commands = audit.add_subparsers(dest="audit_command", required=True)
-    audit_list = audit_commands.add_parser("list")
+    audit_list = audit_commands.add_parser(
+        "list",
+        help="List recent audit events (filterable).",
+        description="List recent audit events, filterable by event type, grant ref, "
+        "boundary id, or request id.",
+    )
     audit_list.add_argument("--limit", type=int, default=20)
     audit_list.add_argument("--event")
     audit_list.add_argument("--grant-ref")
     audit_list.add_argument("--boundary-id")
     audit_list.add_argument("--request-id")
-    audit_export = audit_commands.add_parser("export")
+    audit_export = audit_commands.add_parser(
+        "export",
+        help="Export the workspace audit log as JSONL.",
+        description="Export the workspace audit log as JSONL to stdout or a file.",
+    )
     audit_export.add_argument("--format", choices=("jsonl",), default="jsonl")
     audit_export.add_argument("--file", type=Path)
 
-    policy = resources.add_parser("policy")
+    policy = resources.add_parser(
+        "policy",
+        help="Apply or export a workspace policy document.",
+        description="Apply or export a declarative workspace policy document "
+        "(bounds + auto-approval rules).",
+    )
     policy_commands = policy.add_subparsers(dest="policy_command", required=True)
-    policy_apply = policy_commands.add_parser("apply")
+    policy_apply = policy_commands.add_parser(
+        "apply",
+        help="Apply a policy document to the workspace.",
+        description="Apply a policy document (bounds + rules) to the workspace.",
+    )
     policy_apply.add_argument("--file", required=True, type=Path)
-    policy_export = policy_commands.add_parser("export")
+    policy_export = policy_commands.add_parser(
+        "export",
+        help="Export the workspace's current policy to a file.",
+        description="Export the workspace's current bounds and rules to a policy file.",
+    )
     policy_export.add_argument("--file", required=True, type=Path)
 
-    storage = resources.add_parser("storage")
+    storage = resources.add_parser(
+        "storage",
+        help="Back up, restore, reset, or migrate the SQLite database.",
+        description="Database maintenance: back up, restore, reset, or migrate the "
+        "SQLite database.",
+    )
     storage_commands = storage.add_subparsers(dest="storage_command", required=True)
-    backup = storage_commands.add_parser("backup")
+    backup = storage_commands.add_parser(
+        "backup",
+        help="Back up the database to a file.",
+        description="Back up the SQLite database to an output file.",
+    )
     backup.add_argument("--output", required=True, type=Path)
     backup.add_argument("--force", action="store_true")
-    reset = storage_commands.add_parser("reset")
+    reset = storage_commands.add_parser(
+        "reset",
+        help="Wipe and re-initialize the database (requires --yes).",
+        description="Wipe and re-initialize the SQLite database. Requires --yes.",
+    )
     reset.add_argument("--yes", action="store_true")
-    restore = storage_commands.add_parser("restore")
+    restore = storage_commands.add_parser(
+        "restore",
+        help="Replace the database from a backup (requires --yes).",
+        description="Replace the SQLite database from a backup file. Requires --yes.",
+    )
     restore.add_argument("--input", required=True, type=Path)
     restore.add_argument("--yes", action="store_true")
-    storage_commands.add_parser("migrate")
+    storage_commands.add_parser(
+        "migrate",
+        help="Migrate the database to the latest schema.",
+        description="Migrate the SQLite database to the latest schema version.",
+    )
 
-    service = resources.add_parser("service")
+    service = resources.add_parser(
+        "service",
+        help="Inspect the configured service/database.",
+        description="Inspect the configured service runtime and database.",
+    )
     service_commands = service.add_subparsers(dest="service_info_command", required=True)
-    service_commands.add_parser("info")
+    service_commands.add_parser(
+        "info",
+        help="Show service mode, host/port, db path, and schema version.",
+        description="Show the service mode, host/port, database path, and schema "
+        "version.",
+    )
 
-    keys = resources.add_parser("keys")
+    keys = resources.add_parser(
+        "keys",
+        help="List, revoke, and rotate API keys.",
+        description="Manage API keys: list, revoke, and rotate workspace/agent/PEP "
+        "keys.",
+    )
     keys_commands = keys.add_subparsers(dest="keys_command", required=True)
-    keys_commands.add_parser("list")
-    keys_revoke = keys_commands.add_parser("revoke")
+    keys_commands.add_parser(
+        "list",
+        help="List keys for the workspace.",
+        description="List API keys for the workspace.",
+    )
+    keys_revoke = keys_commands.add_parser(
+        "revoke",
+        help="Revoke a key by id.",
+        description="Revoke an API key by id.",
+    )
     keys_revoke.add_argument("key_id")
-    keys_rotate = keys_commands.add_parser("rotate")
+    keys_rotate = keys_commands.add_parser(
+        "rotate",
+        help="Rotate a workspace, agent, or PEP key.",
+        description="Rotate a key, issuing a new secret and revoking the old one. The "
+        "raw key is printed once and cannot be recovered later.",
+    )
     rotate_targets = keys_rotate.add_subparsers(dest="rotate_target", required=True)
-    rotate_targets.add_parser("workspace")
-    rotate_agent = rotate_targets.add_parser("agent")
+    rotate_targets.add_parser(
+        "workspace",
+        help="Rotate the workspace key.",
+        description="Rotate the workspace key.",
+    )
+    rotate_agent = rotate_targets.add_parser(
+        "agent",
+        help="Rotate an agent key.",
+        description="Rotate the key for a specific agent.",
+    )
     rotate_agent.add_argument("--agent-id", required=True)
-    rotate_pep = rotate_targets.add_parser("pep")
+    rotate_pep = rotate_targets.add_parser(
+        "pep",
+        help="Rotate a PEP (resource-server) key.",
+        description="Rotate the key for a specific PEP (resource server).",
+    )
     rotate_pep.add_argument("--pep-id", required=True)
 
 
 def _add_demo_commands(roles: argparse._SubParsersAction) -> None:
-    parser = roles.add_parser("demo", help="Run local demonstration checks.")
+    parser = roles.add_parser(
+        "demo",
+        help="Run local demonstration flows.",
+        description="Self-contained demos that spin up a throwaway local service: "
+        "`check` is a smoke test, `block` is the context-dependent allow/deny "
+        "showcase, `service` is the fuller end-to-end walkthrough.",
+    )
     commands = parser.add_subparsers(dest="demo_command", required=True)
-    commands.add_parser("check")
-    commands.add_parser("block")
-    service = commands.add_parser("service")
+    commands.add_parser(
+        "check",
+        help="Smoke test: request -> auto-approve -> enforce -> audit.",
+        description="Run a minimal request -> auto-approve -> enforce -> audit smoke "
+        "test against a throwaway local service.",
+    )
+    commands.add_parser(
+        "block",
+        help="Showcase: the same action allowed or denied by context.",
+        description="Hero demo: show the SAME action allowed or denied depending on "
+        "context (grant + resource + environment), proving this is not a denylist.",
+    )
+    service = commands.add_parser(
+        "service",
+        help="Full end-to-end walkthrough (auto + manual + boundary).",
+        description="Fuller end-to-end walkthrough covering auto-approval, manual "
+        "review, and repo-boundary scoping against a throwaway local service.",
+    )
     service.add_argument("--scenario", default="ci")
 
 
@@ -1697,6 +2092,14 @@ def _request_json(
         )
         response = conn.getresponse()
         raw = response.read()
+    except ValueError as error:
+        # http.client rejects header values that carry control chars / embedded
+        # newlines (e.g. a malformed --agent-key/--workspace-key) with a raw
+        # ValueError. Surface it as a clean one-line credential error instead of
+        # letting the traceback escape.
+        raise CliError(
+            "invalid credential: contains illegal characters", code=EXIT_AUTH
+        ) from error
     except OSError as error:
         raise CliError(f"service unavailable: {error}", code=EXIT_SERVICE) from error
     finally:

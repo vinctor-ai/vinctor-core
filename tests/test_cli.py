@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import importlib.metadata
 import json
 import sqlite3
 from datetime import UTC, datetime
@@ -7,6 +9,7 @@ from io import StringIO
 from pathlib import Path
 from threading import Thread
 
+import pytest
 import yaml
 
 from vinctor_service import (
@@ -14,7 +17,13 @@ from vinctor_service import (
     SQLiteV1Service,
     V1DelegatedEnforceRequest,
 )
-from vinctor_service.cli import run_vinctor
+from vinctor_service.cli import (
+    EXIT_AUTH,
+    EXIT_USAGE,
+    CliError,
+    _request_json,
+    run_vinctor,
+)
 from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.local_launcher import LocalLaunchConfig, prepare_local_service
 from vinctor_service.models import GrantIssueRequest
@@ -1321,6 +1330,79 @@ def _seed_storage_db(db_path: Path) -> None:
         conn.close()
 
 
+def test_vinctor_cli_output_flag_accepted_after_subcommand(tmp_path: Path) -> None:
+    handle = _start_service(tmp_path, scopes=("execute:ci/test",))
+    try:
+        # No json_output here: the connection flags only, so we can place the
+        # output flag explicitly at the position under test.
+        base = [
+            "--endpoint",
+            handle.endpoint,
+            "--agent-key",
+            handle.agent_key,
+            "--grant-ref",
+            handle.grant_ref,
+            "--boundary-id",
+            handle.boundary.boundary_id,
+        ]
+        enforce = [
+            "agent",
+            "enforce",
+            "--grant-ref",
+            handle.grant_ref,
+            "--action",
+            "execute",
+            "--resource",
+            "ci/test",
+        ]
+
+        # (a) output flag BEFORE the role (the historical form): JSON is emitted.
+        before = _run(["-o", "json", *base, *enforce])
+        # (b) output flag AFTER the leaf subcommand (the new form): also JSON,
+        # and the decision matches (audit_event_id is a fresh per-call id).
+        after = _run([*base, *enforce, "-o", "json"])
+        assert before["decision"] == "permit"
+        assert after["decision"] == before["decision"]
+
+        # --json after the leaf is also accepted and selects JSON output.
+        after_json = _run([*base, *enforce, "--json"])
+        assert after_json["decision"] == before["decision"]
+    finally:
+        _stop_service(handle)
+
+
+def test_vinctor_cli_connection_flag_accepted_after_subcommand(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+
+    audit = ["operator", "audit", "list"]
+
+    # (a) --db BEFORE the role (the historical form).
+    before = _run(["--json", "--db", str(db_path), *audit])
+    # (b) --db AFTER the leaf subcommand (the new form).
+    after = _run(["--json", *audit, "--db", str(db_path)])
+    assert after == before
+
+    # (c) --db in BOTH positions: the leaf (trailing) value wins.
+    other_db = tmp_path / "other.sqlite"
+    _seed_storage_db(other_db)
+    both = _run(["--json", "--db", str(other_db), *audit, "--db", str(db_path)])
+    assert both == before
+
+
+def test_vinctor_cli_workspace_id_default_survives_after_subcommand_output_flag(
+    tmp_path: Path,
+) -> None:
+    # (d) NEITHER position sets --workspace-id, even though a trailing global
+    # flag (-o json) is parsed at the leaf: the root default must survive and
+    # must NOT be clobbered to None by the leaf's omitted copy.
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+
+    listed = _run(["--db", str(db_path), "operator", "tokens", "list", "-o", "json"])
+    assert listed["tokens"] == []
+
+
 def _start_service(tmp_path: Path, *, scopes: tuple[str, ...]):
     handle = prepare_local_service(
         LocalLaunchConfig(
@@ -1413,3 +1495,142 @@ def _run_text(argv: list[str]) -> str:
     status = run_vinctor(argv, stdout=stdout, stderr=stderr)
     assert status == 0, stderr.getvalue()
     return stdout.getvalue()
+
+
+def test_vinctor_cli_version_prints_version_and_exits_zero(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # `--version` is a top-level action: it must print and exit 0 BEFORE the
+    # "role is required" check fires (the subparsers are required=True).
+    with pytest.raises(SystemExit) as excinfo:
+        run_vinctor(["--version"])
+    assert excinfo.value.code == 0
+    out = capsys.readouterr().out
+    expected = importlib.metadata.version("vinctor-core")
+    assert out.strip() == f"vinctor {expected}"
+    assert "role is required" not in out
+
+
+def test_vinctor_cli_malformed_agent_key_is_clean_cli_error(tmp_path: Path) -> None:
+    # A credential carrying a control char / embedded newline must yield a clean
+    # one-line CliError (no raw http.client `ValueError: Invalid header value`
+    # traceback escaping to the caller).
+    handle = _start_service(tmp_path, scopes=("execute:ci/test",))
+    try:
+        stdout = StringIO()
+        stderr = StringIO()
+        with contextlib.redirect_stderr(stderr):
+            status = run_vinctor(
+                [
+                    "--endpoint",
+                    handle.endpoint,
+                    "--agent-key",
+                    "aak_demo\nX-Injected: 1",
+                    "--grant-ref",
+                    handle.grant_ref,
+                    "--boundary-id",
+                    handle.boundary.boundary_id,
+                    "agent",
+                    "enforce",
+                    "--grant-ref",
+                    handle.grant_ref,
+                    "--action",
+                    "execute",
+                    "--resource",
+                    "ci/test",
+                ],
+                stdout=stdout,
+                stderr=stderr,
+            )
+        assert status in (EXIT_AUTH, EXIT_USAGE)
+        combined = stdout.getvalue() + stderr.getvalue()
+        assert "Traceback" not in combined
+        assert "error:" in combined
+        # exactly one error line, no stack frames
+        assert combined.strip().count("\n") == 0
+    finally:
+        _stop_service(handle)
+
+
+def test_request_json_maps_invalid_header_value_to_cli_error() -> None:
+    # Direct unit guard: a control char in a header value (which http.client
+    # rejects with ValueError) becomes a CliError rather than propagating.
+    with pytest.raises(CliError):
+        _request_json(
+            "http://127.0.0.1:8765",
+            "POST",
+            "/v1/enforce",
+            headers={"X-Agent-Key": "bad\nvalue"},
+            body={"action": "execute"},
+        )
+
+
+def _help_text(argv: list[str], capsys: pytest.CaptureFixture[str]) -> str:
+    # `--help` is an argparse action: it prints to stdout and raises SystemExit(0).
+    with pytest.raises(SystemExit) as excinfo:
+        run_vinctor([*argv, "--help"])
+    assert excinfo.value.code == 0
+    return capsys.readouterr().out
+
+
+def test_vinctor_cli_help_distinguishes_ambiguous_clusters(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Help text only (no behavior change). The CLI surface has several
+    # easy-to-confuse sibling commands; each must carry a gloss that tells them
+    # apart in `--help`.
+
+    # operator root distinguishes its resources.
+    operator = _help_text(["operator"], capsys)
+    assert "requests" in operator
+    assert "bounds" in operator
+    assert "require-boundary" in operator
+    # bounds vs require-boundary are different concepts and must be disambiguated.
+    assert "bounds" in operator.lower()
+
+    # operator requests: list vs inbox, view vs timeline, approve vs evaluate.
+    requests = _help_text(["operator", "requests"], capsys)
+    for leaf in ("list", "inbox", "view", "timeline", "approve", "reject", "evaluate"):
+        assert leaf in requests
+    # inbox is the pending+triage view; list is the full queue.
+    assert "pending" in requests.lower()
+    assert "triage" in requests.lower() or "recommend" in requests.lower()
+    # timeline is the audit-event chain; view is the single request snapshot.
+    assert "audit" in requests.lower()
+    assert "snapshot" in requests.lower() or "single request" in requests.lower()
+    # evaluate runs auto-approval rules; approve is the manual decision.
+    assert "auto-approval" in requests.lower() or "auto approval" in requests.lower()
+    assert "manual" in requests.lower()
+
+    # The three require-* mandates each describe what they require.
+    rb = _help_text(["operator", "require-boundary"], capsys)
+    assert "boundary" in rb.lower()
+    rst = _help_text(["operator", "require-subject-token"], capsys)
+    assert "subject token" in rst.lower()
+    rp = _help_text(["operator", "require-pop"], capsys)
+    assert "proof-of-possession" in rp.lower() or "proof of possession" in rp.lower()
+
+    # bounds: the issuable-scope ceiling, distinct from the require-* mandates.
+    bounds = _help_text(["operator", "bounds"], capsys)
+    assert "scope" in bounds.lower()
+    assert "ceiling" in bounds.lower() or "maximum" in bounds.lower() or "bound" in bounds.lower()
+
+
+def test_vinctor_cli_help_demo_block_and_global_flags(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The demo block must explain each demo leaf so newcomers pick the right one.
+    demo = _help_text(["demo"], capsys)
+    for leaf in ("check", "block", "service"):
+        assert leaf in demo
+    # `block` is the user-facing context-dependent allow/deny showcase.
+    assert "context" in demo.lower() or "allow" in demo.lower()
+
+    # Global flags expose their VINCTOR_* env var, and --json/-o document the
+    # alias + precedence relationship.
+    root = _help_text([], capsys)
+    assert "VINCTOR_ENDPOINT" in root
+    assert "VINCTOR_DB" in root
+    # --json is an alias for `-o json`; --json wins when both are given.
+    assert "alias for" in root.lower() and "-o json" in root
+    assert "precedence" in root.lower() or "wins" in root.lower()
