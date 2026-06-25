@@ -290,11 +290,13 @@ V1 service contract boundary:
   Test suite 518 → 551; deps still stdlib + PyYAML; version `0.1.0`.
 
 ### Deferred to v0.1.1 (from the security audit + CLI review)
-- **Security (audit, deferred):** audit list/export SQL pushdown (full-table scan →
-  WHERE/LIMIT + index); PoP replay per-token/per-workspace partition (today a global
-  fail-closed-when-full cap is a cross-tenant DoS lever); pin the Docker base image
-  by digest (needs a docker-equipped CI run); pop_secret encryption at rest; a real
-  per-source request rate limiter; SBOM/provenance + image HEALTHCHECK.
+- **Security — SHIPPED 2026-06-26 (PR #86):** audit list/export SQL pushdown
+  (full-table scan → workspace-scoped WHERE/ORDER/LIMIT + index, schema v10); PoP
+  replay per-token partition (`max_per_token` — one token can no longer lock out
+  others); SBOM/provenance on the release image + a HEALTHCHECK.
+- **Security (still deferred):** pin the Docker base image by digest (needs a
+  docker-equipped CI run); pop_secret encryption at rest; a real per-source request
+  rate limiter.
 - **CLI bigger calls (need a decision, breaking):** unify the HTTP-vs-direct-DB
   operator transport split; collapse the three `require-*` mandates into one
   `operator mandate` noun; rename `operator bounds` to a ceiling-signalling name;
@@ -504,23 +506,24 @@ pre-promotion backlog.
   service, issues a grant, then shows a dangerous call DENIED with a
   human-readable reason and an allowed call passing. Packaging of existing parts,
   not new authz behavior.
-- **[hook] Offline deny reason reads as a setup error, not a security block
-  (med).** Without a running service a mapped dangerous call (`cat .env`,
-  `git push --force`) returns `deny: missing_auth_env`, which a first-time reader
-  sees as "missing env" rather than "classified as `read:secret/env` and would be
-  denied." Direction: in demo/eval context surface the classification
-  (action/resource) alongside the fail-closed reason, or drive the demo through a
-  live local service so it shows `action_denied`.
-- **[core] Recommended `pipx` install path has no fallback when pipx is absent
-  (low-med).** README leads with `pipx install .` but a machine without pipx
-  stops there; the venv path exists lower down. Direction: note "no pipx? use
-  venv" inline, or add the one-line pipx bootstrap.
-- **[core] `vinctor demo service` output is abstract (low).**
-  `auto_approved_request=… decision=permit` works but doesn't dramatize the
-  value. Direction: human-readable narration with explicit ALLOW/DENY labels.
-- **[hook] `explain` does not accept stdin (`-`) (low, DX).** The hook itself
-  reads an event on stdin, but `explain` only takes a file path, so
-  `… | explain -` fails. Direction: let `explain -` read stdin for parity.
+- **[hook] Offline deny reason reads as a setup error — RESOLVED 2026-06-26**
+  (claude-code-hook PR #21 + codex-hook PR #5, parity). The `missing_auth_env` /
+  `service_unavailable` deny templates now read as a deliberate fail-closed security
+  decision ("…not a setup error. Configure/restore the service to get a real
+  allow/deny decision."). Kept STATIC: the "surface the classified action/resource
+  in the reason" direction was REJECTED — it would violate the hook's deliberate
+  no-disclosure invariants (reason-templates fixed set, no-tool-input-disclosure
+  across the missing_auth_env matrix row, no-`${}` structural guard; the resource can
+  carry a host/path fragment). Seeing the concrete `action_denied` is the golden-path
+  demo's job (drive it through a live local service).
+- **[core] `pipx` install path fallback — DONE 2026-06-26 (PR #87).** README now
+  says "no pipx on this machine? install into a virtualenv instead" inline.
+- **[core] `vinctor demo service` abstract output — DONE 2026-06-26 (PR #87).**
+  Replaced with human-readable ALLOW/DENY narration (`_demo_service_text` +
+  `_demo_verdict_label`); JSON output unchanged.
+- **[hook] `explain` stdin (`-`) — ALREADY WORKS (verified 2026-06-26).** Both
+  `… | explain` and `… | explain -` read the event from stdin and classify it
+  (stdin support was added during the cold-e2e work). No change needed.
 
 ## Open Questions
 
