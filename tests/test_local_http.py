@@ -1264,6 +1264,74 @@ def test_v1_handler_has_finite_timeout() -> None:
     assert handler.timeout > 0
 
 
+def test_local_http_no_rate_limit_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # DEFAULT OFF: with VINCTOR_RATE_LIMIT_PER_MINUTE unset, the limiter is None
+    # and no request is ever 429'd, no matter how many arrive from one client.
+    monkeypatch.delenv("VINCTOR_RATE_LIMIT_PER_MINUTE", raising=False)
+    svc = service()
+
+    with running_server(svc) as server:
+        statuses = [post_json(server)[0] for _ in range(10)]
+
+    assert all(status == 200 for status in statuses)
+    assert 429 not in statuses
+
+
+def test_local_http_rate_limits_post_over_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With a limit of 2/min, the 3rd rapid POST from the same client is 429'd
+    # with the generic body and nothing else disclosed.
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "2")
+    svc = service()
+
+    with running_server(svc) as server:
+        first = post_json(server)[0]
+        second = post_json(server)[0]
+        third_status, third_body = post_json(server)
+
+    assert first == 200
+    assert second == 200
+    assert third_status == 429
+    # Generic body: exactly {"error": "rate_limited"} and nothing else.
+    assert third_body == {"error": "rate_limited"}
+
+
+def test_local_http_rate_limit_gates_get_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The gate sits at the top of do_GET as well, so GET (e.g. /healthz) is
+    # rate limited pre-routing.
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "2")
+    svc = service()
+
+    with running_server(svc) as server:
+        first = get_text(server, path="/healthz")[0]
+        second = get_text(server, path="/healthz")[0]
+        third_status, third_raw = get_text(server, path="/healthz")
+
+    assert first == 200
+    assert second == 200
+    assert third_status == 429
+    assert json.loads(third_raw) == {"error": "rate_limited"}
+
+
+def test_local_http_rate_limit_disabled_for_non_positive_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A non-positive / unparseable value disables the limiter (limiter is None).
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "0")
+    svc = service()
+
+    with running_server(svc) as server:
+        statuses = [post_json(server)[0] for _ in range(5)]
+
+    assert all(status == 200 for status in statuses)
+    assert 429 not in statuses
+
+
 def test_local_http_invalid_pop_skew_does_not_500_delegated_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

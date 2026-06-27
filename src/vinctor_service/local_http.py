@@ -27,6 +27,7 @@ from vinctor_service.grant_request_http import (
     handle_v1_grant_requests_http,
 )
 from vinctor_service.metrics import Metrics
+from vinctor_service.ratelimit import FixedWindowRateLimiter
 from vinctor_service.service_config import (
     DEFAULT_SUBJECT_TOKEN_MAX_TTL_SECONDS,
     DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS,
@@ -109,15 +110,48 @@ def create_v1_http_handler(
 
     pop_skew_seconds = _resolve_pop_skew_seconds()
 
+    # One shared, opt-in limiter for all handler threads (captured by the closure
+    # like pop_skew_seconds). None when VINCTOR_RATE_LIMIT_PER_MINUTE is unset /
+    # non-positive -> no rate-limit code path is taken at all (default off).
+    _rate_limit_per_minute = _resolve_rate_limit()
+    rate_limiter = (
+        FixedWindowRateLimiter(max_requests=_rate_limit_per_minute, window_seconds=60)
+        if _rate_limit_per_minute is not None
+        else None
+    )
+
     class V1Handler(BaseHTTPRequestHandler):
         server_version = "VinctorLocalHTTP/0.1"
         timeout = HANDLER_TIMEOUT_SECONDS
 
         def do_POST(self) -> None:
+            if not self._check_rate_limit():
+                return
             self._dispatch("POST")
 
         def do_GET(self) -> None:
+            if not self._check_rate_limit():
+                return
             self._dispatch("GET")
+
+        def _check_rate_limit(self) -> bool:
+            """Pre-auth volume gate. Returns True when the request may proceed.
+
+            Fail-OPEN: a None limiter, or any exception from allow(), lets the
+            request through — this is an availability tool, never an authz gate,
+            so it must not become its own DoS. On a real over-limit it writes a
+            429 with a generic body and returns False (no routing, no body read).
+            """
+            if rate_limiter is None:
+                return True
+            try:
+                ok = rate_limiter.allow(self.client_address[0], time.time())
+            except Exception:
+                return True
+            if ok:
+                return True
+            _send_rate_limited(self)
+            return False
 
         def do_PUT(self) -> None:
             self._dispatch("PUT")
@@ -562,6 +596,23 @@ def _resolve_pop_skew_seconds() -> int:
         return int(DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS)
 
 
+def _resolve_rate_limit() -> int | None:
+    """Parse VINCTOR_RATE_LIMIT_PER_MINUTE once at handler construction.
+
+    Returns a positive int (the per-minute, per-source request cap) or None.
+    Unset, non-positive, or unparseable -> None (limiter disabled, no behavior
+    change). Parsed once here, never per request.
+    """
+    raw = os.environ.get("VINCTOR_RATE_LIMIT_PER_MINUTE")
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def _read_optional_json_body(handler: BaseHTTPRequestHandler) -> object | V1HttpResponse:
     length_header = handler.headers.get("Content-Length")
     if length_header is None or length_header == "0":
@@ -624,6 +675,18 @@ def _send_json(handler: BaseHTTPRequestHandler, response: V1HttpResponse) -> Non
     handler.send_response(response.status_code)
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(payload)))
+    handler.end_headers()
+    handler.wfile.write(payload)
+
+
+def _send_rate_limited(handler: BaseHTTPRequestHandler) -> None:
+    """Write the pre-auth 429 with a generic body and nothing else disclosed."""
+    handler._vinctor_status = 429  # type: ignore[attr-defined]
+    payload = json.dumps({"error": "rate_limited"}, sort_keys=True).encode("utf-8")
+    handler.send_response(429)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(payload)))
+    handler.send_header("Retry-After", "60")
     handler.end_headers()
     handler.wfile.write(payload)
 

@@ -294,9 +294,11 @@ V1 service contract boundary:
   (full-table scan → workspace-scoped WHERE/ORDER/LIMIT + index, schema v10); PoP
   replay per-token partition (`max_per_token` — one token can no longer lock out
   others); SBOM/provenance on the release image + a HEALTHCHECK.
+- **Security — SHIPPED 2026-06-26:** a real per-source request rate limiter
+  (opt-in `VINCTOR_RATE_LIMIT_PER_MINUTE`, fixed-window per-source-IP, pre-auth
+  `429`, default off, fail-open; see `docs/cli-reference.md`).
 - **Security (still deferred):** pin the Docker base image by digest (needs a
-  docker-equipped CI run); pop_secret encryption at rest; a real per-source request
-  rate limiter.
+  docker-equipped CI run); pop_secret encryption at rest.
 - **CLI bigger calls (need a decision, breaking):** unify the HTTP-vs-direct-DB
   operator transport split; collapse the three `require-*` mandates into one
   `operator mandate` noun; rename `operator bounds` to a ceiling-signalling name;

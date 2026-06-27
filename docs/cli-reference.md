@@ -104,6 +104,28 @@ vinctor local start --db .vinctor-local.sqlite --boundary-name claude-code-local
 It prints copy-pasteable `VINCTOR_*` exports for the boundary caller. The default
 port is `8765`; pass a free `--port` if it is taken.
 
+**Per-source request rate limiting (`VINCTOR_RATE_LIMIT_PER_MINUTE`):** opt-in,
+**off by default**. Set it to a positive integer to cap requests per client IP per
+60-second fixed window; unset, `≤0`, or unparseable leaves the limiter disabled and
+behavior byte-for-byte unchanged.
+
+```bash
+VINCTOR_RATE_LIMIT_PER_MINUTE=120 vinctor service serve --host 127.0.0.1 --port 8765
+```
+
+- **Pre-auth:** the check runs at the top of every `POST`/`GET`, before routing,
+  body read, or auth, so it protects the unauthenticated surface (alongside the
+  request-body cap and handler timeout).
+- **Over-limit response:** `429` with the generic body `{"error": "rate_limited"}`
+  and a `Retry-After: 60` header — nothing else is disclosed.
+- **Fail-open:** it is an availability tool, not an authz gate. If the limiter is
+  disabled, errors, or its source table is full, the request proceeds.
+- **Source = client IP.** Behind a reverse proxy every request appears to come from
+  the proxy's IP and shares a single bucket, so set the limit (or terminate rate
+  limiting) at the proxy in that topology; honoring a trusted `X-Forwarded-For` is a
+  deferred follow-up. The counter is per-process and in-memory (not shared across
+  multiple service instances).
+
 **Print the runtime environment bundle:** `vinctor local env` writes the
 `VINCTOR_*` exports from the current or stored values:
 
