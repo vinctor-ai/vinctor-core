@@ -78,6 +78,8 @@ def _is_valid_resource(resource: str, *, allow_terminal_wildcard: bool) -> bool:
         return False
     if any(segment == "" for segment in segments):
         return False
+    if any(segment in {".", ".."} for segment in segments):
+        return False
 
     wildcard_segments = [index for index, segment in enumerate(segments) if "*" in segment]
     if wildcard_segments:

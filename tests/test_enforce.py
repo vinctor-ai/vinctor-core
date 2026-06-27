@@ -250,6 +250,51 @@ def test_enforce_denies_expired_grant() -> None:
     assert result.reason == "grant_expired"
 
 
+def test_enforce_rejects_path_traversal_escape_from_wildcard_grant() -> None:
+    # Security regression: a wildcard grant write:repo/feature/* must NOT permit
+    # a resource that uses ".." to escape into a forbidden path.
+    for resource in (
+        "repo/feature/../protected/secrets",
+        "repo/feature/../.github/workflows/deploy",
+        "repo/feature/../../etc/passwd",
+    ):
+        result = evaluate_enforce(
+            EnforceInput(
+                grant=active_grant(scopes=("write:repo/feature/*",)),
+                action="write",
+                resource=resource,
+                now=NOW,
+            )
+        )
+        assert result.decision != "permit", resource
+
+
+def test_enforce_still_permits_legit_wildcard_resource() -> None:
+    result = evaluate_enforce(
+        EnforceInput(
+            grant=active_grant(scopes=("write:repo/feature/*",)),
+            action="write",
+            resource="repo/feature/login",
+            now=NOW,
+        )
+    )
+
+    assert result.decision == "permit"
+
+
+def test_enforce_still_denies_direct_forbidden_resource() -> None:
+    result = evaluate_enforce(
+        EnforceInput(
+            grant=active_grant(scopes=("write:repo/feature/*",)),
+            action="write",
+            resource="repo/protected/secrets",
+            now=NOW,
+        )
+    )
+
+    assert result.decision == "deny"
+
+
 def test_enforce_with_valid_boundary_persists_boundary_context_in_result() -> None:
     registry = BoundaryRegistry()
     boundary = register_boundary(

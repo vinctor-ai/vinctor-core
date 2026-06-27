@@ -48,6 +48,49 @@ def test_rejects_malformed_requested_resources() -> None:
         assert not is_valid_requested_resource(resource)
 
 
+def test_rejects_path_traversal_requested_resources() -> None:
+    for resource in (
+        "repo/..",
+        "repo/feature/..",
+        "repo/feature/../x",
+        "../repo",
+        "repo/.",
+        "repo/./x",
+        "repo/feature/.",
+        "repo/feature/../protected/secrets",
+        "repo/feature/../../etc/passwd",
+    ):
+        assert not is_valid_requested_resource(resource)
+
+
+def test_allows_dotted_names_in_requested_resources() -> None:
+    for resource in (
+        "repo/orders.api",
+        "db/reports.q3",
+        "a/v1.2/b",
+        "repo/feature-x/login",
+    ):
+        assert is_valid_requested_resource(resource)
+
+
+def test_rejects_path_traversal_grant_scopes() -> None:
+    for scope in (
+        "write:repo/../*",
+        "write:repo/./x",
+        "write:repo/feature/../*",
+        "write:../repo/*",
+    ):
+        assert not is_valid_grant_scope(scope)
+
+
+def test_allows_dotted_grant_scopes() -> None:
+    for scope in (
+        "write:repo/feature/*",
+        "read:db/reports.q3/*",
+    ):
+        assert is_valid_grant_scope(scope)
+
+
 def test_validates_exact_and_terminal_wildcard_grant_scopes() -> None:
     for scope in (
         "read:secret/env",

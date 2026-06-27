@@ -526,6 +526,13 @@ pre-promotion backlog.
 - **[hook] `explain` stdin (`-`) — ALREADY WORKS (verified 2026-06-26).** Both
   `… | explain` and `… | explain -` read the event from stdin and classify it
   (stdin support was added during the cold-e2e work). No change needed.
+- **[core] Path-traversal authz bypass — FIXED 2026-06-27 (HIGH).** A wildcard
+  grant `write:repo/feature/*` previously PERMITTED
+  `write repo/feature/../protected/secrets` (resolving to a forbidden path)
+  because `_is_valid_resource` accepted `..` as a literal segment. Fix: resource
+  scopes now reject any whole `.` or `..` path segment (fail-closed) at both
+  grant-scope validation and requested-resource validation. Dotted names
+  (`orders.api`, `v1.2`) stay valid. stdlib only, no schema change.
 
 ## Open Questions
 
