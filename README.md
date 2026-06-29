@@ -7,26 +7,84 @@ database, or HTTP stack.
 
 > Status: early prototype. APIs and package boundaries may change.
 
+![Vinctor — the control point that permits or denies each AI-agent action by context](docs/assets/vinctor-hero.svg)
+
+## Purpose
+
+`vinctor-core` holds the authorization logic that decides whether a mediated
+AI-agent action should be permitted under a scoped grant. The repository pairs
+that deterministic core with a thin `vinctor_service` application layer, which
+must stay layered above the core. The core focuses on deterministic decision
+behavior that can be tested, reviewed, and reused by service layers and runtime
+boundary adapters.
+
+Vinctor is the current working name and may change later.
+
+## Core Question
+
+This core answers one narrow question:
+
+> Given an active grant, an action, a resource, and relevant authorization
+> state, should this action be permitted?
+
+The answer is a decision such as `permit` or `deny`. Service layers may
+represent infrastructure failures as fail-closed outcomes outside this core.
+The caller is responsible for enforcing the decision before tool execution.
+
+## What This Core Owns
+
+This repository is responsible for:
+
+- grant and scope data models
+- action/resource matching semantics
+- permit/deny decision logic
+- revoked or expired grant state checks
+- service-issued scoped grant lifecycle helpers
+- boundary registry models
+- deterministic reason codes
+- audit event construction semantics
+- tests that define expected authorization behavior
+
+The goal is to keep the core small, explicit, and reviewable.
+
+## What This Core Does Not Own
+
+This repository does not implement:
+
+- Claude Code, Codex, Hermes, LangGraph, or MCP hooks
+- runtime adapter installation
+- tool execution
+- raw tool interception
+- sandboxing or OS/process isolation
+- provider credential management
+- prompt/content safety
+- approval workflows
+- UI or operator console behavior
+- hosted production service behavior
+
+It only models authorization decisions for inputs explicitly passed to it.
+
 ## See it
 
-The same action is allowed or denied by **context** — grant, resource,
-environment — not by a denylist of scary commands:
+The clip below runs the real CLI. The agent holds a single grant —
+`send:net/internal/*, deploy:staging/*` — and you watch the **same kind of action
+get opposite verdicts depending on context**:
 
 ![Vinctor golden-path demo: the same action allowed or denied by context](docs/assets/golden-path-demo.gif)
 
-```bash
-# boot a local service with a staging-scoped grant
-vinctor local start --db demo.sqlite --port 0 \
-  --scope 'send:net/internal/*' --scope 'deploy:staging/*' \
-  --boundary-name claude-code-local > vinctor.env &
-source vinctor.env
+- `send` → `net/internal/orders-api` is **permitted** — an internal call the grant covers.
+- `send` → `net/external/pastebin.com` is **denied** — the *same* `send` action, but an
+  external destination (the exfiltration path) the grant never covered.
+- `deploy` → `production/web` is **denied** — the grant covers `deploy:staging/*`, never production.
 
-vinctor agent enforce --action send   --resource net/internal/orders-api    # ✅ ALLOW
-vinctor agent enforce --action send   --resource net/external/pastebin.com  # 🛑 DENY (exfil)
-vinctor agent enforce --action deploy --resource production/web             # 🛑 DENY (prod)
-```
+Nothing is on a denylist. Each tool call is mapped to an `(action, resource)` pair
+and checked against the grant **before it runs** — permit and it proceeds, deny and
+it never executes, with an audit record either way. The verdict lives in the
+context (which agent, which resource, which environment, under which grant), not in
+the command string — which is exactly what a denylist cannot express.
 
-Vinctor authorizes mediated tool calls; it is not a sandbox.
+Vinctor authorizes mediated tool calls; it is not a sandbox. To run this yourself,
+see [Install](#install) and the [Local Prototype Quickstart](#local-prototype-quickstart).
 
 ## Install
 
@@ -58,8 +116,7 @@ Without the extra it exits with a clean one-line error
 (`error: MCP SDK is required to run vinctor-mcp-server. Install with
 vinctor-core[mcp].`).
 
-Once published to PyPI this becomes `pipx install vinctor-core`. To **contribute**
-(editable install + dev tools + tests), see [Testing](#testing).
+To **contribute** (editable install + dev tools + tests), see [Testing](#testing).
 
 ## Local Prototype Quickstart
 
@@ -190,61 +247,6 @@ vinctor \
 ```
 
 `.vinctor.env` is ignored by git. Keep raw keys out of committed files.
-
-## Purpose
-
-`vinctor-core` holds the authorization logic that decides whether a mediated
-AI-agent action should be permitted under a scoped grant. The repository pairs
-that deterministic core with a thin `vinctor_service` application layer, which
-must stay layered above the core. The core focuses on deterministic decision
-behavior that can be tested, reviewed, and reused by service layers and runtime
-boundary adapters.
-
-Vinctor is the current working name and may change later.
-
-## Core Question
-
-This core answers one narrow question:
-
-> Given an active grant, an action, a resource, and relevant authorization
-> state, should this action be permitted?
-
-The answer is a decision such as `permit` or `deny`. Service layers may
-represent infrastructure failures as fail-closed outcomes outside this core.
-The caller is responsible for enforcing the decision before tool execution.
-
-## What This Core Owns
-
-This repository is responsible for:
-
-- grant and scope data models
-- action/resource matching semantics
-- permit/deny decision logic
-- revoked or expired grant state checks
-- service-issued scoped grant lifecycle helpers
-- boundary registry models
-- deterministic reason codes
-- audit event construction semantics
-- tests that define expected authorization behavior
-
-The goal is to keep the core small, explicit, and reviewable.
-
-## What This Core Does Not Own
-
-This repository does not implement:
-
-- Claude Code, Codex, Hermes, LangGraph, or MCP hooks
-- runtime adapter installation
-- tool execution
-- raw tool interception
-- sandboxing or OS/process isolation
-- provider credential management
-- prompt/content safety
-- approval workflows
-- UI or operator console behavior
-- hosted production service behavior
-
-It only models authorization decisions for inputs explicitly passed to it.
 
 ## Decision Model
 
