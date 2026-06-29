@@ -81,7 +81,7 @@ def main() -> None:
             now=now,
             audit_writer=audit_writer,
         )
-        assert unknown.status_code == 404
+        assert unknown.status_code == 403  # existence oracle: generic 403
         assert unknown.decision is None
         assert _audit_count(conn) == 2
 

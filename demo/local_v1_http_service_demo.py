@@ -93,8 +93,8 @@ def main() -> None:
                         "resource": "repo/feature/readme",
                     },
                 )
-                assert missing_status == 404
-                assert missing["error"] == "grant_not_found"
+                assert missing_status == 403  # existence oracle: generic 403
+                assert missing["error"] == "forbidden"  # existence oracle: generic 403
 
                 strict_status, strict = post_json(
                     server,

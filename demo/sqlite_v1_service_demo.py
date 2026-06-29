@@ -52,7 +52,7 @@ def main() -> None:
             _request(grant_ref="grt_missing", action="push", resource="repo"),
             now=now,
         )
-        assert missing_grant.status_code == 404
+        assert missing_grant.status_code == 403  # existence oracle: generic 403
         assert missing_grant.decision is None
         assert _audit_count(conn) == 2
 

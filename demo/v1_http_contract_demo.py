@@ -68,8 +68,8 @@ def main() -> None:
         service=service,
         now=now,
     )
-    assert missing_grant.status_code == 404
-    assert missing_grant.body["error"] == "grant_not_found"
+    assert missing_grant.status_code == 403  # existence oracle: generic 403
+    assert missing_grant.body["error"] == "forbidden"  # existence oracle: generic 403
 
     assert len(service.audit_events) == 1
     print("ALL V1 HTTP CONTRACT STEPS PASSED \u2713")

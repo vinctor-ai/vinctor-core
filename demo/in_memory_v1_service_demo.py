@@ -76,7 +76,7 @@ def main() -> None:
         ),
         now=now,
     )
-    assert missing_grant.status_code == 404
+    assert missing_grant.status_code == 403  # existence oracle: generic 403
     assert missing_grant.decision is None
     assert len(service.audit_events) == 2
 
