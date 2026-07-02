@@ -34,3 +34,5 @@ Current decisions:
 - `0007-delegated-enforce-and-pep-identity.md`
 - `0008-auditing-pre-grant-evaluation-rejections.md`
 - `0009-mandatory-boundary-enforcement.md`
+- `0010-infer-scope-proposals-from-audit.md`
+- `0011-mcp-resource-side-pep.md`

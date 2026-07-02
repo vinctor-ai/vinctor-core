@@ -172,12 +172,13 @@ def export_policy_document(
     return document
 
 
+def dump_policy_document(document: dict[str, object]) -> str:
+    return yaml.safe_dump(document, sort_keys=False, allow_unicode=False)
+
+
 def write_policy_file(path: Path, document: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        yaml.safe_dump(document, sort_keys=False, allow_unicode=False),
-        encoding="utf-8",
-    )
+    path.write_text(dump_policy_document(document), encoding="utf-8")
 
 
 def read_policy_file(path: Path) -> dict[str, object]:

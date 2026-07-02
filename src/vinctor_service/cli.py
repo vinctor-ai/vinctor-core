@@ -31,9 +31,11 @@ from vinctor_service.local_launcher import (
 )
 from vinctor_service.policy_files import (
     apply_policy_file,
+    dump_policy_document,
     export_policy_document,
     write_policy_file,
 )
+from vinctor_service.policy_infer import infer_policy_document
 from vinctor_service.service_config import (
     DEFAULT_SUBJECT_TOKEN_TTL_SECONDS,
     LOG_LEVELS,
@@ -623,6 +625,27 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
         description="Export the workspace's current bounds and rules to a policy file.",
     )
     policy_export.add_argument("--file", required=True, type=Path)
+    policy_infer = policy_commands.add_parser(
+        "infer",
+        help="Propose least-privilege scopes from an agent's audit trace.",
+        description="Propose (never apply) a least-privilege scope set inferred from "
+        "an agent's observed permitted actions in the audit log. Review, tighten, "
+        "then apply with `policy apply`.",
+    )
+    policy_infer.add_argument("--agent", required=True, help="Agent id to infer scopes for.")
+    policy_infer.add_argument("--since", help="ISO-8601 lower bound on event time (inclusive).")
+    policy_infer.add_argument("--until", help="ISO-8601 upper bound on event time (inclusive).")
+    policy_infer.add_argument(
+        "--generalize",
+        action="store_true",
+        help="Collapse deep sibling resources under a terminal wildcard (opt-in).",
+    )
+    policy_infer.add_argument(
+        "--include-denied",
+        action="store_true",
+        help="Also propose scopes for DENIED attempts, in a separate candidates list.",
+    )
+    policy_infer.add_argument("--file", type=Path, help="Write the YAML proposal to a file.")
 
     storage = resources.add_parser(
         "storage",
@@ -1411,6 +1434,34 @@ def _operator_policy(args: argparse.Namespace, *, stdout: TextIO) -> None:
             f"bounds={body['agent_bounds']} rules={body['auto_approval_rules']}"
         )
         _emit(args, body, summary, stdout=stdout)
+        return
+    if args.policy_command == "infer":
+        document = infer_policy_document(
+            service.audit_events,
+            agent_id=args.agent,
+            since=args.since,
+            until=args.until,
+            generalize=args.generalize,
+            include_denied=args.include_denied,
+        )
+        scope_count = len(document["proposed"]["scopes"])  # type: ignore[index]
+        if args.file is not None:
+            try:
+                write_policy_file(args.file, document)
+            except OSError as error:
+                raise CliError(f"could not write policy file: {args.file}") from error
+            _emit(
+                args,
+                {"agent_id": args.agent, "file": str(args.file), "scopes": scope_count},
+                f"inferred proposal agent={args.agent} scopes={scope_count} "
+                f"file={args.file} (propose-only — review, then `policy apply`)",
+                stdout=stdout,
+            )
+            return
+        if args.json or args.output == "json":
+            print(json.dumps(document, sort_keys=True), file=stdout)
+            return
+        stdout.write(dump_policy_document(document))
         return
     raise CliError(f"unknown policy command: {args.policy_command}")
 
