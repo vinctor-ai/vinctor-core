@@ -11,6 +11,25 @@ V1 service contract boundary:
   behavior, production server claims, runtime hooks, or runtime adapter
   implementations.
 
+## Proposed (design specs — pending founder review)
+
+Two capabilities were spec'd 2026-07-01, motivated in part by a competitive look at
+AgentPerms (an OSS MCP stdio-proxy). Each spec leads with *why* and defers code to a
+follow-up ADR + plan.
+
+- **Record → Infer: bootstrap grants from audit traces** —
+  [spec](superpowers/specs/2026-07-01-record-infer-policy-from-audit.md). Why: the
+  blank-page problem (hand-authoring least-privilege scopes) is the adoption killer;
+  we already persist a post-enforcement `(action, resource)` trace in `audit_events`,
+  so we can propose a minimal grant from observed behavior with no separate recorder.
+  Propose-only, never auto-apply.
+- **Non-bypassable enforcement for MCP tool calls** —
+  [spec](superpowers/specs/2026-07-01-mcp-non-bypassable-enforcement.md). Why: our
+  Phase-1 hook is cooperative/bypassable; the Phase-1.8 delegated-enforce mechanism
+  (ADR 0007) already ships but has no instrumented resource. MCP is the ideal first
+  resource-side PEP because its transport allows complete mediation. Code lives in an
+  adapter (not core).
+
 ## Done
 
 - Created the initial Python package scaffold.
