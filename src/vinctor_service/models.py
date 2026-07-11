@@ -104,6 +104,10 @@ class GrantIssueResult:
     reason: str
     grant: Grant | None = None
     audit_event_id: str | None = None
+    # Caller-facing, human-readable detail for a rejection (workspace-key holder
+    # only). Kept separate from `reason` so the low-cardinality reason code (used
+    # for status mapping and the audit trail, ADR 0008) stays stable.
+    detail: str | None = None
 
 
 @dataclass(frozen=True)

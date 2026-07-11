@@ -122,6 +122,11 @@ def test_scopes_outside_agent_issuable_bounds_are_rejected(tmp_path: Path) -> No
 
     assert result.status == "rejected"
     assert result.reason == "scope_outside_issuable_bounds"
+    # Caller-facing detail names the offending scope and the configured bounds so the
+    # workspace-key holder can self-correct; the reason stays a low-cardinality code.
+    assert result.detail is not None
+    assert "execute:deploy/production" in result.detail
+    assert "execute:ci/test" in result.detail
     assert service.lookup_grant(grant_ref="grt_issued", workspace_id="ws_main") is None
     # ADR 0008: out-of-bounds issuance is recorded for the operator (no grant disclosed).
     assert audit_rows(conn) == [
@@ -143,6 +148,8 @@ def test_issuance_without_agent_bounds_records_rejection_audit(tmp_path: Path) -
 
     assert result.status == "rejected"
     assert result.reason == "issuable_bounds_not_found"
+    assert result.detail is not None
+    assert "agent_runner" in result.detail
     # ADR 0008: issuance for an agent with no bounds is recorded for the operator.
     assert audit_rows(conn) == [
         (EVENT_GRANT_ISSUE_REJECTED, REASON_ISSUABLE_BOUNDS_NOT_FOUND, "", "issue_grant")
@@ -273,6 +280,9 @@ def test_ttl_exceeding_agent_max_ttl_is_rejected(tmp_path: Path) -> None:
 
     assert result.status == "rejected"
     assert result.reason == "ttl_exceeds_issuable_max"
+    assert result.detail is not None
+    assert "3600" in result.detail
+    assert "1800" in result.detail
     assert service.lookup_grant(grant_ref="grt_issued", workspace_id="ws_main") is None
     # ADR 0008: TTL over the agent's issuable max is recorded for the operator.
     assert audit_rows(conn) == [

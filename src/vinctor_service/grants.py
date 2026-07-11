@@ -101,12 +101,27 @@ def issue_grant(
     )
     if bounds is None:
         _record_issue_rejection(audit_writer, request, REASON_ISSUABLE_BOUNDS_NOT_FOUND, now)
-        return GrantIssueResult(status="rejected", reason="issuable_bounds_not_found")
+        return GrantIssueResult(
+            status="rejected",
+            reason="issuable_bounds_not_found",
+            detail=(
+                f"no issuable scope bounds are configured for agent "
+                f"'{request.target_agent_id}'"
+            ),
+        )
     if any(not is_valid_grant_scope(scope) for scope in bounds):
         return GrantIssueResult(status="rejected", reason="invalid_issuable_scope_bound")
-    if not _scopes_within_bounds(request.requested_scopes, bounds):
+    outside = _scopes_outside_bounds(request.requested_scopes, bounds)
+    if outside:
         _record_issue_rejection(audit_writer, request, REASON_SCOPE_OUTSIDE_ISSUABLE_BOUNDS, now)
-        return GrantIssueResult(status="rejected", reason="scope_outside_issuable_bounds")
+        return GrantIssueResult(
+            status="rejected",
+            reason="scope_outside_issuable_bounds",
+            detail=(
+                f"requested scope(s) {', '.join(outside)} are outside agent "
+                f"'{request.target_agent_id}' issuable bounds ({', '.join(bounds)})"
+            ),
+        )
 
     max_ttl_seconds = scope_bounds_repository.get_max_ttl_seconds(
         workspace_id=request.workspace_id,
@@ -114,7 +129,14 @@ def issue_grant(
     )
     if max_ttl_seconds is not None and applied_ttl_seconds > max_ttl_seconds:
         _record_issue_rejection(audit_writer, request, REASON_TTL_EXCEEDS_ISSUABLE_MAX, now)
-        return GrantIssueResult(status="rejected", reason="ttl_exceeds_issuable_max")
+        return GrantIssueResult(
+            status="rejected",
+            reason="ttl_exceeds_issuable_max",
+            detail=(
+                f"requested TTL {applied_ttl_seconds}s exceeds the max issuable TTL "
+                f"{max_ttl_seconds}s for agent '{request.target_agent_id}'"
+            ),
+        )
 
     grant = Grant(
         grant_id=request.grant_id or _new_id("grnt"),
@@ -259,13 +281,14 @@ def validate_issuable_scope_bounds(
         raise ValueError("max_ttl_seconds must be a positive integer within the TTL ceiling")
 
 
-def _scopes_within_bounds(
+def _scopes_outside_bounds(
     requested_scopes: tuple[str, ...],
     bounds: tuple[str, ...],
-) -> bool:
-    return all(
-        any(scope_subsumes(bound, requested) for bound in bounds)
+) -> tuple[str, ...]:
+    return tuple(
+        requested
         for requested in requested_scopes
+        if not any(scope_subsumes(bound, requested) for bound in bounds)
     )
 
 

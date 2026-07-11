@@ -483,6 +483,35 @@ def test_local_http_workspace_can_issue_lookup_revoke_and_enforce_grant() -> Non
     assert svc.audit_events[2].event_type == "grant_revoked"
 
 
+def test_local_http_out_of_bounds_issuance_returns_actionable_detail() -> None:
+    svc = InMemoryV1Service()
+    svc.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        scopes=("write:repo/feature/*",),
+        now=NOW,
+    )
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        status, response_body = post_json(
+            server,
+            path="/v1/grants",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+            payload={
+                "agent_id": "agent_release",
+                "scopes": ["execute:deploy/production"],
+                "ttl_seconds": 3600,
+            },
+        )
+
+    assert status == 403
+    # error/reason stay low-cardinality codes; detail carries the actionable message.
+    assert response_body["error"] == "scope_outside_issuable_bounds"
+    assert response_body["reason"] == "scope_outside_issuable_bounds"
+    assert "execute:deploy/production" in response_body["detail"]
+    assert "write:repo/feature/*" in response_body["detail"]
+
+
 def test_local_http_workspace_lists_grants_with_filters() -> None:
     svc = InMemoryV1Service(
         grants=(

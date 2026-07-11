@@ -165,7 +165,7 @@ def _issue_grant(
     )
     if result.status == "rejected":
         status_code = 400 if result.reason in _BAD_REQUEST_REASONS else 403
-        return _error(status_code, result.reason, result.reason)
+        return _error(status_code, result.reason, result.reason, detail=result.detail)
     if result.grant is None:
         return _error(503, "service_unavailable", "grant issuance failed")
 
@@ -256,8 +256,16 @@ def _grant_body(grant: Grant) -> dict[str, object]:
     }
 
 
-def _error(status_code: int, error: str, reason: str) -> V1HttpResponse:
-    return V1HttpResponse(status_code=status_code, body={"error": error, "reason": reason})
+def _error(
+    status_code: int,
+    error: str,
+    reason: str,
+    detail: str | None = None,
+) -> V1HttpResponse:
+    body: dict[str, object] = {"error": error, "reason": reason}
+    if detail is not None:
+        body["detail"] = detail
+    return V1HttpResponse(status_code=status_code, body=body)
 
 
 _BAD_REQUEST_REASONS = {

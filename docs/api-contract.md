@@ -271,6 +271,14 @@ Issuance that exceeds the configured bounds is rejected with
 approval path (`POST /v1/grant-requests/{request_id}/approve`), which issues a
 grant through the same service-issued path.
 
+Bounds/TTL rejections (`issuable_bounds_not_found`,
+`scope_outside_issuable_bounds`, `ttl_exceeds_issuable_max`) additionally carry
+a caller-facing `detail` string naming the offending scope(s) or TTL and the
+configured bounds, so the workspace-key holder can self-correct. `error` and
+`reason` stay low-cardinality codes (unchanged); `detail` is human-readable and
+must not be parsed. It is only returned to the workspace-key holder — the audit
+trail records the coarse `reason_code` only (ADR 0008).
+
 A successful issuance returns `201` with the grant body and an
 `audit_event_id`.
 
