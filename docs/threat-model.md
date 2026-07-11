@@ -220,6 +220,37 @@ can add grant/audience/action binding, HMAC proof-of-possession, and replay
 checks when the corresponding mandates are enabled. It does not address ambient
 credentials or non-instrumentable systems.
 
+### MCP PEP — the first instrumented resource surface (adapter: `vinctor-mcp-pep`)
+
+The first concrete Phase-1.8 PEP is an MCP stdio proxy
+([ADR 0011](decisions/0011-mcp-resource-side-pep.md)): the MCP client's config is
+rewritten (`vinctor-mcp-pep install --client-config …`) so every server launches
+*through* the proxy, which spawns the real server as its own child process. Each
+`tools/call` is mapped to `(action, resource)` and authorized via
+`/v1/enforce/delegated` (PEP key + optional subject token); every non-permit
+outcome — deny, service unreachable, malformed response, unparseable input,
+unmapped tool — returns a synthetic JSON-RPC error and the call **never reaches
+the server**.
+
+**Honest claim:** non-bypassable **for the MCP path**, conditional on all of:
+(a) the client reaches the server *only* through the proxy — with stdio spawning
+this holds structurally, since the child server has no independent address;
+(b) fail-closed behavior on every non-permit path; and (c) every MCP server in
+the client config is proxied (the install rewrite covers all entries).
+
+**Residual bypasses — stated, not glossed:**
+- **Config rewrite-back.** An agent that can edit its own MCP client config can
+  remove the proxy. Same class as hook-disable; materially harder when the
+  config file is operator-owned (managed-device posture).
+- **Side doors / ambient credentials.** A credential the agent already holds
+  that reaches the same backing resource *without* MCP never crosses this
+  boundary (unchanged Phase-1.8 / Phase-2 caveat).
+- **Mapping fidelity.** A wrong `(action, resource)` classification is a wrong
+  verdict; unmapped tools therefore default to deny (an operator can opt out
+  per config, which weakens the guarantee and is documented as such).
+- **Response path.** Server→client responses are passed through unmodified;
+  tool-poisoning / schema-pinning detection is a separate, composable follow-up.
+
 ---
 
 ## Phase 2 — Credential brokering (NOT built)
