@@ -64,6 +64,34 @@ def test_claude_code_design_partner_setup_uses_service_grant_api(tmp_path: Path)
     assert "Hook config written to:" in instructions
 
 
+def test_hook_config_path_is_absolute_even_with_relative_db(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # The site guide runs Claude Code from a *disposable* workspace, so the exported
+    # VINCTOR_CLAUDE_CODE_HOOK_CONFIG must be absolute — a relative path would
+    # resolve against the wrong cwd and the hook would not find its config.
+    module = _load_setup_module()
+    monkeypatch.chdir(tmp_path)
+
+    handle = module.prepare_design_partner_e2e(
+        module.E2EConfig(db_path=Path("workdir/serve.sqlite"), port=0),
+        now=NOW,
+    )
+    try:
+        assert handle.hook_config_path.is_absolute()
+        instructions = module.render_operator_instructions(handle)
+    finally:
+        module.close_design_partner_e2e(handle)
+
+    export_line = next(
+        line
+        for line in instructions.splitlines()
+        if "export VINCTOR_CLAUDE_CODE_HOOK_CONFIG=" in line
+    )
+    value = export_line.split("=", 1)[1].strip().strip('"').strip("'")
+    assert Path(value).is_absolute(), export_line
+
+
 def test_claude_code_design_partner_doc_keeps_claims_narrow() -> None:
     text = DOC_PATH.read_text(encoding="utf-8")
 

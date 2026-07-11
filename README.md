@@ -165,6 +165,10 @@ vinctor --db .vinctor-local.sqlite \
   operator policy apply --file docs/examples/local-demo-policy.yaml
 ```
 
+Note: this demo policy sets `agent_local`'s issuable scope bounds, so subsequent
+grant issuance outside those bounds is rejected with `scope_outside_issuable_bounds`.
+Bounds constrain future issuance, not already-issued grants.
+
 Agents can request grants, then operators can evaluate or decide those requests:
 
 ```bash
@@ -204,8 +208,12 @@ For the read-only MCP control-plane interface, see `docs/mcp-server.md`.
 Hook/plugin repositories can use the deterministic mock `/v1/enforce` fixture
 for integration smoke tests:
 
+First create a `mock-vinctor.json` config (schema in
+`docs/testing/mock-vinctor-service.md`), then run it on a free port (8765 above is
+already used by `service serve`):
+
 ```bash
-python tools/mock_vinctor_service.py --port 8765 --config mock-vinctor.json
+python tools/mock_vinctor_service.py --port 8799 --config mock-vinctor.json
 ```
 
 See `docs/testing/mock-vinctor-service.md`.
@@ -282,7 +290,9 @@ cannot contain wildcards.
 
 Malformed requested actions return `invalid_action`. Malformed requested
 resources return `invalid_resource`. Malformed grant scopes return
-`invalid_grant_scope`.
+`invalid_grant_scope`. These are the core-layer (`evaluate_policy` / `enforce`)
+decision reasons; the v1 HTTP contract pre-validates malformed input and surfaces
+it as `scope_invalid` (see `docs/api-contract.md`).
 
 ## Policy Evaluation
 

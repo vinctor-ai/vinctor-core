@@ -323,7 +323,13 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _write_hook_config(config: E2EConfig, *, db_path: Path) -> Path:
-    path = (config.hook_config_path or db_path.parent / "claude-code-hook.json").expanduser()
+    # Absolute so the exported VINCTOR_CLAUDE_CODE_HOOK_CONFIG resolves from any
+    # cwd — the site guide runs Claude Code from a disposable workspace, where a
+    # relative path would point at the wrong directory. `.absolute()` (not
+    # `.resolve()`) avoids surprising symlink rewriting of caller-supplied paths.
+    path = (
+        config.hook_config_path or db_path.parent / "claude-code-hook.json"
+    ).expanduser().absolute()
     path.parent.mkdir(parents=True, exist_ok=True)
     document = {
         "version": 1,

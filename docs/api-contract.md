@@ -444,6 +444,7 @@ Common grant request and auto-approval reasons:
 | `scope_outside_issuable_bounds` | Issuance could not proceed because the request exceeded the agent's issuable scope bounds (direct and approval paths; `403`). |
 | `issuable_bounds_not_found` | Issuance could not proceed because no issuable scope bounds are configured for the target agent (direct and approval paths; `403`). |
 | `grant_request_not_pending` | A decided request cannot be decided again. |
+| `scope_invalid` | Enforce/issuance rejected malformed input at the v1 boundary — a syntactically invalid action, resource, or grant scope (`400`). The core-layer decision reasons `invalid_action` / `invalid_resource` / `invalid_grant_scope` are pre-validated into this single HTTP reason. |
 | `boundary_required` | Enforce denied: the agent is hardened to require a runtime boundary, but none was supplied. |
 | `subject_token_required` | Delegated enforce denied: the subject is hardened to require a subject token, but none was presented. |
 | `subject_token_invalid` | Delegated enforce denied: the presented subject token failed validation (generic, leak-free; covers invalid, expired, revoked, mismatched, or failed proof-of-possession). |
