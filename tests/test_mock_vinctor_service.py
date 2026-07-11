@@ -84,7 +84,7 @@ def test_mock_service_returns_valid_permit_response() -> None:
         status, response = post_json(server, payload=body())
 
     assert status == 200
-    assert response == {"decision": "permit"}
+    assert response == {"decision": "permit", "audit_event_id": "evt_mock_1"}
 
 
 def test_mock_service_explicit_deny_wins_over_permit() -> None:
@@ -179,7 +179,7 @@ def test_mock_service_accepts_optional_boundary_header() -> None:
         log = tuple(server.mock_log)
 
     assert status == 200
-    assert response == {"decision": "permit"}
+    assert response == {"decision": "permit", "audit_event_id": "evt_mock_1"}
     assert log[0].boundary_id == "bnd_mock"
     assert log[0].action_resource == "execute:ci/test"
 

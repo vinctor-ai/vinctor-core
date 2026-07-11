@@ -46,7 +46,8 @@ def main() -> None:
         )
 
         assert permit_status == 200
-        assert permit == {"decision": "permit"}
+        assert permit["decision"] == "permit"
+        assert permit["audit_event_id"].startswith("evt_mock_")
         assert deny_status == 403
         assert deny["decision"] == "deny"
         assert deny["reason"] == "action_denied"

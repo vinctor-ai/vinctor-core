@@ -235,7 +235,16 @@ def _handler() -> type[BaseHTTPRequestHandler]:
                         boundary_id=boundary_id,
                     )
                 )
-                self._send_json(200, {"decision": "permit"})
+                # D-8: hooks verify a permit from the response body — decision
+                # plus a non-empty audit_event_id — not the bare HTTP 200. Emit
+                # a per-request mock id so the shared mock stays a valid stand-in.
+                self._send_json(
+                    200,
+                    {
+                        "decision": "permit",
+                        "audit_event_id": f"evt_mock_{len(self.server.mock_log)}",
+                    },
+                )
                 return
 
             self.server.mock_log.append(
