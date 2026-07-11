@@ -44,25 +44,27 @@ For a concrete design-partner preview layout with Caddy TLS termination, see
 `.github/workflows/release.yml` cuts a release when you push a version tag:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 Using the workflow's automatic `GITHUB_TOKEN` (no extra credentials), the tag build:
 
 - builds the sdist + wheel and attaches them to the GitHub Release, and
 - builds and pushes the container image to GHCR as
-  `ghcr.io/<owner>/vinctor-core:<version>` and `:latest`.
+  `ghcr.io/vinctor-ai/vinctor-core:<version>` and `:latest`.
 
 Pull and run the published image (the `CMD` is `vinctor service serve`):
 
 ```bash
-docker run -p 8765:8765 -v vinctor-data:/data ghcr.io/<owner>/vinctor-core:latest
+docker run -p 8765:8765 -v vinctor-data:/data \
+  ghcr.io/vinctor-ai/vinctor-core:0.2.0
 ```
 
 A `workflow_dispatch` run is a build-only smoke check (it does not push or publish).
 
-**Publishing to PyPI is opt-in.** To enable it:
+`vinctor-core` 0.2.0 is published on PyPI. For future tagged releases, PyPI
+publishing remains controlled by the opt-in release configuration:
 
 1. Set the repository variable `PUBLISH_PYPI=true`.
 2. Create a GitHub Environment named `pypi` (the publish job declares
@@ -601,9 +603,10 @@ Starting-point runbooks for TLS/reverse proxy, firewall, systemd supervision,
 logs/observability, and SQLite/volume backup are documented in
 [Operational Runbooks](operational-runbooks.md). Still deferred:
 
-- structured/exportable operational logging and metrics (audit records are the
-  current operational signal)
-- Docker image publishing and tagged release artifacts
+- managed log/metrics aggregation, alerting, and production SLOs beyond the
+  shipped opt-in structured access log and Prometheus endpoint
+- automated fleet rollout, rollback, and registry-promotion policy beyond the
+  published tagged package and container-image artifacts
 
 ### Production Hardening
 

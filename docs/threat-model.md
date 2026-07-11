@@ -153,8 +153,9 @@ the PEP key's own workspace, preserving tenant isolation. See
 > For an instrumented internal resource whose PEP mediates **every** access path
 > and fails closed, Phase 1.8 makes authorization **non-bypassable by the
 > agent** — *conditional on* complete mediation, fail-closed behavior, and a
-> trusted agent identity, the last of which is currently *asserted* (bearer
-> key), not proven.
+> trusted agent identity. The default bearer path still relies on an asserted
+> subject; the shipped subject-token path can bind a short-lived token to the
+> grant, audience, action, and resource, with optional HMAC proof-of-possession.
 
 ### What it DOES defend
 
@@ -174,6 +175,12 @@ the PEP key's own workspace, preserving tenant isolation. See
   (no grant_ref echoed, closing the grant-existence oracle).
 - **Honest audit of who-asked vs who-it's-about.** Audit records the enforcing
   PEP principal separately from the subject `agent_id`.
+- **Stronger subject-token path is shipped.** A PEP can require a Vinctor-issued,
+  short-lived subject token bound to the delegated audience and grant. Tokens
+  can also be bound to one action/resource pair and protected with HMAC
+  proof-of-possession and replay checks. Operator mandates
+  (`require_subject_token` and `require_pop`) are available, but remain optional
+  rather than the default posture.
 
 ### What it does NOT defend / what we do NOT claim
 
@@ -190,27 +197,28 @@ the PEP key's own workspace, preserving tenant isolation. See
   holds a credential that reaches the resource without traversing the PEP, the
   delegated PDP never sees the access. Phase 1.8 governs the *mediated* path; it
   does not remove the agent's other means.
-- **Identity is ASSERTED, not proven.** The PEP *asserts* the subject
-  `agent_id`. Until the ADR 0007 identity-proof model is selected and landed,
-  Vinctor makes **no** claim of proven on-behalf-of identity. The shipped slice
-  is a forward-compatible mechanism (PEP key + delegated path + separate audit
-  principal) only. How subject identity is *proven* — relayed agent key (weak),
-  grant-bound short-lived token (medium), or SSO/federation (strongest), with
-  sender-constrained mTLS/DPoP as the hardening direction — is an **OPEN
-  DECISION reserved for founder sign-off**.
+- **The default identity path remains asserted.** A delegated request that does
+  not use the subject-token mandate still lets the PEP assert the subject
+  `agent_id`; possession of a bearer PEP key alone does not prove that the
+  request originated from that agent. The stronger subject-token/HMAC-PoP path
+  is shipped, but operators must enable the relevant mandates to require it.
+  Asymmetric sender constraints such as mTLS/DPoP and external SSO/federation
+  remain future hardening options.
 - **No credential brokering.** The delegated path only reads grants and emits
   decisions. It does not mint, hold, strip, or broker resource credentials
   (Phase 1 posture preserved).
-- **No claim** of production/hosted posture, proven agent identity, or coverage
-  of non-instrumentable systems or ambient credentials.
+- **No claim** of production/hosted posture, universally proven agent identity,
+  or coverage of non-instrumentable systems or ambient credentials.
 
 ### Net assessment
 
 Phase 1.8 is the first control that can be **non-bypassable by the agent** —
 but only for instrumented resources with complete mediation and fail-closed
-PEPs, and only as strongly as the *asserted* subject identity, which is not yet
-cryptographically proven. It does not address ambient credentials or
-non-instrumentable systems.
+PEPs. Identity assurance depends on deployment posture: the default bearer path
+still trusts the PEP's subject assertion, while the shipped subject-token path
+can add grant/audience/action binding, HMAC proof-of-possession, and replay
+checks when the corresponding mandates are enabled. It does not address ambient
+credentials or non-instrumentable systems.
 
 ---
 
@@ -270,7 +278,7 @@ by which credentials are brokered and which ambient credentials are stripped.
 | Phase | Status | Honest one-line claim | Strongest adversary it constrains |
 | --- | --- | --- | --- |
 | 1 — Agent-side hook | Shipped (prototype) | Deterministically gates *cooperatively-surfaced* tool calls, fails closed, audits; bypassable by an agent controlling its runtime. | Prompt-injected agent (2), on covered paths. |
-| 1.8 — Resource-side PDP/PEP | Mechanism shipped; identity-proof OPEN | Non-bypassable for instrumented resources **iff** complete mediation + fail-closed + trusted identity; identity is asserted, not proven. | Compromised agent (3), w.r.t. the mediated resource only. |
+| 1.8 — Resource-side PDP/PEP | Mechanism + subject-token/HMAC-PoP path shipped; mandates optional | Non-bypassable for instrumented resources **iff** complete mediation + fail-closed + trusted identity; the default bearer path remains assertion-based unless stronger mandates are enabled. | Compromised agent (3), w.r.t. the mediated resource only. |
 | 2 — Credential brokering | NOT built | Removes the agent's *means*; neutralizes a fully-compromised agent only for brokered creds + stripped ambient creds. | Compromised agent (3), at the level of means. |
 
 ## Consolidated "what we do NOT claim" (all phases)
@@ -283,8 +291,9 @@ by which credentials are brokered and which ambient credentials are stripped.
 - No defense against bash wrapping/chaining or IDE-MCP (`mcp__ide__executeCode`)
   code execution in Phase 1.
 - No coverage of non-instrumentable systems in Phase 1.8.
-- No *proven* on-behalf-of agent identity in Phase 1.8 — identity is asserted
-  via bearer key until the ADR 0007 identity model lands with founder sign-off.
+- No universal on-behalf-of identity guarantee in Phase 1.8 — the shipped
+  subject-token/HMAC-PoP path strengthens identity when required, but the
+  default bearer path still accepts the PEP's subject assertion.
 - No credential brokering, credential shielding, or ambient-credential
   stripping anywhere today (Phase 2 not built).
 - No prompt/content safety, no provider credential management, no human approval
@@ -293,10 +302,10 @@ by which credentials are brokered and which ambient credentials are stripped.
 
 ## NEXT STEPS (what remains)
 
-- **Close the founder-sign-off OPEN DECISION on agent identity proof** (ADR
-  0007): select the relayed-key / grant-bound-token / SSO model and whether
-  sender-constrained mTLS/DPoP is mandatory. Until then Phase 1.8's identity
-  claim stays "asserted, not proven."
+- **Choose and document the deployment identity posture:** decide whether each
+  production-intent PEP must enable `require_subject_token` and `require_pop`,
+  and whether a future asymmetric sender constraint (mTLS/DPoP) or external
+  SSO/federation is required for that environment.
 - **Document, per design-partner deployment, the actual completeness of
   mediation** for each instrumented resource, since Phase 1.8's non-bypassable
   claim is conditional on it.

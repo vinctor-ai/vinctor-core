@@ -35,17 +35,15 @@ service user created here.
 > come before the role — `vinctor --db <path> operator audit list`, not
 > `vinctor operator audit list --db <path>`.
 
-### 1. Install from source
+### 1. Install the released package
 
-There is no published package or image yet (see
-[What Is Still Deferred](#what-is-still-deferred)), so install from a git
-checkout into a dedicated virtualenv. Requires Python 3.11+.
+Install the current `vinctor-core` 0.2.0 release from PyPI into a dedicated
+virtualenv. Requires Python 3.11+.
 
 ```bash
 sudo mkdir -p /opt/vinctor
-sudo git clone https://github.com/pkachuc/vinctor-core.git /opt/vinctor/src
 sudo python3.11 -m venv /opt/vinctor/.venv
-sudo /opt/vinctor/.venv/bin/pip install /opt/vinctor/src
+sudo /opt/vinctor/.venv/bin/pip install "vinctor-core==0.2.0"
 /opt/vinctor/.venv/bin/vinctor --help   # confirm the console script exists
 ```
 
@@ -357,7 +355,7 @@ docker compose start vinctor
 
 ## Upgrades
 
-This is a from-source install, so upgrades are manual. Always back up first.
+Upgrades are explicit and operator-controlled. Always back up first.
 
 ```bash
 # 1. Snapshot the current database (see SQLite Backup And Restore).
@@ -365,10 +363,9 @@ sudo -u vinctor /opt/vinctor/.venv/bin/vinctor \
   --db /var/lib/vinctor/vinctor.sqlite \
   operator storage backup --output /var/backups/vinctor/pre-upgrade.sqlite
 
-# 2. Stop, pull, reinstall.
+# 2. Stop and install the target package version.
 sudo systemctl stop vinctor.service
-sudo git -C /opt/vinctor/src pull
-sudo /opt/vinctor/.venv/bin/pip install --upgrade /opt/vinctor/src
+sudo /opt/vinctor/.venv/bin/pip install --upgrade "vinctor-core==<target-version>"
 
 # 3. Confirm the on-disk schema is current (idempotent, data-safe).
 sudo -u vinctor /opt/vinctor/.venv/bin/vinctor \
@@ -409,8 +406,8 @@ These remain intentionally out of scope for the single-node prototype:
 
 - production auth/session/user management and managed identity
 - high availability, replication, and multi-tenant control plane
-- Docker image publishing and tagged release artifacts (the CI workflow and
-  registry/PyPI credentials are still required)
+- automated fleet rollout, rollback, and registry-promotion policy beyond the
+  published single-node package/image artifacts
 
 Opt-in structured access logging and a `/metrics` Prometheus endpoint shipped
 (off by default); see "What the prototype emits today" above.
