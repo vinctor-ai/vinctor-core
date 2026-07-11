@@ -95,23 +95,27 @@ control plane). Install it as a standalone tool with
 virtualenv — no `PYTHONPATH` or `python -m …` invocation needed:
 
 ```bash
-# Standalone CLI (recommended). Not yet on PyPI, so install from a clone:
-pipx install .
-# include the MCP control plane:  pipx install ".[mcp]"
+# Standalone CLI (recommended), straight from PyPI:
+pipx install vinctor-core
+# include the MCP control plane:  pipx install "vinctor-core[mcp]"
 
 # …no pipx on this machine? install into a virtualenv instead:
-python3.11 -m venv .venv && .venv/bin/python -m pip install .
+python3.11 -m venv .venv && .venv/bin/python -m pip install vinctor-core
 
 vinctor --help
 vinctor local start --db .vinctor-local.sqlite   # bootstrap a local service and print VINCTOR_* exports
 ```
 
+(Working from a checkout instead? `pipx install .` / `pip install .` from the
+repo root installs the same CLI.)
+
 `--db` is required by `vinctor local start`; the snippet above writes the local
 service state to `.vinctor-local.sqlite`.
 
-The base `pip install .` / `pipx install .` ships the `vinctor-mcp-server`
-command, but running it needs the `[mcp]` extra (the MCP SDK). Install
-`pipx install ".[mcp]"` (or `pip install "vinctor-core[mcp]"`) to run it.
+The base `pip install vinctor-core` / `pipx install vinctor-core` ships the
+`vinctor-mcp-server` command, but running it needs the `[mcp]` extra (the MCP
+SDK). Install `pipx install "vinctor-core[mcp]"` (or
+`pip install "vinctor-core[mcp]"`) to run it.
 Without the extra it exits with a clean one-line error
 (`error: MCP SDK is required to run vinctor-mcp-server. Install with
 vinctor-core[mcp].`).

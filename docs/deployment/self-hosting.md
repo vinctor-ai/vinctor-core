@@ -106,7 +106,9 @@ Valid service modes are `local` and `self_hosted`.
 Install locally:
 
 ```bash
-.venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/python -m pip install vinctor-core          # from PyPI
+# …or, when serving from this checkout (development):
+# .venv/bin/python -m pip install -e ".[dev]"
 ```
 
 Run the service runtime:
