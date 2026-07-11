@@ -905,6 +905,47 @@ def test_vinctor_cli_keys_list_and_revoke(tmp_path: Path) -> None:
     assert record.status == "revoked"
 
 
+def test_vinctor_cli_grants_revoke_direct_db(tmp_path: Path) -> None:
+    # Regression (Codex runtime report 2026-07-11): `grants revoke --db <path>`
+    # must revoke against the SQLite DB like every other operator mutation
+    # (keys/tokens/require-boundary/bounds), instead of demanding an endpoint +
+    # workspace key. The service reads grants per-enforce with no cache, so a
+    # direct-DB revoke is consistent and safe.
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+
+    revoked = _run([*common, "operator", "grants", "revoke", "grt_seed"])
+    assert revoked["grant_ref"] == "grt_seed"
+    assert revoked["status"] == "revoked"
+    assert revoked["audit_event_id"].startswith("evt_")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
+            "grt_seed"
+        )
+    finally:
+        conn.close()
+    assert grant.status == "revoked"
+
+
+def test_vinctor_cli_grants_revoke_direct_db_unknown_errors(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+
+    stdout = StringIO()
+    stderr = StringIO()
+    status = run_vinctor(
+        ["--db", str(db_path), "--workspace-id", "ws_demo",
+         "operator", "grants", "revoke", "grt_missing"],
+        stdout=stdout,
+        stderr=stderr,
+    )
+    assert status != 0
+    assert "grt_missing" in stderr.getvalue()
+
+
 def test_vinctor_cli_keys_revoke_unknown_errors(tmp_path: Path) -> None:
     db_path = tmp_path / "vinctor.sqlite"
     _seed_storage_db(db_path)

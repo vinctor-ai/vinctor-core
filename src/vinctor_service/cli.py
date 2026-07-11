@@ -482,7 +482,9 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
     revoke_grant = grant_commands.add_parser(
         "revoke",
         help="Revoke an issued grant by reference.",
-        description="Revoke an issued grant by its grant reference.",
+        description="Revoke an issued grant by its grant reference. Calls the running "
+        "service at --endpoint (with a workspace key) when an endpoint is configured; "
+        "otherwise revokes directly against --db (or VINCTOR_DB).",
     )
     revoke_grant.add_argument("grant_ref")
 
@@ -1094,6 +1096,35 @@ def _operator_requests(args: argparse.Namespace, *, stdout: TextIO) -> None:
 def _operator_grants(args: argparse.Namespace, *, stdout: TextIO) -> None:
     command = args.grants_command
     if command == "revoke":
+        # Transport selection: a configured --endpoint (or VINCTOR_ENDPOINT)
+        # takes precedence and uses the running service (preserving the remote-
+        # operator path). Otherwise, when --db (or VINCTOR_DB) is set, revoke
+        # against the SQLite DB via the same service.revoke_grant the HTTP
+        # handler uses — consistent with every other operator mutation
+        # (keys/tokens/require-boundary/bounds/policy/storage). The service reads
+        # grants per-enforce with no cache, so direct-DB revoke is safe.
+        if getattr(args, "endpoint", None) is None and getattr(args, "db", None) is not None:
+            revoked = _sqlite_service(args.db).revoke_grant(
+                grant_ref=args.grant_ref,
+                workspace_id=args.workspace_id,
+                now=datetime.now(UTC),
+            )
+            if revoked is None:
+                raise CliError(f"unknown grant: {args.grant_ref}")
+            grant, audit_event_id = revoked
+            body = {
+                "grant_ref": grant.grant_ref,
+                "status": grant.status,
+                "audit_event_id": audit_event_id,
+            }
+            _emit(
+                args,
+                body,
+                f"revoked grant {grant.grant_ref} "
+                f"status={grant.status} audit_event_id={audit_event_id}",
+                stdout=stdout,
+            )
+            return
         status, body = _request_json(
             args.endpoint,
             "POST",
