@@ -54,6 +54,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
+      - name: Set up Docker Buildx
+        # Required for the provenance/sbom attestations below — the default
+        # docker driver does not support attestations.
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+
       - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
         with:
@@ -102,6 +107,8 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
         # Uses Trusted Publishing when configured on PyPI. To use a token instead,
-        # add a PYPI_API_TOKEN secret and uncomment:
-        # with:
-        #   password: ${{ secrets.PYPI_API_TOKEN }}
+        # add a PYPI_API_TOKEN secret and pass it as `password`.
+        with:
+          # A re-pushed tag (e.g. re-cut to fix another job) must not fail the
+          # whole release on the already-published version.
+          skip-existing: true
