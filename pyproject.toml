@@ -25,8 +25,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/pkachuc/vinctor-core"
-Repository = "https://github.com/pkachuc/vinctor-core"
+Homepage = "https://vinctor.dev"
+Repository = "https://github.com/vinctor-ai/vinctor-core"
+Documentation = "https://vinctor.dev/docs"
 
 [project.optional-dependencies]
 dev = [
