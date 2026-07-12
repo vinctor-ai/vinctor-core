@@ -16,6 +16,7 @@ from typing import NoReturn, TextIO
 from urllib.parse import urlsplit
 
 from vinctor_core.models import Grant
+from vinctor_service.audit_chain import AnchorRecord
 from vinctor_service.key_ops import (
     rotate_agent_key,
     rotate_pep_key,
@@ -607,6 +608,28 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
     )
     audit_export.add_argument("--format", choices=("jsonl",), default="jsonl")
     audit_export.add_argument("--file", type=Path)
+    audit_commands.add_parser(
+        "head",
+        help="Print the current audit chain head (seq + row_hash) for anchoring.",
+        description="Print the tip of the tamper-evidence hash chain. Record it "
+        "out-of-band and pass it later to `verify --expected-head`.",
+    )
+    audit_verify = audit_commands.add_parser(
+        "verify",
+        help="Verify the audit chain is untampered (tamper-evidence).",
+        description="Walk the hash chain and report the first modify/delete/reorder/"
+        "column-mismatch. Exit non-zero on any break.",
+    )
+    audit_verify.add_argument(
+        "--expected-head",
+        help="Fail if the live chain head hash differs from this value "
+        "(catches truncation/rollback that is internally consistent).",
+    )
+    audit_verify.add_argument(
+        "--against-anchor",
+        help="Path to a head-log (JSON lines of {seq,row_hash}); '-' for stdin. "
+        "Fail if the live chain diverges from any recorded head.",
+    )
 
     policy = resources.add_parser(
         "policy",
@@ -1386,6 +1409,52 @@ def _tokens_list_text(tokens: tuple[object, ...]) -> str:
 
 
 def _operator_audit(args: argparse.Namespace, *, stdout: TextIO) -> None:
+    if args.audit_command == "head":
+        seq, row_hash = _sqlite_service(args.db).audit_writer.chain_head()
+        _emit(
+            args,
+            {"seq": seq, "row_hash": row_hash},
+            f"seq={seq} row_hash={row_hash}",
+            stdout=stdout,
+        )
+        return
+    if args.audit_command == "verify":
+        writer = _sqlite_service(args.db).audit_writer
+        v = writer.verify_chain()
+        result = {
+            "ok": v.ok, "count": v.count, "head_seq": v.head_seq,
+            "head_hash": v.head_hash, "break_seq": v.break_seq,
+            "break_event_id": v.break_event_id, "break_kind": v.break_kind,
+        }
+        ok = v.ok
+        if ok and args.expected_head is not None and v.head_hash != args.expected_head:
+            ok = False
+            result["ok"] = False
+            result["expected_head_mismatch"] = True
+        if ok and args.against_anchor is not None:
+            raw = (
+                sys.stdin.read()
+                if args.against_anchor == "-"
+                else Path(args.against_anchor).read_text(encoding="utf-8")
+            )
+            records = [
+                AnchorRecord(seq=int(d["seq"]), row_hash=str(d["row_hash"]))
+                for d in (json.loads(line) for line in raw.splitlines() if line.strip())
+            ]
+            av = writer.verify_against_anchor(records)
+            result["anchor"] = {
+                "ok": av.ok, "checked": av.checked,
+                "covered_max_seq": av.covered_max_seq,
+                "divergence_seq": av.divergence_seq,
+                "divergence_kind": av.divergence_kind,
+            }
+            ok = ok and av.ok
+        _emit(args, result, "audit chain OK" if ok else "audit chain BROKEN", stdout=stdout)
+        if not ok:
+            raise CliError(
+                "audit chain verification failed", code=EXIT_DENIED, quiet_json=True
+            )
+        return
     if args.audit_command == "export":
         _operator_audit_export(args, stdout=stdout)
         return

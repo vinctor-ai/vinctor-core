@@ -14,6 +14,14 @@ from vinctor_core import (
 )
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput, Grant
 from vinctor_service.audit import AuthFailureAuditThrottle
+from vinctor_service.audit_anchor import AuditAnchor, NullAnchor, anchor_from_env
+from vinctor_service.audit_chain import (
+    GENESIS_PREV_HASH,
+    AnchorRecord,
+    AnchorVerification,
+    ChainVerification,
+    row_hash,
+)
 from vinctor_service.auto_approval import (
     auto_approve_grant_request,
     create_auto_approval_rule,
@@ -225,6 +233,7 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
     _ensure_subject_tokens_pop_secret_column(conn)
     _ensure_agent_enforcement_require_subject_token_column(conn)
     _ensure_agent_enforcement_require_pop_column(conn)
+    _ensure_audit_events_hashchain_columns(conn)
     conn.execute(
         """
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
@@ -294,6 +303,13 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         VALUES (?, ?)
         """,
         (10, datetime.now(UTC).isoformat()),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (11, datetime.now(UTC).isoformat()),
     )
     conn.commit()
 
@@ -402,6 +418,45 @@ def _ensure_agent_enforcement_require_pop_column(conn: sqlite3.Connection) -> No
             "ALTER TABLE agent_enforcement_settings "
             "ADD COLUMN require_pop INTEGER NOT NULL DEFAULT 0"
         )
+
+
+def _ensure_audit_events_hashchain_columns(conn: sqlite3.Connection) -> None:
+    cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(audit_events)").fetchall()
+    }
+    added = False
+    if "seq" not in cols:
+        conn.execute("ALTER TABLE audit_events ADD COLUMN seq INTEGER")
+        added = True
+    if "prev_hash" not in cols:
+        conn.execute("ALTER TABLE audit_events ADD COLUMN prev_hash TEXT")
+        added = True
+    if "row_hash" not in cols:
+        conn.execute("ALTER TABLE audit_events ADD COLUMN row_hash TEXT")
+        added = True
+    # Back-fill any rows lacking chain metadata, in rowid (insertion) order.
+    unchained = conn.execute(
+        "SELECT rowid, event_json FROM audit_events WHERE row_hash IS NULL ORDER BY rowid"
+    ).fetchall()
+    if unchained:
+        start_seq_row = conn.execute(
+            "SELECT COALESCE(MAX(seq), 0), "
+            "(SELECT row_hash FROM audit_events WHERE seq = (SELECT MAX(seq) "
+            "FROM audit_events WHERE row_hash IS NOT NULL)) "
+            "FROM audit_events WHERE row_hash IS NOT NULL"
+        ).fetchone()
+        seq = start_seq_row[0] or 0
+        prev = start_seq_row[1] or GENESIS_PREV_HASH
+        for rowid, event_json in unchained:
+            seq += 1
+            rh = row_hash(seq, event_json, prev)
+            conn.execute(
+                "UPDATE audit_events SET seq = ?, prev_hash = ?, row_hash = ? WHERE rowid = ?",
+                (seq, prev, rh, rowid),
+            )
+            prev = rh
+    if added or unchained:
+        conn.commit()
 
 
 def get_sqlite_schema_versions(conn: sqlite3.Connection) -> tuple[int, ...]:
@@ -1047,20 +1102,30 @@ class SQLiteAutoApprovalRuleRepository:
 
 
 class SQLiteAuditWriter:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: sqlite3.Connection, anchor: AuditAnchor | None = None) -> None:
         self._conn = conn
+        self._anchor = anchor if anchor is not None else NullAnchor()
 
     def write(self, event: AuditEvent) -> None:
         event_data = event.to_dict()
+        event_json = json.dumps(event_data, sort_keys=True)
         with self._conn:
+            head = self._conn.execute(
+                "SELECT seq, row_hash FROM audit_events ORDER BY seq DESC LIMIT 1"
+            ).fetchone()
+            prev_seq = head[0] if head else 0
+            prev_hash = head[1] if head else GENESIS_PREV_HASH
+            seq = prev_seq + 1
+            rh = row_hash(seq, event_json, prev_hash)
             self._conn.execute(
                 """
                 INSERT INTO audit_events (
                     event_id, event_type, decision, reason,
                     workspace_id, agent_id, grant_id, grant_ref,
                     action, resource, scope_attempted, scope_matched,
-                    boundary_id, runtime, boundary_type, created_at, event_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    boundary_id, runtime, boundary_type, created_at, event_json,
+                    seq, prev_hash, row_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.event_id,
@@ -1079,9 +1144,19 @@ class SQLiteAuditWriter:
                     event.runtime,
                     event.boundary_type,
                     event.created_at.isoformat(),
-                    json.dumps(event_data, sort_keys=True),
+                    event_json,
+                    seq,
+                    prev_hash,
+                    rh,
                 ),
             )
+        # Post-commit head emission — fail-open: a raising anchor must never
+        # surface into the enforce path or unwind the committed audit row.
+        try:
+            self._anchor.emit(seq, rh, event.created_at.isoformat())
+        except Exception as exc:  # noqa: BLE001 - deliberate fail-open
+            import sys
+            sys.stderr.write(f"vinctor: audit anchor emit raised: {exc}\n")
 
     def get(self, event_id: str) -> AuditEvent | None:
         row = self._conn.execute(
@@ -1160,6 +1235,78 @@ class SQLiteAuditWriter:
         # rows are most-recent-first; return oldest-first within the window to
         # match the legacy insertion-ordered `[-limit:]` output.
         return tuple(_audit_event_from_json(row[0]) for row in reversed(rows))
+
+    _CROSSCHECK_COLUMNS = (
+        "event_id", "event_type", "decision", "reason", "workspace_id", "agent_id",
+        "grant_id", "grant_ref", "action", "resource", "scope_attempted",
+        "scope_matched", "boundary_id", "runtime", "boundary_type",
+    )
+
+    def verify_chain(self) -> ChainVerification:
+        rows = self._conn.execute(
+            "SELECT seq, prev_hash, row_hash, event_json, "
+            + ", ".join(self._CROSSCHECK_COLUMNS)
+            + " FROM audit_events ORDER BY seq"
+        ).fetchall()
+        prev = GENESIS_PREV_HASH
+        expected_seq = 1
+        head_seq, head_hash = 0, GENESIS_PREV_HASH
+        for row in rows:
+            seq, prev_hash, stored_hash, event_json = row[0], row[1], row[2], row[3]
+            cols = row[4:]
+            event_id = cols[0]
+            if seq != expected_seq:
+                return ChainVerification(
+                    False, len(rows), head_seq, head_hash,
+                    break_seq=expected_seq, break_event_id=event_id, break_kind="deleted",
+                )
+            if prev_hash != prev:
+                return ChainVerification(
+                    False, len(rows), head_seq, head_hash,
+                    break_seq=seq, break_event_id=event_id, break_kind="reordered",
+                )
+            if stored_hash != row_hash(seq, event_json, prev_hash):
+                return ChainVerification(
+                    False, len(rows), head_seq, head_hash,
+                    break_seq=seq, break_event_id=event_id, break_kind="modified",
+                )
+            data = json.loads(event_json)
+            for name, value in zip(self._CROSSCHECK_COLUMNS, cols, strict=False):
+                if data.get(name) != value:
+                    return ChainVerification(
+                        False, len(rows), head_seq, head_hash,
+                        break_seq=seq, break_event_id=event_id,
+                        break_kind="column_mismatch",
+                    )
+            prev = stored_hash
+            head_seq, head_hash = seq, stored_hash
+            expected_seq += 1
+        return ChainVerification(True, len(rows), head_seq, head_hash)
+
+    def chain_head(self) -> tuple[int, str]:
+        row = self._conn.execute(
+            "SELECT seq, row_hash FROM audit_events ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        return (row[0], row[1]) if row else (0, GENESIS_PREV_HASH)
+
+    def verify_against_anchor(self, records: list[AnchorRecord]) -> AnchorVerification:
+        # `records` MUST be a concrete sequence (list/tuple), not a generator, so
+        # `len(records)` is correct after the loop.
+        covered = 0
+        for rec in records:
+            row = self._conn.execute(
+                "SELECT row_hash FROM audit_events WHERE seq = ?", (rec.seq,)
+            ).fetchone()
+            if row is None:
+                return AnchorVerification(
+                    False, covered, covered, divergence_seq=rec.seq, divergence_kind="missing"
+                )
+            if row[0] != rec.row_hash:
+                return AnchorVerification(
+                    False, covered, covered, divergence_seq=rec.seq, divergence_kind="mismatch"
+                )
+            covered = max(covered, rec.seq)
+        return AnchorVerification(True, len(records), covered)
 
 
 class SQLiteBoundaryRegistry:
@@ -1248,7 +1395,10 @@ class SQLiteV1Service:
         if self.initialize_schema:
             init_sqlite_schema(self.conn)
         self.grant_repository = SQLiteGrantRepository(self.conn)
-        self.audit_writer = SQLiteAuditWriter(self.conn)
+        import os
+        self.audit_writer = SQLiteAuditWriter(
+            self.conn, anchor=anchor_from_env(dict(os.environ))
+        )
         self._auth_failures = AuthFailureAuditThrottle()
         self.boundary_registry = SQLiteBoundaryRegistry(self.conn)
         self.scope_bounds_repository = SQLiteAgentIssuableScopeBoundsRepository(self.conn)

@@ -99,7 +99,13 @@ or any failure stops the call.
 - **Time-bounding and revocation**: an expired or revoked grant stops
   permitting, so stale authority is not silently long-lived.
 - **Audit trail**: every mapped decision is recorded (permit/deny) without
-  leaking secrets or raw tool input, giving operators a reviewable record.
+  leaking secrets or raw tool input, giving operators a reviewable record. The
+  log is a **tamper-evident** hash chain (`operator audit verify`). A determined
+  attacker who controls the SQLite file can recompute the whole tail (unkeyed
+  SHA-256), so local evidence alone is not prevention; anchoring the chain head
+  to an independent, append-only sink (`VINCTOR_AUDIT_ANCHOR`) closes that
+  residual up to the anchor cadence and the sink's independence. Cryptographic
+  signing and full-event SIEM streaming are future work.
 - **Coverage across mapped tool families**: the hook can map command
   execution, file read/write tools, and web tools (WebFetch/WebSearch) where
   the runtime surfaces them as `PreToolUse` events.

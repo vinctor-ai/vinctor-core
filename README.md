@@ -687,6 +687,30 @@ changes, the corresponding audit event semantics should be updated with tests.
 Audit records must not include raw tool input, raw command text, prompts, or
 model-facing reason strings.
 
+### Tamper-evidence
+
+Every audit row is hash-chained (`seq` + `prev_hash` + `row_hash =
+sha256(seq \n event_json \n prev_hash)`). `vinctor operator audit verify` walks
+the chain and reports the first modification, deletion, reorder, or
+filter-column edit. `vinctor operator audit head` prints the chain tip.
+
+The chain makes tampering **detectable**; how far it is **preventable** depends
+on where you anchor the head (`VINCTOR_AUDIT_ANCHOR=file:/secured/path` or
+`stdout`):
+
+| Anchor | Guarantee vs. an attacker who controls the DB file |
+| --- | --- |
+| none | tamper-evident (a surgical edit breaks the chain; a full-tail recompute is undetectable without a reference) |
+| same-host, same-privilege file | still only evident — the attacker rewrites the anchor too |
+| OS-separated local (append-only / root-owned / WORM) | resistant up to defeating that separation |
+| independent external sink | effectively resistant; only the un-anchored tail is exposed |
+
+Anchoring is off by default and fail-open (a dead sink never blocks or denies an
+enforce). `vinctor operator audit verify --against-anchor <head-log>` checks the
+live chain against the recorded heads. This is tamper-**evident**, not
+tamper-**proof**; for a compliance system of record, forward audit to durable
+WORM/SIEM storage.
+
 ## Development Principles
 
 This repo should stay small and deterministic.

@@ -55,7 +55,7 @@ def test_sqlite_insert_and_get_by_hash_round_trip(tmp_path) -> None:
 def test_sqlite_schema_records_version_7(tmp_path) -> None:
     conn = sqlite3.connect(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
-    assert get_sqlite_schema_versions(conn) == (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+    assert get_sqlite_schema_versions(conn) == (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
 
 
 def test_in_memory_round_trip_revoked_at() -> None:
