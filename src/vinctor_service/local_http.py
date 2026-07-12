@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -120,6 +121,15 @@ def create_v1_http_handler(
         else None
     )
 
+    # The single-node prototype shares ONE SQLite connection across all
+    # ThreadingHTTPServer worker threads. sqlite3 (even check_same_thread=False)
+    # is NOT safe for concurrent cursor/transaction use on one connection: a
+    # red-team hammering /v1/enforce with several concurrent clients tripped
+    # "another row available" / "no more rows available" and dropped connections
+    # with no response. Serialize the DB-touching request handling so a request's
+    # cursor is fully consumed before the next thread touches the connection.
+    db_access_lock = threading.Lock()
+
     class V1Handler(BaseHTTPRequestHandler):
         server_version = "VinctorLocalHTTP/0.1"
         # Suppress the default "Python/<x.y.z>" suffix BaseHTTPRequestHandler
@@ -172,7 +182,9 @@ def create_v1_http_handler(
             self._vinctor_decision = None
             self._vinctor_error = None
             try:
-                _handle_request(self, method)
+                # Serialize DB access across worker threads (see db_access_lock).
+                with db_access_lock:
+                    _handle_request(self, method)
             finally:
                 _observe(self, method)
 
