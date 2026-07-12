@@ -1,0 +1,55 @@
+name: ${COMPOSE_PROJECT_NAME:-vinctor-preview}
+
+services:
+  vinctor:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    command: ["vinctor", "service", "serve"]
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      VINCTOR_HOST: "0.0.0.0"
+      VINCTOR_PORT: "8765"
+      VINCTOR_DB: "/data/vinctor.sqlite"
+      VINCTOR_SERVICE_MODE: "self_hosted"
+      VINCTOR_LOG_LEVEL: "${VINCTOR_LOG_LEVEL:-info}"
+    expose:
+      - "8765"
+    volumes:
+      - vinctor-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          response = urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=5);
+          raise SystemExit(0 if json.load(response).get('status') == 'ok' else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      vinctor:
+        condition: service_healthy
+    environment:
+      VINCTOR_PREVIEW_HOSTNAME: "${VINCTOR_PREVIEW_HOSTNAME:-localhost}"
+    ports:
+      - "${VINCTOR_HTTP_PORT:-80}:80"
+      - "${VINCTOR_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  vinctor-data:
+  caddy-data:
+  caddy-config:

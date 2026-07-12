@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from vinctor_service.service_config import (
+    DEFAULT_SERVICE_DB_PATH,
+    KEY_STORAGE_MODE,
+    ServiceRuntimeConfig,
+    load_service_runtime_config,
+)
+
+
+def test_service_runtime_config_defaults() -> None:
+    config = load_service_runtime_config(env={})
+
+    assert config == ServiceRuntimeConfig(
+        host="127.0.0.1",
+        port=8765,
+        sqlite_db_path=DEFAULT_SERVICE_DB_PATH,
+        log_level="info",
+        service_mode="local",
+        key_storage_mode=KEY_STORAGE_MODE,
+    )
+
+
+def test_service_runtime_config_reads_environment(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+
+    config = load_service_runtime_config(
+        env={
+            "VINCTOR_HOST": "0.0.0.0",
+            "VINCTOR_PORT": "9999",
+            "VINCTOR_DB": str(db_path),
+            "VINCTOR_LOG_LEVEL": "DEBUG",
+            "VINCTOR_SERVICE_MODE": "SELF_HOSTED",
+        }
+    )
+
+    assert config.host == "0.0.0.0"
+    assert config.port == 9999
+    assert config.sqlite_db_path == db_path
+    assert config.log_level == "debug"
+    assert config.service_mode == "self_hosted"
+
+
+def test_service_runtime_config_cli_values_override_environment(tmp_path: Path) -> None:
+    env_db = tmp_path / "env.sqlite"
+    cli_db = tmp_path / "cli.sqlite"
+
+    config = load_service_runtime_config(
+        host="127.0.0.2",
+        port=0,
+        sqlite_db_path=cli_db,
+        log_level="warning",
+        service_mode="local",
+        env={
+            "VINCTOR_HOST": "0.0.0.0",
+            "VINCTOR_PORT": "9999",
+            "VINCTOR_DB": str(env_db),
+            "VINCTOR_LOG_LEVEL": "debug",
+            "VINCTOR_SERVICE_MODE": "self_hosted",
+        },
+    )
+
+    assert config.host == "127.0.0.2"
+    assert config.port == 0
+    assert config.sqlite_db_path == cli_db
+    assert config.log_level == "warning"
+    assert config.service_mode == "local"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"port": 70000}, "port must be between"),
+        ({"service_mode": "hosted"}, "service_mode must be one of"),
+        ({"log_level": "verbose"}, "log_level must be one of"),
+    ],
+)
+def test_service_runtime_config_rejects_invalid_values(
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        ServiceRuntimeConfig(**kwargs)
