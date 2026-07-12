@@ -37,13 +37,15 @@ service user created here.
 
 ### 1. Install the released package
 
-Install the current `vinctor-core` 0.2.0 release from PyPI into a dedicated
-virtualenv. Requires Python 3.11+.
+Install `vinctor-core` from PyPI into a dedicated virtualenv. Requires Python
+3.11+. Pin an explicit version for reproducible deploys — check the
+[releases](https://github.com/vinctor-ai/vinctor-core/releases) for the current
+one (`x.y.z` below is a placeholder).
 
 ```bash
 sudo mkdir -p /opt/vinctor
 sudo python3.11 -m venv /opt/vinctor/.venv
-sudo /opt/vinctor/.venv/bin/pip install "vinctor-core==0.2.0"
+sudo /opt/vinctor/.venv/bin/pip install "vinctor-core==x.y.z"   # e.g. 0.2.1
 /opt/vinctor/.venv/bin/vinctor --help   # confirm the console script exists
 ```
 
