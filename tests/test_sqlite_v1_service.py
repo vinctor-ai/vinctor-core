@@ -107,7 +107,7 @@ def test_sqlite_v1_service_exposes_audit_events(tmp_path: Path) -> None:
     conn.close()
 
 
-def test_sqlite_v1_service_preserves_unknown_grant_no_audit(
+def test_sqlite_v1_service_unknown_grant_records_rejection(
     tmp_path: Path,
 ) -> None:
     conn = connect_db(tmp_path)
@@ -119,10 +119,12 @@ def test_sqlite_v1_service_preserves_unknown_grant_no_audit(
         now=NOW,
     )
 
+    # Timing oracle closed: unknown grant records the same one rejection row a
+    # foreign grant does.
     assert response.status_code == 403
     assert response.error == "forbidden"
     assert response.decision is None
-    assert audit_count(conn) == 0
+    assert audit_count(conn) == 1
     conn.close()
 
 

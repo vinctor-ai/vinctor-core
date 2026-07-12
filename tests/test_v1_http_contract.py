@@ -179,12 +179,15 @@ def test_v1_http_headers_are_case_insensitive() -> None:
     assert response.body["decision"] == "permit"
 
 
-def test_v1_http_unknown_grant_uses_v1_response_without_audit() -> None:
+def test_v1_http_unknown_grant_uses_v1_response_and_records_rejection() -> None:
     svc = service()
 
     response = call(svc, request_body=body(grant_ref="grt_missing"))
 
+    # Timing oracle closed: unknown grant records one coarse rejection (matching a
+    # foreign grant) and never echoes the grant_ref in the response or audit.
     assert response.status_code == 403
     assert response.body["error"] == "forbidden"
     assert "decision" not in response.body
-    assert svc.audit_events == ()
+    assert len(svc.audit_events) == 1
+    assert svc.audit_events[0].grant_ref == ""

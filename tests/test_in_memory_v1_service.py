@@ -62,7 +62,7 @@ def test_in_memory_v1_service_permits_and_records_audit_event() -> None:
     assert service.audit_events[0].decision == "permit"
 
 
-def test_in_memory_v1_service_preserves_pre_audit_failures() -> None:
+def test_in_memory_v1_service_unknown_grant_records_rejection() -> None:
     service = InMemoryV1Service(grants=(grant(),))
 
     response = service.enforce(
@@ -70,9 +70,12 @@ def test_in_memory_v1_service_preserves_pre_audit_failures() -> None:
         now=NOW,
     )
 
+    # Timing oracle closed: unknown grant records one coarse rejection, matching a
+    # foreign grant, and never echoes the grant_ref.
     assert response.status_code == 403
     assert response.error == "forbidden"
-    assert service.audit_events == ()
+    assert len(service.audit_events) == 1
+    assert service.audit_events[0].grant_ref == ""
 
 
 def test_in_memory_v1_service_records_denies_in_audit_order() -> None:

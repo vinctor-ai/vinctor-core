@@ -107,7 +107,7 @@ def test_v1_enforce_scope_deny_writes_audit_event() -> None:
     assert audit.events[0].reason == "action_denied"
 
 
-def test_v1_enforce_grant_not_found_returns_403_without_audit() -> None:
+def test_v1_enforce_grant_not_found_returns_403_and_records_rejection() -> None:
     audit = InMemoryAuditWriter()
 
     response = enforce_v1_contract(
@@ -118,12 +118,19 @@ def test_v1_enforce_grant_not_found_returns_403_without_audit() -> None:
     )
 
     # Existence oracle closed: an unknown grant returns the same generic 403
-    # forbidden as a foreign grant, and writes NO mismatch audit.
+    # forbidden as a foreign grant AND writes the same coarse mismatch audit
+    # (attributed to the caller), so it is indistinguishable by response and by
+    # latency. It never echoes the grant_ref.
     assert response.status_code == 403
     assert response.error == "forbidden"
     assert response.decision is None
     assert "grt_missing" not in (response.reason or "")
-    assert audit.events == []
+    assert len(audit.events) == 1
+    event = audit.events[0]
+    assert event.event_type == EVENT_ACCESS_REJECTED
+    assert event.reason_code == REASON_AGENT_GRANT_MISMATCH
+    assert event.grant_ref == ""
+    assert "grt_" not in str(event.to_dict())
 
 
 def test_v1_enforce_unknown_and_foreign_grant_are_indistinguishable() -> None:
@@ -147,6 +154,40 @@ def test_v1_enforce_unknown_and_foreign_grant_are_indistinguishable() -> None:
     assert unknown.error == foreign.error == "forbidden"
     assert unknown.reason == foreign.reason
     assert unknown.decision is foreign.decision is None
+
+
+def test_v1_enforce_unknown_and_foreign_grant_write_identical_rejection_audit() -> None:
+    # Timing-oracle regression (Codex red-team 2026-07-12): the caller-facing
+    # response was already identical, but the UNKNOWN case wrote no audit while
+    # the FOREIGN case wrote one — that audit-write asymmetry was a measurable
+    # ~387us latency oracle for grant existence. Both cases must now traverse the
+    # SAME audit-write path so they are indistinguishable by latency too. The
+    # rejection is attributed to the caller's own workspace in both cases (never
+    # the victim grant's), so no cross-tenant data is written.
+    unknown_audit = InMemoryAuditWriter()
+    enforce_v1_contract(
+        request(grant_ref="grt_missing"),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=unknown_audit,
+    )
+    foreign_audit = InMemoryAuditWriter()
+    enforce_v1_contract(
+        request(agent_id="agent_other"),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=foreign_audit,
+    )
+
+    assert len(unknown_audit.events) == len(foreign_audit.events) == 1
+    u, f = unknown_audit.events[0], foreign_audit.events[0]
+    assert u.event_type == f.event_type == EVENT_ACCESS_REJECTED
+    assert u.reason_code == f.reason_code == REASON_AGENT_GRANT_MISMATCH
+    # Same coarse reason for both → the audit is not an exist-vs-not oracle either.
+    assert u.reason == f.reason
+    assert u.grant_ref == f.grant_ref == ""
+    assert "grt_" not in str(u.to_dict())
+    assert u.workspace_id == f.workspace_id  # caller's own workspace, not the victim's
 
 
 def test_v1_enforce_grant_lookup_failure_returns_503_without_audit() -> None:
@@ -175,10 +216,13 @@ def test_v1_enforce_missing_grant_precedes_invalid_request_validation() -> None:
         audit_writer=audit,
     )
 
+    # The missing-grant forbidden precedes invalid-request validation (an invalid
+    # action here never surfaces), and records the coarse rejection audit.
     assert response.status_code == 403
     assert response.error == "forbidden"
     assert response.decision is None
-    assert audit.events == []
+    assert len(audit.events) == 1
+    assert audit.events[0].reason_code == REASON_AGENT_GRANT_MISMATCH
 
 
 def test_v1_enforce_cross_agent_misuse_records_rejection_audit() -> None:

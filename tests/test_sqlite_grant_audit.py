@@ -100,7 +100,7 @@ def test_sqlite_insert_grant_rejects_duplicate_grant_ref(tmp_path: Path) -> None
         conn.close()
 
 
-def test_sqlite_unknown_grant_returns_v1_403_without_audit(tmp_path: Path) -> None:
+def test_sqlite_unknown_grant_returns_v1_403_and_records_rejection(tmp_path: Path) -> None:
     conn = connect_db(tmp_path)
     insert_grant(conn, grant())
 
@@ -111,10 +111,13 @@ def test_sqlite_unknown_grant_returns_v1_403_without_audit(tmp_path: Path) -> No
         audit_writer=SQLiteAuditWriter(conn),
     )
 
+    # Timing oracle closed: the unknown-grant path writes the same one rejection
+    # row a foreign grant does (see test_v1_enforce_contract), so the SQLite write
+    # work is identical.
     assert response.status_code == 403
     assert response.error == "forbidden"
     assert response.decision is None
-    assert audit_count(conn) == 0
+    assert audit_count(conn) == 1
     conn.close()
 
 

@@ -62,12 +62,13 @@ def enforce_v1_contract(
 
     # Existence oracle closed (ADR 0008): an unknown grant_ref and an existing-but-
     # foreign grant_ref return an IDENTICAL caller-facing 403 forbidden with a generic
-    # message (no grant_ref echoed, no exist-vs-belong distinction). Only the genuine
-    # existing-but-foreign case writes the operator-only mismatch audit, attributed to
-    # the caller's own authenticated workspace (request.workspace_id is forced from the
-    # agent key by the HTTP handler), so a probe cannot infer existence nor write into a
-    # victim workspace's audit trail. The nonexistent case writes no audit.
-    if grant is not None and (
+    # message (no grant_ref echoed, no exist-vs-belong distinction). Both cases ALSO
+    # write the same operator-only mismatch audit, attributed to the caller's own
+    # authenticated workspace (request.workspace_id is forced from the agent key by the
+    # HTTP handler), so a probe cannot infer existence — not from the response, and not
+    # from latency (a red-team found the write-in-foreign / no-write-in-unknown asymmetry
+    # was a ~387us timing oracle). No probe can write into a victim workspace's audit.
+    if grant is None or (
         grant.workspace_id != request.workspace_id or grant.agent_id != request.agent_id
     ):
         _record_rejection(
@@ -80,9 +81,6 @@ def enforce_v1_contract(
             boundary_id=request.boundary_id,
             now=now,
         )
-    if grant is None or (
-        grant.workspace_id != request.workspace_id or grant.agent_id != request.agent_id
-    ):
         return _pre_audit_error(403, "forbidden", _GRANT_FORBIDDEN_MESSAGE)
 
     require_boundary = (
@@ -171,15 +169,16 @@ def delegated_enforce_v1_contract(
     # Existence oracle closed (ADR 0008): an unknown grant_ref and an existing-but-
     # foreign grant_ref (wrong trusted workspace and/or wrong asserted subject) return
     # an IDENTICAL caller-facing 403 forbidden with a generic message (no grant_ref
-    # echoed, no exist-vs-belong distinction). Only the genuine existing-but-foreign
-    # case writes the operator-only mismatch audit, attributed to the caller's own
-    # authenticated TRUSTED workspace (never the caller-asserted one, never the victim
-    # grant's workspace), so a probe cannot infer existence nor write into a victim
-    # workspace's audit trail. The nonexistent case writes no audit.
+    # echoed, no exist-vs-belong distinction). Both cases ALSO write the same
+    # operator-only mismatch audit, attributed to the caller's own authenticated TRUSTED
+    # workspace (never the caller-asserted one, never the victim grant's workspace), so a
+    # probe cannot infer existence — not from the response, and not from latency (the
+    # write-only-in-foreign asymmetry was a measurable timing oracle). No probe can write
+    # into a victim workspace's audit trail.
     #
     # Tenant isolation: authorize against the TRUSTED workspace, and require the
     # grant to belong to the asserted subject within it.
-    if grant is not None and (
+    if grant is None or (
         grant.workspace_id != trusted_ws or grant.agent_id != request.agent_id
     ):
         _record_rejection(
@@ -193,9 +192,6 @@ def delegated_enforce_v1_contract(
             now=now,
             enforcing_principal=request.pep_id,
         )
-    if grant is None or (
-        grant.workspace_id != trusted_ws or grant.agent_id != request.agent_id
-    ):
         return _pre_audit_error(403, "forbidden", _GRANT_FORBIDDEN_MESSAGE)
 
     # require_subject_token mandate (mirror of require_boundary): when the subject

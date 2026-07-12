@@ -227,7 +227,7 @@ def test_delegated_enforce_subject_mismatch_records_rejection_audit() -> None:
     assert "grt_" not in str(event.to_dict())
 
 
-def test_delegated_enforce_missing_grant_returns_403_without_audit() -> None:
+def test_delegated_enforce_missing_grant_returns_403_and_records_rejection() -> None:
     audit = InMemoryAuditWriter()
 
     response = delegated_enforce_v1_contract(
@@ -238,12 +238,17 @@ def test_delegated_enforce_missing_grant_returns_403_without_audit() -> None:
     )
 
     # Existence oracle closed: an unknown grant returns the same generic 403
-    # forbidden as a foreign grant, and writes NO mismatch audit.
+    # forbidden as a foreign grant AND writes the same coarse mismatch audit
+    # (indistinguishable by response and by latency), never echoing the grant_ref.
     assert response.status_code == 403
     assert response.error == "forbidden"
     assert response.decision is None
     assert "grt_missing" not in (response.reason or "")
-    assert audit.events == []
+    assert len(audit.events) == 1
+    event = audit.events[0]
+    assert event.reason_code == REASON_AGENT_GRANT_MISMATCH
+    assert event.grant_ref == ""
+    assert "grt_" not in str(event.to_dict())
 
 
 def test_delegated_enforce_unknown_and_foreign_grant_are_indistinguishable() -> None:
