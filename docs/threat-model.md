@@ -47,6 +47,16 @@ Vinctor does **not** provide sandboxing, OS/process isolation, prompt/content
 safety, or provider credential management. Those are explicitly out of scope
 for the core (see `README.md`, "What This Core Does Not Own").
 
+**Audit records the request verbatim — the caller must not put secrets in it.**
+The audit trail stores the `action` and `resource` exactly as presented (that
+fidelity is the point of an audit log). Vinctor never fabricates or redacts them.
+So the calling adapter/PEP is responsible for not placing secrets, raw keys, or
+attacker-controlled prompt text into the `resource` (or `action`) string — a
+red-team confirmed such a value is stored as-is. `resource` is a hierarchical
+path identifier of *what* is being accessed, not a payload field. (Grant refs
+and key material are already never echoed to callers or into audit, per the
+non-disclosure invariants below.)
+
 ## Adversary model
 
 We consider three escalating adversaries:

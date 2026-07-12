@@ -122,6 +122,10 @@ def create_v1_http_handler(
 
     class V1Handler(BaseHTTPRequestHandler):
         server_version = "VinctorLocalHTTP/0.1"
+        # Suppress the default "Python/<x.y.z>" suffix BaseHTTPRequestHandler
+        # appends to the Server header — it discloses the exact runtime patch
+        # version and is of no value to callers (red-team NOTE, 2026-07-12).
+        sys_version = ""
         timeout = HANDLER_TIMEOUT_SECONDS
 
         def do_POST(self) -> None:

@@ -148,6 +148,25 @@ def raw_request(
     return response.status, response_body
 
 
+def test_local_http_server_header_hides_python_version() -> None:
+    # Red-team NOTE (Codex 2026-07-12): the Server header leaked the exact
+    # runtime patch version ("VinctorLocalHTTP/0.1 Python/3.11.15"). Suppress the
+    # Python/<version> suffix so the banner discloses no runtime detail.
+    svc = service()
+    with running_server(svc) as server:
+        host, port = server.server_address
+        conn = HTTPConnection(host, port, timeout=5)
+        conn.request("POST", "/v1/enforce", body=json.dumps(body()),
+                     headers={"Content-Type": "application/json", "X-Agent-Key": "agent_key_main"})
+        resp = conn.getresponse()
+        server_header = resp.getheader("Server") or ""
+        resp.read()
+        conn.close()
+
+    assert "Python/" not in server_header, server_header
+    assert "VinctorLocalHTTP" in server_header
+
+
 def test_local_http_service_permits_v1_enforce_request() -> None:
     svc = service()
 
