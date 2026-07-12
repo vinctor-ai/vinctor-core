@@ -83,7 +83,9 @@ def main() -> None:
         )
         assert unknown.status_code == 403  # existence oracle: generic 403
         assert unknown.decision is None
-        assert _audit_count(conn) == 2
+        # Timing oracle closed: unknown grant records the same coarse rejection a
+        # foreign grant does, so this is the 3rd row (permit, deny, unknown).
+        assert _audit_count(conn) == 3
 
         conn.close()
 

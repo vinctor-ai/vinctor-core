@@ -109,7 +109,9 @@ def main() -> None:
                 assert strict["error"] == "invalid_request"
 
                 audit_events = service.audit_events
-                assert len(audit_events) == 2
+                # Timing oracle closed: the unknown grant records a coarse
+                # rejection too, so audit is [permit, deny, unknown-rejection].
+                assert len(audit_events) == 3
                 assert audit_events[0].event_id == permit["audit_event_id"]
                 assert audit_events[0].boundary_id == "bnd_demo"
                 assert audit_events[0].runtime == "claude-code"

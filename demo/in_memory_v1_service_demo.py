@@ -78,7 +78,9 @@ def main() -> None:
     )
     assert missing_grant.status_code == 403  # existence oracle: generic 403
     assert missing_grant.decision is None
-    assert len(service.audit_events) == 2
+    # Timing oracle closed: the unknown grant records the same coarse rejection a
+    # foreign grant does, so this is the 3rd event (permit, deny, unknown-rejection).
+    assert len(service.audit_events) == 3
 
     print("ALL IN-MEMORY V1 SERVICE STEPS PASSED \u2713")
 

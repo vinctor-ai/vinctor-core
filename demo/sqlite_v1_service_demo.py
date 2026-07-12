@@ -54,7 +54,9 @@ def main() -> None:
         )
         assert missing_grant.status_code == 403  # existence oracle: generic 403
         assert missing_grant.decision is None
-        assert _audit_count(conn) == 2
+        # Timing oracle closed: unknown grant records the same coarse rejection a
+        # foreign grant does, so the count advances (permit, deny, unknown).
+        assert _audit_count(conn) == 3
 
         service.disable_boundary(
             boundary_id=boundary.boundary_id,
@@ -64,7 +66,7 @@ def main() -> None:
         inactive = service.enforce(_request(boundary_id=boundary.boundary_id), now=now)
         assert inactive.status_code == 403
         assert inactive.error == "boundary_inactive"
-        assert _audit_count(conn) == 3
+        assert _audit_count(conn) == 4
 
         conn.close()
 

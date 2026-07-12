@@ -71,7 +71,9 @@ def main() -> None:
     assert missing_grant.status_code == 403  # existence oracle: generic 403
     assert missing_grant.body["error"] == "forbidden"  # existence oracle: generic 403
 
-    assert len(service.audit_events) == 1
+    # Timing oracle closed: the unknown grant now records a coarse rejection, so
+    # this is 2 events (permit + unknown-rejection; the 400 strict-body is pre-audit).
+    assert len(service.audit_events) == 2
     print("ALL V1 HTTP CONTRACT STEPS PASSED \u2713")
 
 
