@@ -1,5 +1,14 @@
 # I — `require_pop` operator mandate (Plan)
 
+> **SUPERSEDED 2026-07-12 (footgun fix):** the "LOCKED single-purpose" semantics
+> below were reversed. `require_pop` now DOES imply a usable subject token must be
+> presented — a missing/blank token fails closed under `require_pop` alone, not
+> only when `require_subject_token` is also set. An adoption review found that
+> enabling `require_pop` alone gave operators a false sense of security. See
+> `v1_enforce.py` (the combined no-token deny) and
+> `tests/test_delegated_enforce_contract.py::test_require_pop_alone_denies_missing_token`.
+> This doc is kept as the historical record of the original decision.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development.
 
 **Goal:** Add a third opt-in, operator-controlled enforcement mandate `require_pop`

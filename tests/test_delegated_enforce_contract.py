@@ -518,10 +518,11 @@ def test_require_pop_off_permits_non_pop_token() -> None:
     assert audit.events[-1].token_id == token.token_id
 
 
-def test_require_pop_alone_does_not_deny_missing_token() -> None:
-    # SINGLE-PURPOSE: require_pop ON but require_subject_token OFF + NO token =>
-    # the no-token path is unchanged (legacy permit). require_pop only catches a
-    # PRESENTED non-PoP token, never a missing one.
+def test_require_pop_alone_denies_missing_token() -> None:
+    # require_pop implies a usable subject token MUST be presented: PoP can only be
+    # proven on a token that exists. require_pop ON (even with require_subject_token
+    # OFF) + NO token => fail-closed deny, audited pop_required. Closes the footgun
+    # where enabling require_pop alone silently permitted an unproven no-token call.
     audit = InMemoryAuditWriter()
     response = delegated_enforce_v1_contract(
         request(subject_token=None),
@@ -531,8 +532,29 @@ def test_require_pop_alone_does_not_deny_missing_token() -> None:
         subject_token_repository=InMemorySubjectTokenRepository(),
         agent_enforcement_settings_repository=_require_pop_settings(),
     )
-    assert response.decision == "permit"
-    assert audit.events[-1].identity_proven is False
+    assert response.status_code == 403
+    assert response.error == "forbidden"
+    assert response.decision is None
+    assert audit.events[-1].reason_code == REASON_POP_REQUIRED
+    assert audit.events[-1].identity_proven is not True
+
+
+def test_require_pop_alone_denies_blank_token() -> None:
+    # Empty == absent: a whitespace-only token header is no token, denied like None
+    # (mirrors require_subject_token). Do NOT normalize blank->None elsewhere.
+    audit = InMemoryAuditWriter()
+    response = delegated_enforce_v1_contract(
+        request(subject_token="   "),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=audit,
+        subject_token_repository=InMemorySubjectTokenRepository(),
+        agent_enforcement_settings_repository=_require_pop_settings(),
+    )
+    assert response.status_code == 403
+    assert response.error == "forbidden"
+    assert response.decision is None
+    assert audit.events[-1].reason_code == REASON_POP_REQUIRED
 
 
 def test_sqlite_require_pop_denies_presented_non_pop_token(tmp_path) -> None:

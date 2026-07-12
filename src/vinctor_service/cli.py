@@ -557,8 +557,8 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
         "require-pop",
         help="Mandate: subject tokens must use proof-of-possession (PoP).",
         description="Enforcement mandate. When enabled, the target agent (or whole "
-        "workspace) must present proof-of-possession (PoP) bound subject tokens; "
-        "bearer-only tokens are rejected at enforce time.",
+        "workspace) must present a proof-of-possession (PoP) bound subject token; a "
+        "missing token or a bearer-only (non-PoP) token is rejected at enforce time.",
     )
     rp_commands = require_pop.add_subparsers(dest="require_pop_command", required=True)
     rp_enable = rp_commands.add_parser(

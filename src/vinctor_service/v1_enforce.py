@@ -194,10 +194,9 @@ def delegated_enforce_v1_contract(
         )
         return _pre_audit_error(403, "forbidden", _GRANT_FORBIDDEN_MESSAGE)
 
-    # require_subject_token mandate (mirror of require_boundary): when the subject
-    # is hardened, a delegated enforce MUST present a usable subject token. This runs
-    # AFTER grant-ownership and BEFORE the optional-token block. Empty == absent: a
-    # blank/whitespace token header counts as no token and is denied here.
+    # Subject-token mandates (mirror of require_boundary), read with the trusted
+    # workspace (never request.workspace_id). Both run AFTER grant-ownership and
+    # BEFORE the optional-token block.
     require_subject_token = (
         agent_enforcement_settings_repository.is_subject_token_required(
             workspace_id=trusted_ws, agent_id=request.agent_id
@@ -205,12 +204,30 @@ def delegated_enforce_v1_contract(
         if agent_enforcement_settings_repository is not None
         else False
     )
-    if require_subject_token and (
+    # require_pop implies a usable subject token MUST be presented: PoP can only be
+    # proven on a token that exists, so require_pop ALSO governs the no-token case
+    # here (it is NOT orthogonal to require_subject_token). It additionally denies a
+    # PRESENTED non-PoP token in the token block further down.
+    is_pop_required = (
+        agent_enforcement_settings_repository.is_pop_required(
+            workspace_id=trusted_ws, agent_id=request.agent_id
+        )
+        if agent_enforcement_settings_repository is not None
+        else False
+    )
+    # No usable subject token fails closed when EITHER mandate is set. Empty ==
+    # absent: a blank/whitespace token header counts as no token (do NOT normalize
+    # blank->None). Attribute the deny to the more basic mandate when both are on.
+    if (require_subject_token or is_pop_required) and (
         request.subject_token is None or request.subject_token.strip() == ""
     ):
         _record_rejection(
             audit_writer,
-            reason_code=REASON_SUBJECT_TOKEN_REQUIRED,
+            reason_code=(
+                REASON_SUBJECT_TOKEN_REQUIRED
+                if require_subject_token
+                else REASON_POP_REQUIRED
+            ),
             workspace_id=trusted_ws,
             agent_id=request.agent_id,
             action=request.action,
@@ -220,19 +237,6 @@ def delegated_enforce_v1_contract(
             enforcing_principal=request.pep_id,
         )
         return _pre_audit_error(403, "forbidden", "a subject token is required")
-
-    # require_pop mandate (mirror of require_subject_token / require_boundary): when
-    # set, a PRESENTED subject token that is NOT proof-of-possession bound is denied.
-    # Single-purpose: this does NOT govern the no-token case (that stays under
-    # require_subject_token above); it only catches a presented non-PoP token in the
-    # token block below. Read with the trusted workspace (never request.workspace_id).
-    is_pop_required = (
-        agent_enforcement_settings_repository.is_pop_required(
-            workspace_id=trusted_ws, agent_id=request.agent_id
-        )
-        if agent_enforcement_settings_repository is not None
-        else False
-    )
 
     # ADR 0007 Model 2: proven-identity path. The token (if present) must agree
     # with the asserted body AND the resolved grant; any failure fails closed.
