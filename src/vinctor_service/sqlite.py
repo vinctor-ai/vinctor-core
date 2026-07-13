@@ -1193,6 +1193,9 @@ class SQLiteAuditWriter:
         boundary_id: str | None = None,
         agent_id: str | None = None,
         request_id: str | None = None,
+        reason_code: str | None = None,
+        enforcing_principal: str | None = None,
+        identity_proven: bool | None = None,
         limit: int | None = None,
     ) -> tuple[AuditEvent, ...]:
         """Workspace-scoped, SQL-pushed audit filter.
@@ -1204,6 +1207,13 @@ class SQLiteAuditWriter:
         rows are selected via ``rowid DESC LIMIT`` and then returned oldest-first
         within that window, matching the legacy ``[-limit:]`` slice of
         insertion-ordered events. ``limit=None`` returns every matching row.
+
+        ``reason_code``/``enforcing_principal``/``identity_proven`` have no
+        dedicated columns; they are filtered via ``json_extract`` over the
+        canonical ``event_json`` (JSON paths are literals, values are bound
+        parameters). ``AuditEvent.to_dict`` omits these keys when unset, so an
+        absent key reads as SQL NULL: it never matches a string filter and
+        counts as ``identity_proven=False``.
 
         Workspace scoping is mandatory: results never cross tenants. Every value
         travels as a bound parameter (no string interpolation into SQL).
@@ -1226,6 +1236,18 @@ class SQLiteAuditWriter:
             clauses.append("(resource = ? OR grant_ref = ?)")
             params.append(f"grant_request/{request_id}")
             params.append(request_id)
+        if reason_code is not None:
+            clauses.append("json_extract(event_json, '$.reason_code') = ?")
+            params.append(reason_code)
+        if enforcing_principal is not None:
+            clauses.append("json_extract(event_json, '$.enforcing_principal') = ?")
+            params.append(enforcing_principal)
+        if identity_proven is not None:
+            # JSON true -> 1; the key is omitted when False, so NULL -> 0.
+            clauses.append(
+                "COALESCE(json_extract(event_json, '$.identity_proven'), 0) = ?"
+            )
+            params.append(1 if identity_proven else 0)
 
         sql = (
             "SELECT event_json FROM audit_events "
@@ -1652,6 +1674,9 @@ class SQLiteV1Service:
         boundary_id: str | None = None,
         agent_id: str | None = None,
         request_id: str | None = None,
+        reason_code: str | None = None,
+        enforcing_principal: str | None = None,
+        identity_proven: bool | None = None,
         limit: int | None = None,
     ) -> tuple[AuditEvent, ...]:
         return self.audit_writer.list_filtered(
@@ -1661,6 +1686,9 @@ class SQLiteV1Service:
             boundary_id=boundary_id,
             agent_id=agent_id,
             request_id=request_id,
+            reason_code=reason_code,
+            enforcing_principal=enforcing_principal,
+            identity_proven=identity_proven,
             limit=limit,
         )
 

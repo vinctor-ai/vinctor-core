@@ -11,6 +11,7 @@ SAME results the current Python-side filter produced: same filters, same orderin
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -335,6 +336,127 @@ def test_sqlite_list_filtered_uses_parameterized_sql(tmp_path: Path) -> None:
     # The injection string must travel as a bound parameter, never inlined.
     assert "DROP TABLE" not in sql
     assert "'; DROP TABLE audit_events; --" in params
+    # Table survives.
+    assert svc.conn.execute(
+        "SELECT COUNT(*) FROM audit_events"
+    ).fetchone()[0] == 1
+
+
+# ---------------------------------------------------------------------------
+# Security-field filters (additive): reason_code, enforcing_principal,
+# identity_proven. Absent filter = unchanged behavior; each narrows to the
+# matching subset on BOTH backends.
+# ---------------------------------------------------------------------------
+
+
+def test_list_filtered_by_reason_code(tmp_path: Path) -> None:
+    for svc in _both_services(tmp_path / "rcode"):
+        svc.audit_writer.write(
+            replace(_event(event_id="evt_a"), reason_code="boundary_unregistered")
+        )
+        svc.audit_writer.write(
+            replace(_event(event_id="evt_b"), reason_code="agent_key_invalid")
+        )
+        svc.audit_writer.write(_event(event_id="evt_none"))
+
+        result = svc.list_filtered("ws_main", reason_code="boundary_unregistered")
+
+        assert [e.event_id for e in result] == ["evt_a"]
+        # Absent filter: unchanged behavior (all events, insertion order).
+        assert [e.event_id for e in svc.list_filtered("ws_main")] == [
+            "evt_a",
+            "evt_b",
+            "evt_none",
+        ]
+
+
+def test_list_filtered_by_enforcing_principal(tmp_path: Path) -> None:
+    for svc in _both_services(tmp_path / "principal"):
+        svc.audit_writer.write(
+            replace(_event(event_id="evt_pep"), enforcing_principal="pep_git_host")
+        )
+        svc.audit_writer.write(
+            replace(_event(event_id="evt_other"), enforcing_principal="pep_mail")
+        )
+        svc.audit_writer.write(_event(event_id="evt_none"))
+
+        result = svc.list_filtered("ws_main", enforcing_principal="pep_git_host")
+
+        assert [e.event_id for e in result] == ["evt_pep"]
+        assert [e.event_id for e in svc.list_filtered("ws_main")] == [
+            "evt_pep",
+            "evt_other",
+            "evt_none",
+        ]
+
+
+def test_list_filtered_by_identity_proven_true_and_false(tmp_path: Path) -> None:
+    for svc in _both_services(tmp_path / "proven"):
+        svc.audit_writer.write(
+            replace(
+                _event(event_id="evt_proven"),
+                identity_proven=True,
+                token_id="tok_1",
+            )
+        )
+        svc.audit_writer.write(_event(event_id="evt_unproven"))
+
+        assert [
+            e.event_id for e in svc.list_filtered("ws_main", identity_proven=True)
+        ] == ["evt_proven"]
+        assert [
+            e.event_id for e in svc.list_filtered("ws_main", identity_proven=False)
+        ] == ["evt_unproven"]
+        # Tri-state: None (absent) applies no identity filter.
+        assert [e.event_id for e in svc.list_filtered("ws_main")] == [
+            "evt_proven",
+            "evt_unproven",
+        ]
+
+
+def test_list_filtered_security_filters_combine_with_and(tmp_path: Path) -> None:
+    for svc in _both_services(tmp_path / "seccombo"):
+        svc.audit_writer.write(
+            replace(
+                _event(event_id="evt_match"),
+                enforcing_principal="pep_git_host",
+                identity_proven=True,
+            )
+        )
+        svc.audit_writer.write(
+            replace(_event(event_id="evt_unproven"), enforcing_principal="pep_git_host")
+        )
+
+        result = svc.list_filtered(
+            "ws_main", enforcing_principal="pep_git_host", identity_proven=True
+        )
+
+        assert [e.event_id for e in result] == ["evt_match"]
+
+
+def test_sqlite_security_filters_use_parameterized_sql(tmp_path: Path) -> None:
+    """The new filter values must be bound parameters, never inlined into SQL."""
+    svc = _recording_service(tmp_path)
+    svc.audit_writer.write(_event(event_id="evt_a"))
+
+    conn: _RecordingConnection = svc.conn  # type: ignore[assignment]
+    conn.calls.clear()
+    svc.list_filtered(
+        "ws_main",
+        reason_code="'; DROP TABLE audit_events; --",
+        enforcing_principal="'; DROP TABLE audit_events; --",
+        identity_proven=True,
+    )
+
+    select_calls = [
+        (sql, params)
+        for sql, params in conn.calls
+        if "FROM audit_events" in sql and "SELECT event_json" in sql
+    ]
+    assert select_calls, "expected a SELECT against audit_events"
+    sql, params = select_calls[-1]
+    assert "DROP TABLE" not in sql
+    assert params.count("'; DROP TABLE audit_events; --") == 2
     # Table survives.
     assert svc.conn.execute(
         "SELECT COUNT(*) FROM audit_events"

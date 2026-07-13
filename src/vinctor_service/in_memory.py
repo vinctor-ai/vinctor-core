@@ -101,6 +101,9 @@ class InMemoryV1Service:
         boundary_id: str | None = None,
         agent_id: str | None = None,
         request_id: str | None = None,
+        reason_code: str | None = None,
+        enforcing_principal: str | None = None,
+        identity_proven: bool | None = None,
         limit: int | None = None,
     ) -> tuple[AuditEvent, ...]:
         """Workspace-scoped audit filter; reference impl for the SQLite pushdown.
@@ -121,6 +124,9 @@ class InMemoryV1Service:
                 boundary_id=boundary_id,
                 agent_id=agent_id,
                 request_id=request_id,
+                reason_code=reason_code,
+                enforcing_principal=enforcing_principal,
+                identity_proven=identity_proven,
             )
         ]
         if limit is not None:
@@ -433,6 +439,9 @@ def _audit_event_matches(
     boundary_id: str | None,
     agent_id: str | None,
     request_id: str | None,
+    reason_code: str | None = None,
+    enforcing_principal: str | None = None,
+    identity_proven: bool | None = None,
 ) -> bool:
     if agent_id is not None and event.agent_id != agent_id:
         return False
@@ -441,6 +450,12 @@ def _audit_event_matches(
     if grant_ref is not None and event.grant_ref != grant_ref:
         return False
     if boundary_id is not None and event.boundary_id != boundary_id:
+        return False
+    if reason_code is not None and event.reason_code != reason_code:
+        return False
+    if enforcing_principal is not None and event.enforcing_principal != enforcing_principal:
+        return False
+    if identity_proven is not None and event.identity_proven != identity_proven:
         return False
     if request_id is None:
         return True

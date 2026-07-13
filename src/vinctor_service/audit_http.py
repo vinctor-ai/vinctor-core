@@ -26,6 +26,9 @@ class AuditReadService(Protocol):
         boundary_id: str | None = None,
         agent_id: str | None = None,
         request_id: str | None = None,
+        reason_code: str | None = None,
+        enforcing_principal: str | None = None,
+        identity_proven: bool | None = None,
         limit: int | None = None,
     ) -> tuple[AuditEvent, ...]: ...
 
@@ -40,6 +43,10 @@ class AuditEventFilters:
     grant_ref: str | None = None
     boundary_id: str | None = None
     request_id: str | None = None
+    reason_code: str | None = None
+    enforcing_principal: str | None = None
+    # Tri-state: None = no filter, True/False = match that value.
+    identity_proven: bool | None = None
     limit: int = 20
 
 
@@ -76,6 +83,9 @@ def handle_v1_audit_events_http(
             boundary_id=filters.boundary_id,
             agent_id=filters.agent_id,
             request_id=filters.request_id,
+            reason_code=filters.reason_code,
+            enforcing_principal=filters.enforcing_principal,
+            identity_proven=filters.identity_proven,
             limit=filters.limit,
         )
         return V1HttpResponse(
@@ -120,7 +130,17 @@ def _workspace_identity(
 
 def _parse_filters(query_string: str) -> AuditEventFilters | V1HttpResponse:
     params = parse_qs(query_string, keep_blank_values=True)
-    allowed = {"agent_id", "event_type", "grant_ref", "boundary_id", "request_id", "limit"}
+    allowed = {
+        "agent_id",
+        "event_type",
+        "grant_ref",
+        "boundary_id",
+        "request_id",
+        "reason_code",
+        "enforcing_principal",
+        "identity_proven",
+        "limit",
+    }
     extra = sorted(set(params) - allowed)
     if extra:
         return _error(400, "invalid_request", f"unexpected query parameter: {extra[0]}")
@@ -144,12 +164,25 @@ def _parse_filters(query_string: str) -> AuditEventFilters | V1HttpResponse:
         if limit <= 0 or limit > 100:
             return _error(400, "invalid_request", "limit must be between 1 and 100")
 
+    identity_proven: bool | None = None
+    if values["identity_proven"] is not None:
+        normalized = values["identity_proven"].strip().lower()
+        if normalized == "true":
+            identity_proven = True
+        elif normalized == "false":
+            identity_proven = False
+        else:
+            return _error(400, "invalid_request", "identity_proven must be true or false")
+
     return AuditEventFilters(
         agent_id=values["agent_id"],
         event_type=values["event_type"],
         grant_ref=values["grant_ref"],
         boundary_id=values["boundary_id"],
         request_id=values["request_id"],
+        reason_code=values["reason_code"],
+        enforcing_principal=values["enforcing_principal"],
+        identity_proven=identity_proven,
         limit=limit,
     )
 

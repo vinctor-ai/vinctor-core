@@ -1187,6 +1187,138 @@ def test_local_http_audit_events_rejects_event_alias() -> None:
     assert response["reason"] == "unexpected query parameter: event"
 
 
+def security_audit_event(
+    event_id: str,
+    *,
+    reason_code: str | None = None,
+    enforcing_principal: str | None = None,
+    identity_proven: bool = False,
+) -> AuditEvent:
+    return AuditEvent(
+        event_id=event_id,
+        event_type="action_denied",
+        decision="deny",
+        reason="action_denied",
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        grant_id="grnt_main",
+        grant_ref="grt_main",
+        action="send",
+        resource="email/external",
+        scope_attempted="send:email/external",
+        scope_matched=None,
+        boundary_id=None,
+        runtime=None,
+        boundary_type=None,
+        created_at=NOW,
+        enforcing_principal=enforcing_principal,
+        reason_code=reason_code,
+        identity_proven=identity_proven,
+    )
+
+
+def test_local_http_audit_events_filter_by_reason_code() -> None:
+    svc = service()
+    svc.audit_writer.write(
+        security_audit_event("evt_rcode", reason_code="boundary_unregistered")
+    )
+    svc.audit_writer.write(
+        security_audit_event("evt_other", reason_code="agent_key_invalid")
+    )
+    svc.audit_writer.write(security_audit_event("evt_none"))
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        status, response = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events?reason_code=boundary_unregistered",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+        all_status, all_response = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert status == 200
+    assert [event["event_id"] for event in response["audit_events"]] == ["evt_rcode"]
+    # Absent filter: unchanged behavior (all events).
+    assert all_status == 200
+    assert [event["event_id"] for event in all_response["audit_events"]] == [
+        "evt_rcode",
+        "evt_other",
+        "evt_none",
+    ]
+
+
+def test_local_http_audit_events_filter_by_enforcing_principal() -> None:
+    svc = service()
+    svc.audit_writer.write(
+        security_audit_event("evt_pep", enforcing_principal="pep_git_host")
+    )
+    svc.audit_writer.write(
+        security_audit_event("evt_other", enforcing_principal="pep_mail")
+    )
+    svc.audit_writer.write(security_audit_event("evt_none"))
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        status, response = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events?enforcing_principal=pep_git_host",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert status == 200
+    assert [event["event_id"] for event in response["audit_events"]] == ["evt_pep"]
+
+
+def test_local_http_audit_events_filter_by_identity_proven() -> None:
+    svc = service()
+    svc.audit_writer.write(security_audit_event("evt_proven", identity_proven=True))
+    svc.audit_writer.write(security_audit_event("evt_unproven"))
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        true_status, true_response = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events?identity_proven=true",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+        false_status, false_response = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events?identity_proven=false",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert true_status == 200
+    assert [event["event_id"] for event in true_response["audit_events"]] == [
+        "evt_proven"
+    ]
+    assert false_status == 200
+    assert [event["event_id"] for event in false_response["audit_events"]] == [
+        "evt_unproven"
+    ]
+
+
+def test_local_http_audit_events_rejects_invalid_identity_proven() -> None:
+    svc = service()
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        status, response = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events?identity_proven=maybe",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert status == 400
+    assert response["error"] == "invalid_request"
+    assert response["reason"] == "identity_proven must be true or false"
+
+
 def test_local_http_workspace_manages_auto_approval_rules() -> None:
     svc = InMemoryV1Service()
     payload = {
