@@ -22,6 +22,11 @@ from vinctor_service.audit_chain import (
     ChainVerification,
     row_hash,
 )
+from vinctor_service.audit_export import (
+    ExportingAuditWriter,
+    NullExport,
+    audit_export_from_env,
+)
 from vinctor_service.auto_approval import (
     auto_approve_grant_request,
     create_auto_approval_rule,
@@ -1399,6 +1404,12 @@ class SQLiteV1Service:
         self.audit_writer = SQLiteAuditWriter(
             self.conn, anchor=anchor_from_env(dict(os.environ))
         )
+        # Opt-in SIEM/OTel export (VINCTOR_AUDIT_EXPORT): when unset the writer
+        # above is used as-is; when set it is wrapped so each persisted event is
+        # ALSO streamed, fail-open, after the durable write.
+        export = audit_export_from_env(dict(os.environ))
+        if not isinstance(export, NullExport):
+            self.audit_writer = ExportingAuditWriter(self.audit_writer, export)
         self._auth_failures = AuthFailureAuditThrottle()
         self.boundary_registry = SQLiteBoundaryRegistry(self.conn)
         self.scope_bounds_repository = SQLiteAgentIssuableScopeBoundsRepository(self.conn)
