@@ -154,7 +154,7 @@ def _parse_filters(query_string: str) -> AuditEventFilters | V1HttpResponse:
     )
 
 
-def _audit_event_body(event: AuditEvent) -> dict[str, str | None]:
+def _audit_event_body(event: AuditEvent) -> dict[str, str | bool | int | None]:
     return {
         "event_id": event.event_id,
         "event_type": event.event_type,
@@ -172,6 +172,17 @@ def _audit_event_body(event: AuditEvent) -> dict[str, str | None]:
         "runtime": event.runtime,
         "boundary_type": event.boundary_type,
         "created_at": event.created_at.isoformat(),
+        "enforcing_principal": event.enforcing_principal,
+        "reason_code": event.reason_code,
+        "occurrence_count": event.occurrence_count,
+        "first_seen_at": (
+            event.first_seen_at.isoformat() if event.first_seen_at is not None else None
+        ),
+        "last_seen_at": (
+            event.last_seen_at.isoformat() if event.last_seen_at is not None else None
+        ),
+        "identity_proven": event.identity_proven,
+        "token_id": event.token_id,
     }
 
 

@@ -1913,6 +1913,14 @@ def _audit_event_from_json(value: str) -> AuditEvent:
         boundary_type=data["boundary_type"],
         created_at=datetime.fromisoformat(data["created_at"]),
         enforcing_principal=data.get("enforcing_principal"),
+        reason_code=data.get("reason_code"),
+        occurrence_count=data.get("occurrence_count"),
+        first_seen_at=_optional_datetime(data.get("first_seen_at")),
+        last_seen_at=_optional_datetime(data.get("last_seen_at")),
         identity_proven=data.get("identity_proven", False),
         token_id=data.get("token_id"),
     )
+
+
+def _optional_datetime(value: str | None) -> datetime | None:
+    return datetime.fromisoformat(value) if value is not None else None

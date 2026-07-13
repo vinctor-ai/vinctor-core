@@ -356,6 +356,41 @@ def test_sqlite_audit_writer_round_trips_identity_proven_and_token_id(
     conn.close()
 
 
+def test_sqlite_audit_writer_round_trips_rejection_fields(tmp_path: Path) -> None:
+    from vinctor_core.audit import (
+        EVENT_AUTH_FAILED,
+        REASON_AUTH_FAILED,
+        build_rejection_audit_event,
+    )
+    from vinctor_service.sqlite import SQLiteAuditWriter, init_sqlite_schema
+
+    conn = connect_db(tmp_path)
+    init_sqlite_schema(conn)
+    writer = SQLiteAuditWriter(conn)
+    event = build_rejection_audit_event(
+        reason_code=REASON_AUTH_FAILED,
+        workspace_id="ws_main",
+        agent_id="",
+        created_at=NOW + timedelta(seconds=30),
+        event_type=EVENT_AUTH_FAILED,
+        action="/v1/enforce",
+        scope_attempted="",
+        event_id="evt_rejected",
+        occurrence_count=3,
+        first_seen_at=NOW,
+        last_seen_at=NOW + timedelta(seconds=30),
+    )
+    writer.write(event)
+
+    persisted = writer.get("evt_rejected")
+    assert persisted is not None
+    assert persisted.reason_code == REASON_AUTH_FAILED
+    assert persisted.occurrence_count == 3
+    assert persisted.first_seen_at == NOW
+    assert persisted.last_seen_at == NOW + timedelta(seconds=30)
+    conn.close()
+
+
 def test_sqlite_v1_service_delegated_enforce_blocks_cross_workspace(
     tmp_path: Path,
 ) -> None:

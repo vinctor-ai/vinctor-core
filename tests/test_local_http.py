@@ -13,6 +13,12 @@ from typing import Any
 import pytest
 
 from vinctor_core import BoundaryRegistrationInput, Grant, register_boundary
+from vinctor_core.audit import (
+    EVENT_AUTH_FAILED,
+    REASON_AGENT_GRANT_MISMATCH,
+    REASON_AUTH_FAILED,
+    build_rejection_audit_event,
+)
 from vinctor_core.models import AuditEvent
 from vinctor_service import (
     AgentIdentity,
@@ -957,6 +963,13 @@ def test_local_http_workspace_lists_audit_events_with_allowlisted_fields() -> No
         "runtime": None,
         "boundary_type": None,
         "created_at": NOW.isoformat(),
+        "enforcing_principal": None,
+        "reason_code": None,
+        "occurrence_count": None,
+        "first_seen_at": None,
+        "last_seen_at": None,
+        "identity_proven": False,
+        "token_id": None,
     }
     assert "event_json" not in event
     assert "raw_prompt" not in event
@@ -964,6 +977,99 @@ def test_local_http_workspace_lists_audit_events_with_allowlisted_fields() -> No
     assert "raw_command" not in event
     assert "key_hash" not in event
     assert "db_path" not in event
+
+
+def test_local_http_audit_events_surface_proven_delegated_identity() -> None:
+    svc = service()
+
+    with running_server(
+        svc, workspace_keys=workspace_identities(), pep_keys=pep_identities()
+    ) as server:
+        minted = svc.mint_subject_token(
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            grant_ref="grt_main",
+            audience="pep_git_host",
+            ttl_seconds=300,
+            now=NOW,
+        )
+        assert minted.status == "minted"
+        status, response = post_json(
+            server,
+            payload=delegated_body(),
+            headers={"X-PEP-Key": "pep_key_main", "X-Subject-Token": minted.token},
+            path="/v1/enforce/delegated",
+        )
+        assert status == 200
+        assert response["decision"] == "permit"
+        status, listed = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events?event_type=action_permitted",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert status == 200
+    assert len(listed["audit_events"]) == 1
+    event = listed["audit_events"][0]
+    assert event["enforcing_principal"] == "pep_git_host"
+    assert event["identity_proven"] is True
+    assert event["token_id"] == minted.token_id
+
+
+def test_local_http_audit_events_surface_rejection_reason_code() -> None:
+    svc = service()
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        status, response = post_json(server, payload=body(grant_ref="grt_foreign"))
+        assert status == 403
+        assert response["error"] == "forbidden"
+        status, listed = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events?event_type=access_rejected",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert status == 200
+    assert len(listed["audit_events"]) == 1
+    event = listed["audit_events"][0]
+    assert event["reason_code"] == REASON_AGENT_GRANT_MISMATCH
+    assert event["reason"] == REASON_AGENT_GRANT_MISMATCH
+    assert event["decision"] == "deny"
+
+
+def test_local_http_audit_event_surfaces_auth_failure_aggregation() -> None:
+    svc = service()
+    svc.audit_writer.write(
+        build_rejection_audit_event(
+            reason_code=REASON_AUTH_FAILED,
+            workspace_id="ws_main",
+            agent_id="",
+            created_at=NOW + timedelta(seconds=30),
+            event_type=EVENT_AUTH_FAILED,
+            action="/v1/enforce",
+            scope_attempted="",
+            event_id="evt_agg",
+            occurrence_count=4,
+            first_seen_at=NOW,
+            last_seen_at=NOW + timedelta(seconds=30),
+        )
+    )
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        status, event = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events/evt_agg",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert status == 200
+    assert event["reason_code"] == REASON_AUTH_FAILED
+    assert event["occurrence_count"] == 4
+    assert event["first_seen_at"] == NOW.isoformat()
+    assert event["last_seen_at"] == (NOW + timedelta(seconds=30)).isoformat()
 
 
 def test_local_http_workspace_gets_single_audit_event() -> None:
