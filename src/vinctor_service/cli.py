@@ -1437,9 +1437,14 @@ def _operator_audit(args: argparse.Namespace, *, stdout: TextIO) -> None:
                 if args.against_anchor == "-"
                 else Path(args.against_anchor).read_text(encoding="utf-8")
             )
+            # Anchor sinks also carry storage-op trace records (see
+            # audit_anchor.storage_op_line), self-identified by a "kind" key;
+            # chain-head records never have one. Only chain-head records are
+            # assertions about chain rows, so only they are verified.
             records = [
                 AnchorRecord(seq=int(d["seq"]), row_hash=str(d["row_hash"]))
                 for d in (json.loads(line) for line in raw.splitlines() if line.strip())
+                if "kind" not in d
             ]
             av = writer.verify_against_anchor(records)
             result["anchor"] = {
