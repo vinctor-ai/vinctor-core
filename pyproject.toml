@@ -38,6 +38,9 @@ dev = [
 mcp = [
   "mcp>=1.0",
 ]
+oidc = [
+  "PyJWT[crypto]>=2.13,<3",
+]
 
 [project.scripts]
 vinctor = "vinctor_service.cli:main"

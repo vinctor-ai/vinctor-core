@@ -33,6 +33,7 @@ from vinctor_service.grant_request_http import (
     handle_v1_grant_requests_http,
 )
 from vinctor_service.metrics import Metrics
+from vinctor_service.oidc import OidcTokenVerifier
 from vinctor_service.ratelimit import FixedWindowRateLimiter
 from vinctor_service.service_config import (
     DEFAULT_SUBJECT_TOKEN_MAX_TTL_SECONDS,
@@ -86,6 +87,7 @@ def create_v1_http_server(
     service_mode: str = "local",
     metrics: Metrics | None = None,
     access_log: bool = False,
+    oidc_token_verifier: OidcTokenVerifier | None = None,
 ) -> ThreadingHTTPServer:
     handler = create_v1_http_handler(
         service=service,
@@ -103,6 +105,7 @@ def create_v1_http_server(
         service_mode=service_mode,
         metrics=metrics,
         access_log=access_log,
+        oidc_token_verifier=oidc_token_verifier,
     )
     return ThreadingHTTPServer(address, handler)
 
@@ -124,6 +127,7 @@ def create_v1_http_handler(
     service_mode: str = "local",
     metrics: Metrics | None = None,
     access_log: bool = False,
+    oidc_token_verifier: OidcTokenVerifier | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     agent_keys = dict(agent_identities)
     workspace_keys = dict(workspace_identities or {})
@@ -131,6 +135,47 @@ def create_v1_http_handler(
     service_keys = set(service_operator_keys or set())
     pep_keys = dict(pep_identities or {})
     now = clock or _utc_now
+
+    def resolve_workspace_identity(raw_key: str, used_at: datetime) -> WorkspaceIdentity | None:
+        identity = (
+            workspace_identity_resolver(raw_key, used_at)
+            if workspace_identity_resolver is not None
+            else workspace_keys.get(raw_key)
+        )
+        if identity is not None or oidc_token_verifier is None:
+            return identity
+        principal = oidc_token_verifier.verify(raw_key)
+        if principal is None or principal.workspace_id is None or "operator" not in principal.roles:
+            return None
+        return WorkspaceIdentity(workspace_id=principal.workspace_id)
+
+    def resolve_auditor_identity(raw_key: str, used_at: datetime) -> WorkspaceIdentity | None:
+        identity = (
+            auditor_identity_resolver(raw_key, used_at)
+            if auditor_identity_resolver is not None
+            else auditor_keys.get(raw_key)
+        )
+        if identity is not None or oidc_token_verifier is None:
+            return identity
+        principal = oidc_token_verifier.verify(raw_key)
+        if (
+            principal is None
+            or principal.workspace_id is None
+            or not principal.roles.intersection({"operator", "auditor"})
+        ):
+            return None
+        return WorkspaceIdentity(workspace_id=principal.workspace_id)
+
+    def resolve_service_operator(raw_key: str, used_at: datetime) -> bool:
+        authenticated = (
+            service_operator_resolver(raw_key, used_at)
+            if service_operator_resolver is not None
+            else raw_key in service_keys
+        )
+        if authenticated or oidc_token_verifier is None:
+            return authenticated
+        principal = oidc_token_verifier.verify(raw_key)
+        return principal is not None and "service_operator" in principal.roles
 
     pop_skew_seconds = _resolve_pop_skew_seconds()
 
@@ -241,9 +286,7 @@ def create_v1_http_handler(
         if path == "/v1/boundaries" or path.startswith("/v1/boundaries/"):
             _handle_boundary_request(handler, method, path)
             return
-        if path == "/v1/auto-approval-rules" or path.startswith(
-            "/v1/auto-approval-rules/"
-        ):
+        if path == "/v1/auto-approval-rules" or path.startswith("/v1/auto-approval-rules/"):
             _handle_auto_approval_rule_request(handler, method, path)
             return
         if path == "/v1/grant-requests" or path.startswith("/v1/grant-requests/"):
@@ -256,9 +299,7 @@ def create_v1_http_handler(
             _handle_audit_request(handler, method, path, parsed_path.query)
             return
         if path == "/v1/service/audit/auth-failures":
-            _handle_service_auth_failures_request(
-                handler, method, path, parsed_path.query
-            )
+            _handle_service_auth_failures_request(handler, method, path, parsed_path.query)
             return
 
         _send_json(
@@ -350,11 +391,7 @@ def create_v1_http_handler(
                 )
         if access_log:
             start = getattr(handler, "_vinctor_start", None)
-            latency_ms = (
-                round((time.monotonic() - start) * 1000, 1)
-                if start is not None
-                else 0.0
-            )
+            latency_ms = round((time.monotonic() - start) * 1000, 1) if start is not None else 0.0
             line: dict[str, object] = {
                 "ts": now().isoformat(),
                 "method": method,
@@ -542,10 +579,10 @@ def create_v1_http_handler(
         response = handle_v1_boundaries_http(
             method=method,
             path=path,
-            headers=dict(handler.headers.items()),
+            headers=_authorization_headers(handler, "X-Workspace-Key"),
             body=body,
             workspace_identities=workspace_keys,
-            workspace_identity_resolver=workspace_identity_resolver,
+            workspace_identity_resolver=resolve_workspace_identity,
             service=cast(BoundaryAdminService, service),
             now=now(),
         )
@@ -567,10 +604,10 @@ def create_v1_http_handler(
         response = handle_v1_auto_approval_rules_http(
             method=method,
             path=path,
-            headers=dict(handler.headers.items()),
+            headers=_authorization_headers(handler, "X-Workspace-Key"),
             body=body,
             workspace_identities=workspace_keys,
-            workspace_identity_resolver=workspace_identity_resolver,
+            workspace_identity_resolver=resolve_workspace_identity,
             service=cast(AutoApprovalAdminService, service),
             now=now(),
         )
@@ -592,12 +629,12 @@ def create_v1_http_handler(
         response = handle_v1_grant_requests_http(
             method=method,
             path=path,
-            headers=dict(handler.headers.items()),
+            headers=_authorization_headers(handler, "X-Workspace-Key"),
             body=body,
             agent_identities=agent_keys,
             workspace_identities=workspace_keys,
             agent_identity_resolver=agent_identity_resolver,
-            workspace_identity_resolver=workspace_identity_resolver,
+            workspace_identity_resolver=resolve_workspace_identity,
             service=cast(GrantRequestService, service),
             now=now(),
         )
@@ -620,11 +657,11 @@ def create_v1_http_handler(
         response = handle_v1_grants_http(
             method=method,
             path=path,
-            headers=dict(handler.headers.items()),
+            headers=_authorization_headers(handler, "X-Workspace-Key"),
             body=body,
             query_string=query_string,
             workspace_identities=workspace_keys,
-            workspace_identity_resolver=workspace_identity_resolver,
+            workspace_identity_resolver=resolve_workspace_identity,
             service=cast(GrantLifecycleService, service),
             now=now(),
         )
@@ -640,11 +677,11 @@ def create_v1_http_handler(
             method=method,
             path=path,
             query_string=query_string,
-            headers=dict(handler.headers.items()),
+            headers=_authorization_headers(handler, "X-Auditor-Key"),
             workspace_identities=workspace_keys,
-            workspace_identity_resolver=workspace_identity_resolver,
+            workspace_identity_resolver=resolve_workspace_identity,
             auditor_identities=auditor_keys,
-            auditor_identity_resolver=auditor_identity_resolver,
+            auditor_identity_resolver=resolve_auditor_identity,
             service=cast(AuditReadService, service),
             now=now(),
         )
@@ -660,15 +697,36 @@ def create_v1_http_handler(
             method=method,
             path=path,
             query_string=query_string,
-            headers=dict(handler.headers.items()),
+            headers=_authorization_headers(handler, "X-Service-Operator-Key"),
             service_operator_keys=service_keys,
-            service_operator_resolver=service_operator_resolver,
+            service_operator_resolver=resolve_service_operator,
             service=cast(AuditReadService, service),
             now=now(),
         )
         _send_json(handler, response)
 
     return V1Handler
+
+
+def _authorization_headers(
+    handler: BaseHTTPRequestHandler,
+    target_header: str,
+) -> dict[str, str]:
+    headers = dict(handler.headers.items())
+    normalized = {key.lower(): value for key, value in headers.items()}
+    local_headers = {
+        "x-workspace-key",
+        "x-auditor-key",
+        "x-service-operator-key",
+        "x-agent-key",
+    }
+    if local_headers.intersection(normalized):
+        return headers
+    authorization = normalized.get("authorization", "")
+    scheme, separator, token = authorization.partition(" ")
+    if scheme.lower() == "bearer" and separator and token and " " not in token:
+        headers[target_header] = token
+    return headers
 
 
 _EXACT_ROUTES = frozenset(

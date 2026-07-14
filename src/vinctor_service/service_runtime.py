@@ -11,6 +11,7 @@ from typing import NoReturn
 from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.local_http import create_v1_http_server
 from vinctor_service.metrics import Metrics
+from vinctor_service.oidc import PyJwtOidcTokenVerifier
 from vinctor_service.service_config import ServiceRuntimeConfig
 from vinctor_service.sqlite import SQLiteV1Service
 
@@ -40,6 +41,9 @@ def prepare_service_runtime(
         service = SQLiteV1Service(conn)
         key_repository = SQLiteLocalKeyRepository(conn)
         metrics = Metrics() if config.metrics else None
+        oidc_token_verifier = (
+            PyJwtOidcTokenVerifier(config.oidc) if config.oidc is not None else None
+        )
         server = create_v1_http_server(
             (config.host, config.port),
             service=service,
@@ -65,6 +69,7 @@ def prepare_service_runtime(
             service_mode=config.service_mode,
             metrics=metrics,
             access_log=config.access_log,
+            oidc_token_verifier=oidc_token_verifier,
         )
     except Exception:
         conn.close()
