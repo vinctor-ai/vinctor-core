@@ -744,8 +744,8 @@ class SQLiteAgentEnforcementSettingsRepository:
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
-                    workspace_id, agent_id, require_subject_token, updated_at
-                ) VALUES (?, ?, ?, ?)
+                    workspace_id, agent_id, require_subject_token, require_boundary_set, updated_at
+                ) VALUES (?, ?, ?, 0, ?)
                 ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
                     require_subject_token = excluded.require_subject_token,
                     updated_at = excluded.updated_at
@@ -777,8 +777,8 @@ class SQLiteAgentEnforcementSettingsRepository:
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
-                    workspace_id, agent_id, require_pop, updated_at
-                ) VALUES (?, ?, ?, ?)
+                    workspace_id, agent_id, require_pop, require_boundary_set, updated_at
+                ) VALUES (?, ?, ?, 0, ?)
                 ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
                     require_pop = excluded.require_pop,
                     updated_at = excluded.updated_at
