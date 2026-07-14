@@ -75,6 +75,7 @@ class V1DelegatedEnforceService(Protocol):
         request: V1DelegatedEnforceRequest,
         *,
         now: datetime,
+        pep_workspace_id: str | None = None,
         pop_skew_seconds: int = 30,
     ) -> V1EnforceResponse: ...
 
@@ -299,12 +300,19 @@ def handle_v1_delegated_enforce_http(
         action=parsed["action"],
         resource=parsed["resource"],
         boundary_id=normalized_headers.get("x-vinctor-boundary-id"),
-        pep_workspace_id=identity.workspace_id,
         subject_token=normalized_headers.get("x-subject-token"),
         subject_token_proof=normalized_headers.get("x-subject-token-proof"),
     )
+    # The TRUSTED PEP workspace travels as an explicit argument derived from
+    # the authenticated key — never inside the request DTO, whose fields are
+    # all caller-asserted.
     return _http_response_from_enforce(
-        service.delegated_enforce(request, now=now, pop_skew_seconds=pop_skew_seconds)
+        service.delegated_enforce(
+            request,
+            now=now,
+            pep_workspace_id=identity.workspace_id,
+            pop_skew_seconds=pop_skew_seconds,
+        )
     )
 
 

@@ -41,7 +41,6 @@ def _request(subject_token: str | None = None) -> V1DelegatedEnforceRequest:
         grant_ref="grt_main",
         action="write",
         resource="repo/feature/readme",
-        pep_workspace_id="ws_main",
         subject_token=subject_token,
     )
 
@@ -77,6 +76,7 @@ def test_hardened_subject_without_token_denies_subject_token_required() -> None:
         grant_repository=InMemoryGrantRepository((_grant(),)),
         now=NOW,
         audit_writer=audit,
+        pep_workspace_id="ws_main",
         agent_enforcement_settings_repository=_hardened_settings(),
     )
     assert response.status_code == 403
@@ -92,6 +92,7 @@ def test_hardened_subject_with_blank_token_denies_subject_token_required() -> No
         grant_repository=InMemoryGrantRepository((_grant(),)),
         now=NOW,
         audit_writer=audit,
+        pep_workspace_id="ws_main",
         agent_enforcement_settings_repository=_hardened_settings(),
     )
     assert response.status_code == 403
@@ -108,6 +109,7 @@ def test_hardened_subject_with_valid_token_permits() -> None:
         grant_repository=InMemoryGrantRepository((_grant(),)),
         now=NOW,
         audit_writer=audit,
+        pep_workspace_id="ws_main",
         subject_token_repository=repo,
         agent_enforcement_settings_repository=_hardened_settings(),
     )
@@ -122,6 +124,7 @@ def test_unhardened_subject_without_token_permits() -> None:
         grant_repository=InMemoryGrantRepository((_grant(),)),
         now=NOW,
         audit_writer=audit,
+        pep_workspace_id="ws_main",
     )
     assert response.decision == "permit"
 
@@ -135,14 +138,14 @@ def test_service_hardened_subject_denies_without_token() -> None:
     svc.agent_enforcement_settings_repository.set_require_subject_token(
         workspace_id="ws_main", agent_id="agent_release", require_subject_token=True, now=NOW
     )
-    r = svc.delegated_enforce(_request(subject_token=None), now=NOW)
+    r = svc.delegated_enforce(_request(subject_token=None), now=NOW, pep_workspace_id="ws_main")
     assert r.status_code == 403
     assert r.decision is None
 
 
 def test_service_unhardened_subject_permits_without_token() -> None:
     svc = _svc()
-    r = svc.delegated_enforce(_request(subject_token=None), now=NOW)
+    r = svc.delegated_enforce(_request(subject_token=None), now=NOW, pep_workspace_id="ws_main")
     assert r.decision == "permit"
 
 
@@ -155,7 +158,9 @@ def test_sqlite_hardened_subject_denies_without_token(tmp_path) -> None:
     service.agent_enforcement_settings_repository.set_require_subject_token(
         workspace_id="ws_main", agent_id="agent_release", require_subject_token=True, now=NOW
     )
-    r = service.delegated_enforce(_request(subject_token=None), now=NOW)
+    r = service.delegated_enforce(
+        _request(subject_token=None), now=NOW, pep_workspace_id="ws_main"
+    )
     assert r.status_code == 403
     assert r.decision is None
 
@@ -165,7 +170,9 @@ def test_sqlite_unhardened_subject_permits_without_token(tmp_path) -> None:
     conn = sqlite3.connect(tmp_path / "v.sqlite")
     service = SQLiteV1Service(conn)
     service.insert_grant(_grant())
-    r = service.delegated_enforce(_request(subject_token=None), now=NOW)
+    r = service.delegated_enforce(
+        _request(subject_token=None), now=NOW, pep_workspace_id="ws_main"
+    )
     assert r.decision == "permit"
 
 

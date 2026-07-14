@@ -58,11 +58,16 @@ class V1EnforceRequest:
 class V1DelegatedEnforceRequest:
     """An on-behalf-of enforce request from a Policy Enforcement Point (PEP).
 
-    The PEP authenticates with its own key (``pep_id`` / ``pep_workspace_id``)
-    and asserts the subject it is asking about (``workspace_id`` / ``agent_id``).
-    See ADR 0007. Identity is proven by presenting a ``subject_token``; a
-    PoP-required token additionally carries a ``subject_token_proof`` (an HMAC
-    proof-of-possession over this request's action/resource — see ADR 0007 C3).
+    The PEP authenticates with its own key and asserts the subject it is
+    asking about (``workspace_id`` / ``agent_id``). See ADR 0007. Every field
+    here is caller-asserted. The TRUSTED PEP workspace is deliberately NOT a
+    field of this DTO: it is derived from the authenticated key and passed to
+    ``delegated_enforce_v1_contract`` as its ``pep_workspace_id`` argument, so
+    the trusted value can never be supplied by (or confused with) the request
+    body — a self-asserted workspace here would defeat tenant isolation.
+    Identity is proven by presenting a ``subject_token``; a PoP-required token
+    additionally carries a ``subject_token_proof`` (an HMAC proof-of-possession
+    over this request's action/resource — see ADR 0007 C3).
     """
 
     pep_id: str
@@ -72,7 +77,6 @@ class V1DelegatedEnforceRequest:
     action: str
     resource: str
     boundary_id: str | None = None
-    pep_workspace_id: str | None = None
     subject_token: str | None = None
     subject_token_proof: str | None = None
 

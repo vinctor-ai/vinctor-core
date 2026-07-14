@@ -440,14 +440,19 @@ class InMemoryV1Service:
         request: V1DelegatedEnforceRequest,
         *,
         now: datetime,
+        pep_workspace_id: str | None = None,
         pop_skew_seconds: int = DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS,
     ) -> V1EnforceResponse:
+        # ``pep_workspace_id`` is the TRUSTED workspace derived from the
+        # authenticated PEP key (see handle_v1_delegated_enforce_http). Without
+        # it the contract fails closed.
         return delegated_enforce_v1_contract(
             request,
             grant_repository=self.grant_repository,
             now=now,
             audit_writer=self.audit_writer,
             boundary_registry=self.boundary_registry,
+            pep_workspace_id=pep_workspace_id,
             subject_token_repository=self.subject_token_repository,
             agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
             pop_replay_cache=self._pop_replay,

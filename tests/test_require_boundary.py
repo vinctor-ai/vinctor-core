@@ -106,9 +106,9 @@ def test_delegated_enforce_hardened_subject_denies_without_boundary() -> None:
             grant_ref="grt",
             action="write",
             resource="repo/x/y",
-            pep_workspace_id="ws",
         ),
         now=NOW,
+        pep_workspace_id="ws",
     )
     assert r.status_code == 403
     assert r.decision == "deny"
@@ -124,9 +124,9 @@ def test_delegated_enforce_unhardened_subject_permits_without_boundary() -> None
             grant_ref="grt",
             action="write",
             resource="repo/x/y",
-            pep_workspace_id="ws",
         ),
         now=NOW,
+        pep_workspace_id="ws",
     )
     assert r.decision == "permit"
 

@@ -40,7 +40,6 @@ def _request(
         grant_ref="grt_main",
         action=action,
         resource=resource,
-        pep_workspace_id="ws_main",
         subject_token=subject_token,
         subject_token_proof=subject_token_proof,
     )
@@ -115,7 +114,9 @@ def test_pop_non_ascii_mac_denies_without_exception() -> None:
     svc, raw, _secret, _tid = _pop_svc()
     proof = f"{_now_unix()}.n-1.ébad-mac"
     r = svc.delegated_enforce(
-        _request(subject_token=raw, subject_token_proof=proof), now=NOW
+        _request(subject_token=raw, subject_token_proof=proof),
+        now=NOW,
+        pep_workspace_id="ws_main",
     )
     assert r.status_code == 403
     assert r.decision is None
@@ -126,7 +127,9 @@ def test_pop_valid_proof_permits_and_proves_identity() -> None:
     proof = make_proof(secret, action="write", resource="repo/feature/readme",
                        ts=_now_unix(), nonce="n-1", token_id=token_id)
     r = svc.delegated_enforce(
-        _request(subject_token=raw, subject_token_proof=proof), now=NOW
+        _request(subject_token=raw, subject_token_proof=proof),
+        now=NOW,
+        pep_workspace_id="ws_main",
     )
     assert r.decision == "permit"
     assert svc.audit_events[-1].identity_proven is True
@@ -140,6 +143,7 @@ def test_pop_token_without_proof_denies() -> None:
         grant_repository=svc.grant_repository,
         now=NOW,
         audit_writer=audit,
+        pep_workspace_id="ws_main",
         subject_token_repository=svc.subject_token_repository,
         pop_replay_cache=PopReplayCache(),
         pop_skew_seconds=SKEW,
@@ -152,7 +156,9 @@ def test_pop_token_without_proof_denies() -> None:
 def test_pop_token_with_blank_proof_denies() -> None:
     svc, raw, _secret, _tid = _pop_svc()
     r = svc.delegated_enforce(
-        _request(subject_token=raw, subject_token_proof="   "), now=NOW
+        _request(subject_token=raw, subject_token_proof="   "),
+        now=NOW,
+        pep_workspace_id="ws_main",
     )
     assert r.status_code == 403
     assert r.decision is None
@@ -164,7 +170,9 @@ def test_pop_wrong_secret_denies() -> None:
                        resource="repo/feature/readme", ts=_now_unix(),
                        nonce="n-1", token_id=token_id)
     r = svc.delegated_enforce(
-        _request(subject_token=raw, subject_token_proof=proof), now=NOW
+        _request(subject_token=raw, subject_token_proof=proof),
+        now=NOW,
+        pep_workspace_id="ws_main",
     )
     assert r.status_code == 403
     assert r.decision is None
@@ -176,7 +184,9 @@ def test_pop_stale_ts_denies() -> None:
     proof = make_proof(secret, action="write", resource="repo/feature/readme",
                        ts=stale_ts, nonce="n-1", token_id=token_id)
     r = svc.delegated_enforce(
-        _request(subject_token=raw, subject_token_proof=proof), now=NOW
+        _request(subject_token=raw, subject_token_proof=proof),
+        now=NOW,
+        pep_workspace_id="ws_main",
     )
     assert r.status_code == 403
 
@@ -187,7 +197,9 @@ def test_pop_far_future_ts_denies() -> None:
     proof = make_proof(secret, action="write", resource="repo/feature/readme",
                        ts=future_ts, nonce="n-1", token_id=token_id)
     r = svc.delegated_enforce(
-        _request(subject_token=raw, subject_token_proof=proof), now=NOW
+        _request(subject_token=raw, subject_token_proof=proof),
+        now=NOW,
+        pep_workspace_id="ws_main",
     )
     assert r.status_code == 403
 
@@ -200,6 +212,7 @@ def test_pop_bound_to_different_action_denies() -> None:
     r = svc.delegated_enforce(
         _request(subject_token=raw, subject_token_proof=proof, action="write"),
         now=NOW,
+        pep_workspace_id="ws_main",
     )
     assert r.status_code == 403
 
@@ -212,6 +225,7 @@ def test_pop_bound_to_different_resource_denies() -> None:
         _request(subject_token=raw, subject_token_proof=proof,
                  resource="repo/feature/readme"),
         now=NOW,
+        pep_workspace_id="ws_main",
     )
     assert r.status_code == 403
 
@@ -221,19 +235,25 @@ def test_pop_replay_same_nonce_denies_second_then_new_nonce_permits() -> None:
     proof = make_proof(secret, action="write", resource="repo/feature/readme",
                        ts=_now_unix(), nonce="n-replay", token_id=token_id)
     first = svc.delegated_enforce(
-        _request(subject_token=raw, subject_token_proof=proof), now=NOW
+        _request(subject_token=raw, subject_token_proof=proof),
+        now=NOW,
+        pep_workspace_id="ws_main",
     )
     assert first.decision == "permit"
     # exact same proof (same nonce) -> replay -> denied
     second = svc.delegated_enforce(
-        _request(subject_token=raw, subject_token_proof=proof), now=NOW
+        _request(subject_token=raw, subject_token_proof=proof),
+        now=NOW,
+        pep_workspace_id="ws_main",
     )
     assert second.status_code == 403
     # a fresh nonce -> permitted again
     proof2 = make_proof(secret, action="write", resource="repo/feature/readme",
                         ts=_now_unix(), nonce="n-fresh", token_id=token_id)
     third = svc.delegated_enforce(
-        _request(subject_token=raw, subject_token_proof=proof2), now=NOW
+        _request(subject_token=raw, subject_token_proof=proof2),
+        now=NOW,
+        pep_workspace_id="ws_main",
     )
     assert third.decision == "permit"
 
@@ -241,7 +261,9 @@ def test_pop_replay_same_nonce_denies_second_then_new_nonce_permits() -> None:
 def test_pop_malformed_two_parts_denies() -> None:
     svc, raw, _secret, _tid = _pop_svc()
     r = svc.delegated_enforce(
-        _request(subject_token=raw, subject_token_proof="123.onlytwo"), now=NOW
+        _request(subject_token=raw, subject_token_proof="123.onlytwo"),
+        now=NOW,
+        pep_workspace_id="ws_main",
     )
     assert r.status_code == 403
 
@@ -252,7 +274,9 @@ def test_pop_malformed_non_int_ts_denies() -> None:
     mac = pop_mac(secret, pop_canonical("write", "repo/feature/readme", 0, "n", token_id))
     proof = f"notanint.n.{mac}"
     r = svc.delegated_enforce(
-        _request(subject_token=raw, subject_token_proof=proof), now=NOW
+        _request(subject_token=raw, subject_token_proof=proof),
+        now=NOW,
+        pep_workspace_id="ws_main",
     )
     assert r.status_code == 403
 
@@ -268,6 +292,7 @@ def test_non_pop_token_ignores_present_proof() -> None:
     r = svc.delegated_enforce(
         _request(subject_token=result.token, subject_token_proof="garbage.proof.here"),
         now=NOW,
+        pep_workspace_id="ws_main",
     )
     assert r.decision == "permit"
 
@@ -414,6 +439,7 @@ def test_pop_token_without_cache_wired_fails_closed() -> None:
         grant_repository=InMemoryGrantRepository((_grant(),)),
         now=NOW,
         audit_writer=audit,
+        pep_workspace_id="ws_main",
         subject_token_repository=svc.subject_token_repository,
         pop_replay_cache=None,  # not wired
         pop_skew_seconds=SKEW,

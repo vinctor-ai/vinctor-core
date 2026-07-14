@@ -319,9 +319,9 @@ def test_sqlite_v1_service_delegated_enforce_persists_enforcing_principal(
             grant_ref="grt_main",
             action="write",
             resource="repo/feature/readme",
-            pep_workspace_id="ws_main",
         ),
         now=NOW,
+        pep_workspace_id="ws_main",
     )
 
     assert response.status_code == 200
@@ -359,10 +359,10 @@ def test_sqlite_v1_service_delegated_enforce_persists_proven_identity(
             grant_ref="grt_main",
             action="write",
             resource="repo/feature/readme",
-            pep_workspace_id="ws_main",
             subject_token=minted.token,
         ),
         now=NOW,
+        pep_workspace_id="ws_main",
     )
 
     assert response.status_code == 200
@@ -463,9 +463,9 @@ def test_sqlite_v1_service_delegated_enforce_blocks_cross_workspace(
             grant_ref="grt_main",
             action="write",
             resource="repo/feature/readme",
-            pep_workspace_id="ws_main",
         ),
         now=NOW,
+        pep_workspace_id="ws_main",
     )
 
     assert response.status_code == 403

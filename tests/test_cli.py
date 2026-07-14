@@ -1558,10 +1558,10 @@ def _delegated_enforce(db_path: Path, raw: str):
                 grant_ref="grt_seed",
                 action="execute",
                 resource="ci/test",
-                pep_workspace_id="ws_demo",
                 subject_token=raw,
             ),
             now=NOW,
+            pep_workspace_id="ws_demo",
         )
     finally:
         conn.close()

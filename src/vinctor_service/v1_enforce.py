@@ -126,11 +126,12 @@ def delegated_enforce_v1_contract(
     enforcing PEP principal is recorded separately from the subject ``agent_id``
     in the audit trail.
     """
-    # Trusted workspace comes ONLY from authenticated sources (the key-derived
-    # identity forwarded by the HTTP handler, or an explicit trusted override).
-    # We never fall back to request.workspace_id, which is caller-asserted and
-    # could otherwise be used to authorize a grant in an arbitrary workspace.
-    trusted_ws = pep_workspace_id or request.pep_workspace_id
+    # Trusted workspace comes ONLY from the authenticated ``pep_workspace_id``
+    # ARGUMENT (key-derived, supplied by the auth layer / service wiring). It
+    # is never read from the request DTO: every request field is
+    # caller-asserted, and falling back to one would let a direct/library
+    # caller self-assert a workspace and authorize a grant in any tenant.
+    trusted_ws = pep_workspace_id
     if not trusted_ws:
         # Fail closed: without a trusted PEP workspace identity we cannot
         # establish tenant isolation. Deny before any audit event is written
