@@ -10,6 +10,7 @@ from vinctor_service import (
     V1DelegatedEnforceRequest,
     V1EnforceRequest,
     V1ObserveRequest,
+    V1SimulateRequest,
 )
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
@@ -114,6 +115,32 @@ def test_sqlite_v1_service_records_mapped_observation(tmp_path: Path) -> None:
         (response.audit_event_id,),
     ).fetchone()
     assert row == ("action_observed", "permit", "", "read:repo/feature/readme")
+    conn.close()
+
+
+def test_sqlite_v1_service_persists_simulated_deny(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.insert_grant(grant())
+
+    response = service.simulate(
+        V1SimulateRequest(
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            grant_ref="grt_main",
+            action="write",
+            resource="repo/other/readme",
+        ),
+        now=NOW,
+    )
+
+    assert response.status_code == 200
+    assert response.would_decision == "deny"
+    row = conn.execute(
+        "SELECT event_type, decision, reason FROM audit_events WHERE event_id = ?",
+        (response.audit_event_id,),
+    ).fetchone()
+    assert row == ("action_would_deny", "deny", "action_denied")
     conn.close()
 
 

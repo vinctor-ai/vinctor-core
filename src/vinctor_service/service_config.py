@@ -4,6 +4,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from vinctor_service.oidc import OidcConfig, load_oidc_config
+
 DEFAULT_SERVICE_DB_PATH = Path(".vinctor/vinctor.sqlite")
 DEFAULT_SUBJECT_TOKEN_TTL_SECONDS = 300
 DEFAULT_SUBJECT_TOKEN_MAX_TTL_SECONDS = 3600
@@ -23,6 +25,7 @@ class ServiceRuntimeConfig:
     key_storage_mode: str = KEY_STORAGE_MODE
     metrics: bool = False
     access_log: bool = False
+    oidc: OidcConfig | None = None
 
     def __post_init__(self) -> None:
         if not self.host:
@@ -74,6 +77,7 @@ def load_service_runtime_config(
         service_mode=resolved_service_mode,
         metrics=resolved_metrics,
         access_log=resolved_access_log,
+        oidc=load_oidc_config(values),
     )
 
 

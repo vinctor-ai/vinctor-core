@@ -55,8 +55,10 @@ loop from observed behavior to standing authority.
   `vinctor_service`, per the layering in `AGENTS.md`.
 - Over-permissioning / poisoned-baseline risk is mitigated structurally: exact by
   default, `generalize` refuses top-level wildcards, `covers`/`count`/`last_seen`
-  annotations let the operator prune, and nothing is auto-applied. These risks and
-  mitigations are documented in the spec.
+   annotations let the operator prune, and nothing is auto-applied. These risks and
+  mitigations are documented in the spec. The service proposal also separates
+  observed, enforced, and simulated evidence and can require a minimum count per
+  exact pair before any optional generalization.
 - The generalization rule (parent depth ≥ 2) is a deliberate safety default; if a
   future need arises to collapse shallow siblings it must be a separate, explicitly
   reviewed decision (superseding note here).

@@ -64,9 +64,12 @@ from vinctor_service.models import (
     V1EnforceResponse,
     V1ObserveRequest,
     V1ObserveResponse,
+    V1SimulateRequest,
+    V1SimulateResponse,
 )
 from vinctor_service.observations import record_observation
 from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS
+from vinctor_service.simulations import simulate_v1_contract
 from vinctor_service.subject_tokens import mint_subject_token
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 
@@ -215,6 +218,7 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             workspace_id TEXT NOT NULL,
             agent_id TEXT NOT NULL,
             require_boundary INTEGER NOT NULL DEFAULT 0,
+            require_boundary_set INTEGER NOT NULL DEFAULT 0,
             require_subject_token INTEGER NOT NULL DEFAULT 0,
             require_pop INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL,
@@ -227,6 +231,18 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             ts INTEGER NOT NULL,
             PRIMARY KEY (token_id, nonce)
         );
+
+        CREATE TABLE IF NOT EXISTS policy_versions (
+            workspace_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            source_version INTEGER,
+            snapshot_json TEXT NOT NULL,
+            applied_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, version)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_pop_replay_nonces_ts
         ON pop_replay_nonces(ts);
 
@@ -241,6 +257,7 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
     _ensure_subject_tokens_pop_secret_column(conn)
     _ensure_agent_enforcement_require_subject_token_column(conn)
     _ensure_agent_enforcement_require_pop_column(conn)
+    _ensure_agent_enforcement_require_boundary_set_column(conn)
     _ensure_audit_events_hashchain_columns(conn)
     conn.execute(
         """
@@ -318,6 +335,13 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         VALUES (?, ?)
         """,
         (11, datetime.now(UTC).isoformat()),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (12, datetime.now(UTC).isoformat()),
     )
     conn.commit()
 
@@ -425,6 +449,23 @@ def _ensure_agent_enforcement_require_pop_column(conn: sqlite3.Connection) -> No
         conn.execute(
             "ALTER TABLE agent_enforcement_settings "
             "ADD COLUMN require_pop INTEGER NOT NULL DEFAULT 0"
+        )
+
+
+def _ensure_agent_enforcement_require_boundary_set_column(
+    conn: sqlite3.Connection,
+) -> None:
+    existing_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(agent_enforcement_settings)").fetchall()
+    }
+    if "require_boundary_set" not in existing_columns:
+        # Existing rows previously always acted as explicit boundary overrides.
+        # Defaulting migrated rows to 1 preserves that behavior; freshly created
+        # schemas default to 0 so unrelated settings do not create an override.
+        conn.execute(
+            "ALTER TABLE agent_enforcement_settings "
+            "ADD COLUMN require_boundary_set INTEGER NOT NULL DEFAULT 1"
         )
 
 
@@ -640,7 +681,7 @@ class SQLiteAgentEnforcementSettingsRepository:
         row = self._conn.execute(
             """
             SELECT require_boundary FROM agent_enforcement_settings
-            WHERE workspace_id = ? AND agent_id = ?
+            WHERE workspace_id = ? AND agent_id = ? AND require_boundary_set = 1
             """,
             (workspace_id, agent_id),
         ).fetchone()
@@ -657,7 +698,7 @@ class SQLiteAgentEnforcementSettingsRepository:
         rows = self._conn.execute(
             """
             SELECT agent_id, require_boundary FROM agent_enforcement_settings
-            WHERE workspace_id = ?
+            WHERE workspace_id = ? AND require_boundary_set = 1
             ORDER BY agent_id
             """,
             (workspace_id,),
@@ -671,10 +712,11 @@ class SQLiteAgentEnforcementSettingsRepository:
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
-                    workspace_id, agent_id, require_boundary, updated_at
-                ) VALUES (?, ?, ?, ?)
+                    workspace_id, agent_id, require_boundary, require_boundary_set, updated_at
+                ) VALUES (?, ?, ?, 1, ?)
                 ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
                     require_boundary = excluded.require_boundary,
+                    require_boundary_set = 1,
                     updated_at = excluded.updated_at
                 """,
                 (workspace_id, agent_id, 1 if require_boundary else 0, now.isoformat()),
@@ -708,8 +750,8 @@ class SQLiteAgentEnforcementSettingsRepository:
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
-                    workspace_id, agent_id, require_subject_token, updated_at
-                ) VALUES (?, ?, ?, ?)
+                    workspace_id, agent_id, require_subject_token, require_boundary_set, updated_at
+                ) VALUES (?, ?, ?, 0, ?)
                 ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
                     require_subject_token = excluded.require_subject_token,
                     updated_at = excluded.updated_at
@@ -741,8 +783,8 @@ class SQLiteAgentEnforcementSettingsRepository:
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
-                    workspace_id, agent_id, require_pop, updated_at
-                ) VALUES (?, ?, ?, ?)
+                    workspace_id, agent_id, require_pop, require_boundary_set, updated_at
+                ) VALUES (?, ?, ?, 0, ?)
                 ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
                     require_pop = excluded.require_pop,
                     updated_at = excluded.updated_at
@@ -1186,6 +1228,18 @@ class SQLiteAuditWriter:
             """
         ).fetchall()
         return [_audit_event_from_json(row[0]) for row in rows]
+
+    def list_auth_failures(self, *, limit: int) -> tuple[AuditEvent, ...]:
+        rows = self._conn.execute(
+            """
+            SELECT event_json FROM audit_events
+            WHERE workspace_id = '' AND event_type = 'auth_failed'
+            ORDER BY rowid DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return tuple(_audit_event_from_json(row[0]) for row in reversed(rows))
 
     def list_filtered(
         self,
@@ -1668,6 +1722,9 @@ class SQLiteV1Service:
     def get_audit_event(self, event_id: str) -> AuditEvent | None:
         return self.audit_writer.get(event_id)
 
+    def list_auth_failures(self, *, limit: int) -> tuple[AuditEvent, ...]:
+        return self.audit_writer.list_auth_failures(limit=limit)
+
     def list_filtered(
         self,
         workspace_id: str,
@@ -1770,6 +1827,16 @@ class SQLiteV1Service:
             audit_writer=self.audit_writer,
             now=now,
             boundary_registry=self.boundary_registry,
+        )
+
+    def simulate(self, request: V1SimulateRequest, *, now: datetime) -> V1SimulateResponse:
+        return simulate_v1_contract(
+            request,
+            grant_repository=self.grant_repository,
+            now=now,
+            audit_writer=self.audit_writer,
+            boundary_registry=self.boundary_registry,
+            agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
         )
 
     def delegated_enforce(

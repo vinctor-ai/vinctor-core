@@ -11,6 +11,7 @@ from typing import NoReturn
 from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.local_http import create_v1_http_server
 from vinctor_service.metrics import Metrics
+from vinctor_service.oidc import PyJwtOidcTokenVerifier
 from vinctor_service.service_config import ServiceRuntimeConfig
 from vinctor_service.sqlite import SQLiteV1Service
 
@@ -25,6 +26,9 @@ class ServiceRuntimeHandle:
 
     def close(self) -> None:
         self.server.server_close()
+        close_export = getattr(self.service.audit_writer, "close_export", None)
+        if callable(close_export):
+            close_export()
         self.conn.close()
 
 
@@ -40,6 +44,9 @@ def prepare_service_runtime(
         service = SQLiteV1Service(conn)
         key_repository = SQLiteLocalKeyRepository(conn)
         metrics = Metrics() if config.metrics else None
+        oidc_token_verifier = (
+            PyJwtOidcTokenVerifier(config.oidc) if config.oidc is not None else None
+        )
         server = create_v1_http_server(
             (config.host, config.port),
             service=service,
@@ -52,6 +59,12 @@ def prepare_service_runtime(
             workspace_identity_resolver=lambda raw_key, used_at: (
                 key_repository.resolve_workspace_identity(raw_key, now=used_at)
             ),
+            auditor_identity_resolver=lambda raw_key, used_at: (
+                key_repository.resolve_auditor_identity(raw_key, now=used_at)
+            ),
+            service_operator_resolver=lambda raw_key, used_at: (
+                key_repository.resolve_service_operator(raw_key, now=used_at)
+            ),
             pep_identity_resolver=lambda raw_key, used_at: key_repository.resolve_pep_identity(
                 raw_key, now=used_at
             ),
@@ -59,6 +72,7 @@ def prepare_service_runtime(
             service_mode=config.service_mode,
             metrics=metrics,
             access_log=config.access_log,
+            oidc_token_verifier=oidc_token_verifier,
         )
     except Exception:
         conn.close()
