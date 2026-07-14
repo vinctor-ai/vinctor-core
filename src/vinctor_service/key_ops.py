@@ -50,6 +50,28 @@ def rotate_workspace_key(
     )
 
 
+def rotate_auditor_key(
+    repository: SQLiteLocalKeyRepository,
+    *,
+    workspace_id: str,
+    now: datetime,
+) -> RotationResult:
+    """Mint a new read-only auditor key and revoke prior auditor keys."""
+    created = repository.create_auditor_key(workspace_id=workspace_id, now=now)
+    revoked = _revoke_prior(
+        repository,
+        workspace_id=workspace_id,
+        new_key_id=created.record.key_id,
+        keep=lambda record: record.key_type == "auditor",
+        now=now,
+    )
+    return RotationResult(
+        raw_key=created.raw_key,
+        new_key_id=created.record.key_id,
+        revoked_key_ids=revoked,
+    )
+
+
 def rotate_agent_key(
     repository: SQLiteLocalKeyRepository,
     *,

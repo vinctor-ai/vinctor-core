@@ -69,9 +69,11 @@ def create_v1_http_server(
     service: V1EnforceService,
     agent_identities: Mapping[str, AgentIdentity],
     workspace_identities: Mapping[str, WorkspaceIdentity] | None = None,
+    auditor_identities: Mapping[str, WorkspaceIdentity] | None = None,
     pep_identities: Mapping[str, PepIdentity] | None = None,
     agent_identity_resolver: AgentIdentityResolver | None = None,
     workspace_identity_resolver: WorkspaceIdentityResolver | None = None,
+    auditor_identity_resolver: WorkspaceIdentityResolver | None = None,
     pep_identity_resolver: PepIdentityResolver | None = None,
     clock: Clock | None = None,
     service_mode: str = "local",
@@ -82,9 +84,11 @@ def create_v1_http_server(
         service=service,
         agent_identities=agent_identities,
         workspace_identities=workspace_identities,
+        auditor_identities=auditor_identities,
         pep_identities=pep_identities,
         agent_identity_resolver=agent_identity_resolver,
         workspace_identity_resolver=workspace_identity_resolver,
+        auditor_identity_resolver=auditor_identity_resolver,
         pep_identity_resolver=pep_identity_resolver,
         clock=clock,
         service_mode=service_mode,
@@ -99,9 +103,11 @@ def create_v1_http_handler(
     service: V1EnforceService,
     agent_identities: Mapping[str, AgentIdentity],
     workspace_identities: Mapping[str, WorkspaceIdentity] | None = None,
+    auditor_identities: Mapping[str, WorkspaceIdentity] | None = None,
     pep_identities: Mapping[str, PepIdentity] | None = None,
     agent_identity_resolver: AgentIdentityResolver | None = None,
     workspace_identity_resolver: WorkspaceIdentityResolver | None = None,
+    auditor_identity_resolver: WorkspaceIdentityResolver | None = None,
     pep_identity_resolver: PepIdentityResolver | None = None,
     clock: Clock | None = None,
     service_mode: str = "local",
@@ -110,6 +116,7 @@ def create_v1_http_handler(
 ) -> type[BaseHTTPRequestHandler]:
     agent_keys = dict(agent_identities)
     workspace_keys = dict(workspace_identities or {})
+    auditor_keys = dict(auditor_identities or {})
     pep_keys = dict(pep_identities or {})
     now = clock or _utc_now
 
@@ -619,6 +626,8 @@ def create_v1_http_handler(
             headers=dict(handler.headers.items()),
             workspace_identities=workspace_keys,
             workspace_identity_resolver=workspace_identity_resolver,
+            auditor_identities=auditor_keys,
+            auditor_identity_resolver=auditor_identity_resolver,
             service=cast(AuditReadService, service),
             now=now(),
         )

@@ -32,6 +32,7 @@ from vinctor_service.grants import (
 from vinctor_service.in_memory import InMemoryV1Service
 from vinctor_service.keys import (
     AGENT_KEY_PREFIX,
+    AUDITOR_KEY_PREFIX,
     PEP_KEY_PREFIX,
     WORKSPACE_KEY_PREFIX,
     CreatedLocalKey,
@@ -114,6 +115,7 @@ from vinctor_service.v1_http import (
 
 __all__ = [
     "AgentIdentity",
+    "AUDITOR_KEY_PREFIX",
     "AuthorizationRequest",
     "AuthorizationResponse",
     "AutoApprovalEvaluationResult",
