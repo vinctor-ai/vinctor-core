@@ -78,6 +78,34 @@ def test_service_runtime_rejects_non_get_health_method(tmp_path: Path) -> None:
         handle.close()
 
 
+def test_service_runtime_closes_background_audit_export(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Export:
+        closed = False
+
+        def emit(self, event) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    export = Export()
+    monkeypatch.setattr(
+        "vinctor_service.sqlite.audit_export_from_env",
+        lambda _env: export,
+    )
+    handle = prepare_service_runtime(
+        ServiceRuntimeConfig(sqlite_db_path=tmp_path / "vinctor.sqlite", port=0),
+        clock=lambda: NOW,
+    )
+
+    handle.close()
+
+    assert export.closed
+
+
 def test_service_runtime_preserves_existing_enforce_routes(tmp_path: Path) -> None:
     db_path = tmp_path / "vinctor.sqlite"
     bootstrap = prepare_local_service(
