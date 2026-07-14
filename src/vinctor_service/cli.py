@@ -34,6 +34,8 @@ from vinctor_service.policy_files import (
     apply_policy_file,
     dump_policy_document,
     export_policy_document,
+    list_policy_versions,
+    rollback_policy_version,
     write_policy_file,
 )
 from vinctor_service.policy_infer import infer_policy_document
@@ -650,6 +652,18 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
         description="Export the workspace's current bounds and rules to a policy file.",
     )
     policy_export.add_argument("--file", required=True, type=Path)
+    policy_commands.add_parser(
+        "versions",
+        help="List immutable workspace policy versions.",
+        description="List policy apply and rollback versions for the workspace.",
+    )
+    policy_rollback = policy_commands.add_parser(
+        "rollback",
+        help="Restore an earlier workspace policy version.",
+        description="Exactly restore the versioned bounds, auto-approval rules, and "
+        "require-boundary settings, then append a new rollback version.",
+    )
+    policy_rollback.add_argument("--version", required=True, type=int)
     policy_infer = policy_commands.add_parser(
         "infer",
         help="Propose least-privilege scopes from an agent's audit trace.",
@@ -1539,6 +1553,56 @@ def _operator_policy(args: argparse.Namespace, *, stdout: TextIO) -> None:
             f"bounds={body['agent_bounds']} rules={body['auto_approval_rules']}"
         )
         _emit(args, body, summary, stdout=stdout)
+        return
+    if args.policy_command == "versions":
+        versions = list_policy_versions(service=service, workspace_id=args.workspace_id)
+        body = {
+            "versions": [
+                {
+                    "workspace_id": item.workspace_id,
+                    "version": item.version,
+                    "action": item.action,
+                    "source_version": item.source_version,
+                    "applied_by": item.applied_by,
+                    "created_at": item.created_at.isoformat(),
+                }
+                for item in versions
+            ]
+        }
+        _emit(
+            args,
+            body,
+            "\n".join(
+                f"version={item.version} action={item.action} "
+                f"source={item.source_version or '-'} applied_by={item.applied_by}"
+                for item in versions
+            )
+            or "no policy versions",
+            stdout=stdout,
+        )
+        return
+    if args.policy_command == "rollback":
+        if args.version <= 0:
+            raise CliError("policy rollback --version must be positive")
+        try:
+            result = rollback_policy_version(
+                service=service,
+                workspace_id=args.workspace_id,
+                version=args.version,
+                applied_by=f"workspace:{args.workspace_id}",
+                now=datetime.now(UTC),
+            )
+        except ValueError as error:
+            raise CliError(str(error)) from error
+        body = asdict(result)
+        _emit(
+            args,
+            body,
+            f"rolled back policy workspace={result.workspace_id} "
+            f"restored_version={result.restored_version} "
+            f"policy_version={result.policy_version}",
+            stdout=stdout,
+        )
         return
     if args.policy_command == "infer":
         document = infer_policy_document(
