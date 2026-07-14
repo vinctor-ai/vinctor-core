@@ -21,6 +21,7 @@ from vinctor_service.audit_chain import (
     AnchorRecord,
     AnchorVerification,
     ChainVerification,
+    crosscheck_values_match,
     row_hash,
 )
 from vinctor_service.auto_approval import (
@@ -921,12 +922,23 @@ class PostgresAuditWriter:
 
     # Materialized columns cross-checked against event_json during verification.
     # MUST stay identical to SQLiteAuditWriter._CROSSCHECK_COLUMNS — a parity test
-    # (tests/test_postgres_storage.py) guards against drift so both backends detect
-    # the same tampering.
+    # (tests/test_audit_hash_chain_sqlite.py) guards against drift so both backends
+    # detect the same tampering.
     _CROSSCHECK_COLUMNS = (
         "event_id", "event_type", "decision", "reason", "workspace_id", "agent_id",
         "grant_id", "grant_ref", "action", "resource", "scope_attempted",
-        "scope_matched", "boundary_id", "runtime", "boundary_type",
+        "scope_matched", "boundary_id", "runtime", "boundary_type", "created_at",
+    )
+
+    # Postgres additionally materializes these event_json fields as dedicated
+    # columns that list_filtered reads directly (SQLite keeps them JSON-only and
+    # filters via json_extract, so it has no such columns to tamper with). Every
+    # one of them is cross-checked too: an attacker who edits e.g. reason_code or
+    # identity_proven without touching the hashed event_json must not pass
+    # verification. Guarded by tests/test_audit_hash_chain_sqlite.py.
+    _PG_ONLY_CROSSCHECK_COLUMNS = (
+        "enforcing_principal", "reason_code", "occurrence_count",
+        "first_seen_at", "last_seen_at", "identity_proven", "token_id",
     )
 
     def verify_chain(self) -> ChainVerification:
@@ -935,10 +947,11 @@ class PostgresAuditWriter:
         # stored TEXT, so it hashes identically), and event_json vs materialized
         # columns. A write-access forger who recomputes the chain still passes
         # (plain SHA-256) — that gap is tracked separately (audit HMAC design).
+        crosscheck_columns = self._CROSSCHECK_COLUMNS + self._PG_ONLY_CROSSCHECK_COLUMNS
         with self._conn.transaction():
             rows = self._conn.execute(
                 "SELECT seq, prev_hash, row_hash, event_json, "
-                + ", ".join(self._CROSSCHECK_COLUMNS)
+                + ", ".join(crosscheck_columns)
                 + " FROM audit_events ORDER BY seq"
             ).fetchall()
         prev = GENESIS_PREV_HASH
@@ -964,8 +977,8 @@ class PostgresAuditWriter:
                     break_seq=seq, break_event_id=event_id, break_kind="modified",
                 )
             data = json.loads(event_json)
-            for name, value in zip(self._CROSSCHECK_COLUMNS, cols, strict=False):
-                if data.get(name) != value:
+            for name, value in zip(crosscheck_columns, cols, strict=False):
+                if not crosscheck_values_match(name, data.get(name), value):
                     return ChainVerification(
                         False, len(rows), head_seq, head_hash,
                         break_seq=seq, break_event_id=event_id,

@@ -20,6 +20,7 @@ from vinctor_service.audit_chain import (
     AnchorRecord,
     AnchorVerification,
     ChainVerification,
+    crosscheck_values_match,
     row_hash,
 )
 from vinctor_service.audit_export import (
@@ -1391,10 +1392,15 @@ class SQLiteAuditWriter:
         # match the legacy insertion-ordered `[-limit:]` output.
         return tuple(_audit_event_from_json(row[0]) for row in reversed(rows))
 
+    # EVERY materialized audit_events column that mirrors an event_json field —
+    # cross-checked against the canonical JSON during verify_chain so a DB-write
+    # attacker cannot skew what filters/readers see without breaking verification.
+    # MUST stay identical to PostgresAuditWriter._CROSSCHECK_COLUMNS — a parity
+    # test (tests/test_audit_hash_chain_sqlite.py) guards against drift.
     _CROSSCHECK_COLUMNS = (
         "event_id", "event_type", "decision", "reason", "workspace_id", "agent_id",
         "grant_id", "grant_ref", "action", "resource", "scope_attempted",
-        "scope_matched", "boundary_id", "runtime", "boundary_type",
+        "scope_matched", "boundary_id", "runtime", "boundary_type", "created_at",
     )
 
     def verify_chain(self) -> ChainVerification:
@@ -1427,7 +1433,7 @@ class SQLiteAuditWriter:
                 )
             data = json.loads(event_json)
             for name, value in zip(self._CROSSCHECK_COLUMNS, cols, strict=False):
-                if data.get(name) != value:
+                if not crosscheck_values_match(name, data.get(name), value):
                     return ChainVerification(
                         False, len(rows), head_seq, head_hash,
                         break_seq=seq, break_event_id=event_id,

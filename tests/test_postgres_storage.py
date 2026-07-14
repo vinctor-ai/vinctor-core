@@ -808,3 +808,71 @@ def test_postgres_audit_verify_against_anchor_ok_and_detects_missing() -> None:
         and result.divergence_kind == "missing"
     )
     conn.close()
+
+
+def _pg_full_audit_event(event_id: str) -> AuditEvent:
+    # Every optional/ADR-0007/ADR-0008 field populated, so all Postgres-only
+    # materialized columns are non-NULL and the crosscheck normalization paths
+    # (TIMESTAMPTZ round-trip, BOOLEAN, INTEGER, nullable TEXT) are exercised.
+    return replace(
+        _pg_audit_event(event_id),
+        enforcing_principal="usr_owner",
+        reason_code="unmapped_action",
+        occurrence_count=4,
+        first_seen_at=NOW - timedelta(minutes=30),
+        last_seen_at=NOW - timedelta(minutes=1),
+        identity_proven=True,
+        token_id="stk_1",
+    )
+
+
+def _seed_pg_chain_with_full_event(conn) -> PostgresAuditWriter:
+    writer = PostgresAuditWriter(conn)
+    writer.write(_pg_audit_event("evt_1"))
+    writer.write(_pg_full_audit_event("evt_2"))
+    writer.write(_pg_audit_event("evt_3"))
+    return writer
+
+
+def test_postgres_audit_verify_ok_with_all_optional_columns_populated() -> None:
+    # Positive normalization guard: a healthy chain whose row has every
+    # materialized column populated (datetimes come back as tz-aware datetimes,
+    # identity_proven as BOOLEAN, occurrence_count as INTEGER) must still verify.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    writer = _seed_pg_chain_with_full_event(conn)
+    v = writer.verify_chain()
+    assert v.ok is True and v.count == 3 and v.head_seq == 3
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    ("column", "tampered_value"),
+    [
+        ("created_at", NOW + timedelta(hours=6)),
+        ("enforcing_principal", "usr_forged"),
+        ("reason_code", "forged_code"),
+        ("occurrence_count", 999),
+        ("first_seen_at", NOW - timedelta(days=2)),
+        ("last_seen_at", NOW + timedelta(days=2)),
+        ("identity_proven", False),
+        ("token_id", "stk_forged"),
+    ],
+)
+def test_postgres_audit_verify_detects_materialized_column_tamper(
+    column: str, tampered_value: object
+) -> None:
+    # list_filtered reads these materialized columns directly, so an attacker who
+    # edits ONLY the column (event_json and row_hash intact) could hide or
+    # re-classify an event. verify_chain must cross-check every one of them.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    writer = _seed_pg_chain_with_full_event(conn)
+    with conn.transaction():
+        conn.execute(
+            f"UPDATE audit_events SET {column} = %s WHERE seq = 2",
+            (tampered_value,),
+        )
+    v = writer.verify_chain()
+    assert v.ok is False and v.break_kind == "column_mismatch" and v.break_seq == 2
+    conn.close()

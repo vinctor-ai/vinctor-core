@@ -1,6 +1,7 @@
 import json
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta, timezone
 
 from vinctor_core.models import AuditEvent
 from vinctor_service.audit_chain import GENESIS_PREV_HASH, AnchorRecord, row_hash
@@ -148,6 +149,51 @@ def test_verify_detects_column_mismatch(tmp_path) -> None:
     assert v.ok is False and v.break_kind == "column_mismatch" and v.break_seq == 2
 
 
+def test_verify_detects_created_at_column_tamper(tmp_path) -> None:
+    conn, w = _seed_three(tmp_path)
+    # Backdate only the materialized timestamp column; event_json and row_hash stay intact.
+    tampered = (NOW + timedelta(hours=6)).isoformat()
+    conn.execute("UPDATE audit_events SET created_at = ? WHERE seq = 2", (tampered,))
+    conn.commit()
+    v = w.verify_chain()
+    assert v.ok is False and v.break_kind == "column_mismatch" and v.break_seq == 2
+
+
+def test_verify_ok_when_created_at_spelled_as_equivalent_instant(tmp_path) -> None:
+    conn, w = _seed_three(tmp_path)
+    # Same instant, different ISO-8601 offset spelling. The cross-check must compare
+    # instants, not raw strings — Postgres returns TIMESTAMPTZ in the session
+    # timezone, so string-identity would false-positive on healthy chains.
+    same_instant = NOW.astimezone(timezone(timedelta(hours=9))).isoformat()
+    conn.execute("UPDATE audit_events SET created_at = ? WHERE seq = 2", (same_instant,))
+    conn.commit()
+    assert w.verify_chain().ok is True
+
+
+def _full_event(event_id: str) -> AuditEvent:
+    # Every optional/ADR-0007/ADR-0008 field populated: exercises the crosscheck
+    # normalization paths (datetime, bool, int, nullable text) on a healthy chain.
+    return replace(
+        _event(event_id),
+        enforcing_principal="usr_owner",
+        reason_code="unmapped_action",
+        occurrence_count=4,
+        first_seen_at=NOW - timedelta(minutes=30),
+        last_seen_at=NOW - timedelta(minutes=1),
+        identity_proven=True,
+        token_id="stk_1",
+    )
+
+
+def test_verify_ok_with_all_optional_fields_populated(tmp_path) -> None:
+    conn, w = _writer(tmp_path)
+    w.write(_event("evt_1"))
+    w.write(_full_event("evt_2"))
+    w.write(_event("evt_3"))
+    v = w.verify_chain()
+    assert v.ok is True and v.count == 3 and v.head_seq == 3
+
+
 def test_chain_head_reports_tip_and_genesis_when_empty(tmp_path) -> None:
     conn, w = _writer(tmp_path)
     assert w.chain_head() == (0, GENESIS_PREV_HASH)
@@ -267,3 +313,34 @@ def test_postgres_crosscheck_columns_match_sqlite() -> None:
     from vinctor_service.postgres import PostgresAuditWriter
 
     assert PostgresAuditWriter._CROSSCHECK_COLUMNS == SQLiteAuditWriter._CROSSCHECK_COLUMNS
+
+
+def test_crosscheck_covers_every_sqlite_materialized_event_json_column(tmp_path) -> None:
+    # Every audit_events column that mirrors an event_json field must be in the
+    # cross-check set, or a DB-write attacker could edit the materialized copy
+    # without breaking verification. (Chain/bookkeeping columns and event_json
+    # itself are covered by the row hash instead.)
+    conn = sqlite3.connect(tmp_path / "cols.sqlite")
+    init_sqlite_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(audit_events)").fetchall()}
+    assert cols - {"event_json", "seq", "prev_hash", "row_hash"} == set(
+        SQLiteAuditWriter._CROSSCHECK_COLUMNS
+    )
+
+
+def test_postgres_crosschecks_every_pg_only_materialized_column() -> None:
+    # Postgres additionally materializes these event_json fields as dedicated
+    # columns that list_filtered reads directly (SQLite filters them via
+    # json_extract over the hash-protected event_json and has no such columns
+    # to tamper with). Each one must be cross-checked during verify_chain, or an
+    # attacker could hide/re-classify events for Postgres readers — e.g. flip
+    # reason_code or identity_proven — while verification still passes.
+    from vinctor_service.postgres import PostgresAuditWriter
+
+    assert PostgresAuditWriter._PG_ONLY_CROSSCHECK_COLUMNS == (
+        "enforcing_principal", "reason_code", "occurrence_count",
+        "first_seen_at", "last_seen_at", "identity_proven", "token_id",
+    )
+    assert set(PostgresAuditWriter._PG_ONLY_CROSSCHECK_COLUMNS).isdisjoint(
+        PostgresAuditWriter._CROSSCHECK_COLUMNS
+    )
