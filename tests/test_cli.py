@@ -1255,6 +1255,25 @@ def test_vinctor_cli_require_pop_workspace_default(tmp_path) -> None:
     assert shown["require_pop"] is True
 
 
+def test_vinctor_cli_require_pop_enable_warns_about_pop_lockout(tmp_path) -> None:
+    # Footgun guard: enabling require-pop DENIES the agent on every enforce
+    # unless its client presents PoP-bound tokens. The operator must be warned at
+    # enable time. The warning is operator-facing only (it never reaches the agent
+    # deny, which stays coarse) and never appears on disable/show.
+    db_path = tmp_path / "vinctor.sqlite"
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+
+    enabled = _run([*common, "operator", "require-pop", "enable", "agent_runner"])
+    assert enabled["require_pop"] is True
+    assert "warning" in enabled
+    assert "pop" in str(enabled["warning"]).lower()
+
+    disabled = _run([*common, "operator", "require-pop", "disable", "agent_runner"])
+    assert "warning" not in disabled
+    shown = _run([*common, "operator", "require-pop", "show", "agent_runner"])
+    assert "warning" not in shown
+
+
 def test_vinctor_cli_tokens_list_revoke_then_delegated_enforce_denies(tmp_path: Path) -> None:
     db_path = tmp_path / "vinctor.sqlite"
     _seed_storage_db(db_path)
