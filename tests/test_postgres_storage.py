@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -13,6 +14,7 @@ from vinctor_core import (
     register_boundary,
 )
 from vinctor_core.models import AuditEvent, Grant
+from vinctor_service.audit_chain import GENESIS_PREV_HASH, AnchorRecord
 from vinctor_service.models import (
     GrantRequest,
     GrantRequestCreateRequest,
@@ -551,4 +553,117 @@ def test_postgres_audit_chain_serializes_multiple_instances() -> None:
     ).fetchall()
     assert [row[0] for row in rows] == list(range(1, 41))
     assert all(rows[index][1] == rows[index - 1][2] for index in range(1, len(rows)))
+    conn.close()
+
+
+def _pg_audit_event(event_id: str) -> AuditEvent:
+    return AuditEvent(
+        event_id=event_id,
+        event_type="action_permitted",
+        decision="permit",
+        reason="ok",
+        workspace_id="ws_main",
+        agent_id="agent_a",
+        grant_id="grnt_1",
+        grant_ref="grt_1",
+        action="read",
+        resource="repo/x",
+        scope_attempted="read:repo/x",
+        scope_matched="read:repo/*",
+        boundary_id="bnd_1",
+        runtime="claude-code",
+        boundary_type="pretooluse",
+        created_at=NOW,
+    )
+
+
+def _seed_pg_chain(conn, count: int = 3) -> PostgresAuditWriter:
+    writer = PostgresAuditWriter(conn)
+    for i in range(1, count + 1):
+        writer.write(_pg_audit_event(f"evt_{i}"))
+    return writer
+
+
+def test_postgres_audit_verify_ok_on_untouched_chain() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    writer = _seed_pg_chain(conn)
+    v = writer.verify_chain()
+    assert v.ok is True and v.count == 3 and v.head_seq == 3
+    assert writer.chain_head()[0] == 3
+    conn.close()
+
+
+def test_postgres_audit_verify_detects_modified_event_json() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    writer = _seed_pg_chain(conn)
+    forged = json.dumps(
+        {**_pg_audit_event("evt_2").to_dict(), "decision": "deny"}, sort_keys=True
+    )
+    with conn.transaction():
+        conn.execute("UPDATE audit_events SET event_json = %s WHERE seq = 2", (forged,))
+    v = writer.verify_chain()
+    assert v.ok is False and v.break_seq == 2 and v.break_kind == "modified"
+    conn.close()
+
+
+def test_postgres_audit_verify_detects_deleted_row() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    writer = _seed_pg_chain(conn)
+    with conn.transaction():
+        conn.execute("DELETE FROM audit_events WHERE seq = 2")
+    v = writer.verify_chain()
+    assert v.ok is False and v.break_kind == "deleted" and v.break_seq == 2
+    conn.close()
+
+
+def test_postgres_audit_verify_detects_column_mismatch() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    writer = _seed_pg_chain(conn)
+    # Edit only the denormalized filter column, leaving event_json (and its hash) intact.
+    with conn.transaction():
+        conn.execute("UPDATE audit_events SET workspace_id = 'ws_other' WHERE seq = 2")
+    v = writer.verify_chain()
+    assert v.ok is False and v.break_kind == "column_mismatch" and v.break_seq == 2
+    conn.close()
+
+
+def test_postgres_audit_chain_head_reports_tip_and_genesis_when_empty() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    writer = PostgresAuditWriter(conn)
+    assert writer.chain_head() == (0, GENESIS_PREV_HASH)
+    writer.write(_pg_audit_event("evt_1"))
+    seq, head_hash = writer.chain_head()
+    assert seq == 1 and len(head_hash) == 64
+    conn.close()
+
+
+def test_postgres_audit_verify_against_anchor_ok_and_detects_missing() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    writer = _seed_pg_chain(conn)
+    anchors = [
+        AnchorRecord(
+            seq=s,
+            row_hash=conn.execute(
+                "SELECT row_hash FROM audit_events WHERE seq = %s", (s,)
+            ).fetchone()[0],
+        )
+        for s in (1, 2, 3)
+    ]
+    assert writer.verify_against_anchor(anchors).ok is True
+    # A row covered by an external anchor is later deleted: verify_chain() alone
+    # would report a shorter but self-consistent chain, while the anchor catches it.
+    with conn.transaction():
+        conn.execute("DELETE FROM audit_events WHERE seq = 3")
+    result = writer.verify_against_anchor(anchors)
+    assert (
+        result.ok is False
+        and result.divergence_seq == 3
+        and result.divergence_kind == "missing"
+    )
     conn.close()

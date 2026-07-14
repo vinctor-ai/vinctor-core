@@ -258,3 +258,12 @@ def test_chain_stays_valid_under_concurrent_enforce(tmp_path) -> None:
     # invariant under test is that the chain is valid and gapless (count == head_seq)
     # despite concurrency, not the exact bootstrap count.
     assert v.ok is True and v.count == 401 and v.head_seq == 401
+
+
+def test_postgres_crosscheck_columns_match_sqlite() -> None:
+    # Both backends MUST cross-check the same materialized columns against
+    # event_json during verify_chain, or one backend would miss a tampering the
+    # other catches. Guards drift without needing a live Postgres.
+    from vinctor_service.postgres import PostgresAuditWriter
+
+    assert PostgresAuditWriter._CROSSCHECK_COLUMNS == SQLiteAuditWriter._CROSSCHECK_COLUMNS

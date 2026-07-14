@@ -16,7 +16,13 @@ from vinctor_core import (
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput, Grant
 from vinctor_service.audit import AuthFailureAuditThrottle
 from vinctor_service.audit_anchor import AuditAnchor, NullAnchor
-from vinctor_service.audit_chain import GENESIS_PREV_HASH, row_hash
+from vinctor_service.audit_chain import (
+    GENESIS_PREV_HASH,
+    AnchorRecord,
+    AnchorVerification,
+    ChainVerification,
+    row_hash,
+)
 from vinctor_service.auto_approval import (
     auto_approve_grant_request,
     create_auto_approval_rule,
@@ -844,6 +850,88 @@ class PostgresAuditWriter:
             self._anchor.emit(seq, current_hash, event.created_at.isoformat())
         except Exception as exc:  # noqa: BLE001 - anchor is deliberately fail-open
             sys.stderr.write(f"vinctor: audit anchor emit raised: {exc}\n")
+
+    # Materialized columns cross-checked against event_json during verification.
+    # MUST stay identical to SQLiteAuditWriter._CROSSCHECK_COLUMNS — a parity test
+    # (tests/test_postgres_storage.py) guards against drift so both backends detect
+    # the same tampering.
+    _CROSSCHECK_COLUMNS = (
+        "event_id", "event_type", "decision", "reason", "workspace_id", "agent_id",
+        "grant_id", "grant_ref", "action", "resource", "scope_attempted",
+        "scope_matched", "boundary_id", "runtime", "boundary_type",
+    )
+
+    def verify_chain(self) -> ChainVerification:
+        # Byte-for-byte parity with SQLiteAuditWriter.verify_chain: walk seq order,
+        # checking continuity, prev_hash linkage, row_hash recompute (event_json is
+        # stored TEXT, so it hashes identically), and event_json vs materialized
+        # columns. A write-access forger who recomputes the chain still passes
+        # (plain SHA-256) — that gap is tracked separately (audit HMAC design).
+        with self._conn.transaction():
+            rows = self._conn.execute(
+                "SELECT seq, prev_hash, row_hash, event_json, "
+                + ", ".join(self._CROSSCHECK_COLUMNS)
+                + " FROM audit_events ORDER BY seq"
+            ).fetchall()
+        prev = GENESIS_PREV_HASH
+        expected_seq = 1
+        head_seq, head_hash = 0, GENESIS_PREV_HASH
+        for row in rows:
+            seq, prev_hash, stored_hash, event_json = row[0], row[1], row[2], row[3]
+            cols = row[4:]
+            event_id = cols[0]
+            if seq != expected_seq:
+                return ChainVerification(
+                    False, len(rows), head_seq, head_hash,
+                    break_seq=expected_seq, break_event_id=event_id, break_kind="deleted",
+                )
+            if prev_hash != prev:
+                return ChainVerification(
+                    False, len(rows), head_seq, head_hash,
+                    break_seq=seq, break_event_id=event_id, break_kind="reordered",
+                )
+            if stored_hash != row_hash(seq, event_json, prev_hash):
+                return ChainVerification(
+                    False, len(rows), head_seq, head_hash,
+                    break_seq=seq, break_event_id=event_id, break_kind="modified",
+                )
+            data = json.loads(event_json)
+            for name, value in zip(self._CROSSCHECK_COLUMNS, cols, strict=False):
+                if data.get(name) != value:
+                    return ChainVerification(
+                        False, len(rows), head_seq, head_hash,
+                        break_seq=seq, break_event_id=event_id,
+                        break_kind="column_mismatch",
+                    )
+            prev = stored_hash
+            head_seq, head_hash = seq, stored_hash
+            expected_seq += 1
+        return ChainVerification(True, len(rows), head_seq, head_hash)
+
+    def chain_head(self) -> tuple[int, str]:
+        with self._conn.transaction():
+            row = self._conn.execute(
+                "SELECT seq, row_hash FROM audit_events ORDER BY seq DESC LIMIT 1"
+            ).fetchone()
+        return (row[0], row[1]) if row else (0, GENESIS_PREV_HASH)
+
+    def verify_against_anchor(self, records: list[AnchorRecord]) -> AnchorVerification:
+        covered = 0
+        for rec in records:
+            with self._conn.transaction():
+                row = self._conn.execute(
+                    "SELECT row_hash FROM audit_events WHERE seq = %s", (rec.seq,)
+                ).fetchone()
+            if row is None:
+                return AnchorVerification(
+                    False, covered, covered, divergence_seq=rec.seq, divergence_kind="missing"
+                )
+            if row[0] != rec.row_hash:
+                return AnchorVerification(
+                    False, covered, covered, divergence_seq=rec.seq, divergence_kind="mismatch"
+                )
+            covered = max(covered, rec.seq)
+        return AnchorVerification(True, len(records), covered)
 
     def get(self, event_id: str) -> AuditEvent | None:
         with self._conn.transaction():
