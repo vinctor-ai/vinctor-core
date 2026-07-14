@@ -300,6 +300,27 @@ class PostgresGrantRequestRepository:
         if row is None:
             raise ValueError(f"unknown grant request_id: {request.request_id}")
 
+    def decide_request(self, request: GrantRequest) -> bool:
+        with self._conn.transaction():
+            row = self._conn.execute(
+                """
+                UPDATE grant_requests SET
+                    status = %s, decided_at = %s, decided_by = %s,
+                    decision_reason = %s, issued_grant_ref = %s
+                WHERE request_id = %s AND status = 'pending'
+                RETURNING request_id
+                """,
+                (
+                    request.status,
+                    request.decided_at,
+                    request.decided_by,
+                    request.decision_reason,
+                    request.issued_grant_ref,
+                    request.request_id,
+                ),
+            ).fetchone()
+        return row is not None
+
 
 class PostgresSubjectTokenRepository:
     def __init__(self, conn: Any) -> None:

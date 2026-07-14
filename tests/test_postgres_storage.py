@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -714,6 +715,116 @@ require_boundary:
         list_policy_versions(service=service, workspace_id="ws_main"),
     )
     assert after == before
+    conn.close()
+
+
+def test_postgres_grant_request_approval_locks_and_issues_a_single_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import vinctor_service.grant_requests as grant_requests_module
+    from vinctor_service.postgres import (
+        GRANT_REQUEST_DECISION_LOCK_CLASSID,
+        _grant_request_decision_lock_key,
+    )
+
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        scopes=("write:repo/feature/*",),
+        now=NOW,
+    )
+    service.create_grant_request(
+        GrantRequestCreateRequest(
+            workspace_id="ws_main",
+            requester_agent_id="agent_release",
+            requested_scopes=("write:repo/feature/*",),
+            requested_ttl_seconds=300,
+            reason="release",
+            request_id="grq_race",
+        ),
+        now=NOW,
+    )
+
+    real_issue_grant = grant_requests_module.issue_grant
+    observed: dict[str, object] = {}
+    rival_outcome: dict[str, object] = {}
+
+    def rival_approve() -> None:
+        rival_conn = connect_postgres(DSN)
+        try:
+            rival_service = PostgresV1Service(rival_conn, initialize_schema=False)
+            rival_outcome["result"] = rival_service.approve_grant_request(
+                request_id="grq_race",
+                workspace_id="ws_main",
+                decided_by="operator:b",
+                decision_reason=None,
+                now=NOW + timedelta(seconds=1),
+            )
+        finally:
+            rival_conn.close()
+
+    rival_thread = threading.Thread(target=rival_approve)
+
+    def observing_issue_grant(request, **kwargs):  # type: ignore[no-untyped-def]
+        # Mid-approval (after the pending check, before issuance): the
+        # decision advisory lock must be held, and no half-decided state may
+        # be visible to other connections. Then start a concurrent approve on
+        # a second connection; it must queue on the lock and lose cleanly.
+        watcher = connect_postgres(DSN)
+        try:
+            observed["advisory_lock"] = watcher.execute(
+                """
+                SELECT granted FROM pg_locks
+                WHERE locktype = 'advisory' AND classid::int8 = %s AND objid::int8 = %s
+                """,
+                (
+                    GRANT_REQUEST_DECISION_LOCK_CLASSID,
+                    _grant_request_decision_lock_key("grq_race"),
+                ),
+            ).fetchone()
+            observed["rival_sees_status"] = watcher.execute(
+                "SELECT status FROM grant_requests WHERE request_id = %s",
+                ("grq_race",),
+            ).fetchone()[0]
+        finally:
+            watcher.close()
+        rival_thread.start()
+        return real_issue_grant(request, **kwargs)
+
+    monkeypatch.setattr(grant_requests_module, "issue_grant", observing_issue_grant)
+    first = service.approve_grant_request(
+        request_id="grq_race",
+        workspace_id="ws_main",
+        decided_by="operator:a",
+        decision_reason=None,
+        now=NOW,
+    )
+    rival_thread.join(timeout=30)
+    assert not rival_thread.is_alive()
+
+    assert first.status == "approved"
+    assert first.grant is not None
+    # The whole approval ran under the request-scoped advisory lock, and the
+    # in-flight claim was invisible outside the transaction.
+    assert observed["advisory_lock"] == (True,)
+    assert observed["rival_sees_status"] == "pending"
+    # The concurrent approve saw the request already decided and issued nothing.
+    second = rival_outcome["result"]
+    assert second.status == "failed"
+    assert second.reason == "grant_request_not_pending"
+    assert second.grant is None
+    active = service.list_grants(
+        workspace_id="ws_main", agent_id="agent_release", status="active"
+    )
+    assert len(active) == 1
+    assert active[0].grant_ref == first.grant.grant_ref
+    request = service.lookup_grant_request(request_id="grq_race", workspace_id="ws_main")
+    assert request is not None
+    assert request.status == "approved"
+    assert request.issued_grant_ref == first.grant.grant_ref
     conn.close()
 
 

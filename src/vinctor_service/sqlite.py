@@ -369,7 +369,7 @@ def insert_grant(conn: sqlite3.Connection, grant: Grant) -> None:
     if existing is not None:
         raise ValueError(f"duplicate grant_ref: {grant.grant_ref}")
 
-    with conn:
+    with _write_scope(conn):
         conn.execute(
             """
             INSERT INTO grants (
@@ -685,6 +685,30 @@ def _write_scope(conn: sqlite3.Connection) -> Iterator[None]:
         yield
 
 
+@contextmanager
+def _decision_transaction(conn: sqlite3.Connection) -> Iterator[None]:
+    """One BEGIN IMMEDIATE transaction for a whole grant-request decision.
+
+    The pending check, the compare-and-set that claims the request, the grant
+    issuance, and every audit row commit together or not at all, and taking
+    the database write lock up front serializes concurrent deciders across
+    connections and processes (same unit-of-work pattern as policy apply).
+    The write methods underneath join this open transaction via
+    ``_write_scope``; joins an already-open transaction itself so nested
+    service calls stay safe.
+    """
+    if conn.in_transaction:
+        yield
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        conn.rollback()
+        raise
+    conn.commit()
+
+
 class SQLiteAgentIssuableScopeBoundsRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
@@ -952,7 +976,7 @@ class SQLiteGrantRequestRepository:
     def update_request(self, request: GrantRequest) -> None:
         if self.get_request(request.request_id) is None:
             raise ValueError(f"unknown grant request_id: {request.request_id}")
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 UPDATE grant_requests
@@ -998,6 +1022,29 @@ class SQLiteGrantRequestRepository:
                     request.request_id,
                 ),
             )
+
+    def decide_request(self, request: GrantRequest) -> bool:
+        with _write_scope(self._conn):
+            cursor = self._conn.execute(
+                """
+                UPDATE grant_requests
+                SET status = ?,
+                    decided_at = ?,
+                    decided_by = ?,
+                    decision_reason = ?,
+                    issued_grant_ref = ?
+                WHERE request_id = ? AND status = 'pending'
+                """,
+                (
+                    request.status,
+                    _datetime_to_storage(request.decided_at),
+                    request.decided_by,
+                    request.decision_reason,
+                    request.issued_grant_ref,
+                    request.request_id,
+                ),
+            )
+            return cursor.rowcount == 1
 
 
 class SQLiteReplayStore:
@@ -1252,7 +1299,7 @@ class SQLiteAuditWriter:
     def write(self, event: AuditEvent) -> None:
         event_data = event.to_dict()
         event_json = json.dumps(event_data, sort_keys=True)
-        with self._conn:
+        with _write_scope(self._conn):
             head = self._conn.execute(
                 "SELECT seq, row_hash FROM audit_events ORDER BY seq DESC LIMIT 1"
             ).fetchone()
@@ -1293,8 +1340,10 @@ class SQLiteAuditWriter:
                     rh,
                 ),
             )
-        # Post-commit head emission — fail-open: a raising anchor must never
-        # surface into the enforce path or unwind the committed audit row.
+        # Post-write head emission (post-commit for standalone writes; a
+        # joined outer transaction commits just after) — fail-open: a raising
+        # anchor must never surface into the enforce path or unwind the
+        # persisted audit row.
         try:
             self._anchor.emit(seq, rh, event.created_at.isoformat())
         except Exception as exc:  # noqa: BLE001 - deliberate fail-open
@@ -1724,17 +1773,18 @@ class SQLiteV1Service:
         decision_reason: str | None,
         now: datetime,
     ) -> GrantRequestDecisionResult:
-        return approve_grant_request(
-            request_id=request_id,
-            workspace_id=workspace_id,
-            decided_by=decided_by,
-            decision_reason=decision_reason,
-            request_repository=self.grant_request_repository,
-            grant_repository=self.grant_repository,
-            scope_bounds_repository=self.scope_bounds_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _decision_transaction(self.conn):
+            return approve_grant_request(
+                request_id=request_id,
+                workspace_id=workspace_id,
+                decided_by=decided_by,
+                decision_reason=decision_reason,
+                request_repository=self.grant_request_repository,
+                grant_repository=self.grant_repository,
+                scope_bounds_repository=self.scope_bounds_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def reject_grant_request(
         self,
@@ -1745,15 +1795,16 @@ class SQLiteV1Service:
         decision_reason: str | None,
         now: datetime,
     ) -> GrantRequestDecisionResult:
-        return reject_grant_request(
-            request_id=request_id,
-            workspace_id=workspace_id,
-            decided_by=decided_by,
-            decision_reason=decision_reason,
-            request_repository=self.grant_request_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _decision_transaction(self.conn):
+            return reject_grant_request(
+                request_id=request_id,
+                workspace_id=workspace_id,
+                decided_by=decided_by,
+                decision_reason=decision_reason,
+                request_repository=self.grant_request_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def create_auto_approval_rule(self, rule: AutoApprovalRule) -> AutoApprovalRule:
         return create_auto_approval_rule(
@@ -1801,17 +1852,18 @@ class SQLiteV1Service:
         decided_by: str,
         now: datetime,
     ) -> GrantRequestDecisionResult:
-        return auto_approve_grant_request(
-            request_id=request_id,
-            workspace_id=workspace_id,
-            decided_by=decided_by,
-            request_repository=self.grant_request_repository,
-            rule_repository=self.auto_approval_rule_repository,
-            grant_repository=self.grant_repository,
-            scope_bounds_repository=self.scope_bounds_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _decision_transaction(self.conn):
+            return auto_approve_grant_request(
+                request_id=request_id,
+                workspace_id=workspace_id,
+                decided_by=decided_by,
+                request_repository=self.grant_request_repository,
+                rule_repository=self.auto_approval_rule_repository,
+                grant_repository=self.grant_repository,
+                scope_bounds_repository=self.scope_bounds_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     @property
     def audit_events(self) -> tuple[AuditEvent, ...]:

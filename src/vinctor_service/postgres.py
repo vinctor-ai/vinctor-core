@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -72,6 +74,38 @@ from vinctor_service.subject_tokens import mint_subject_token
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 
 AUDIT_CHAIN_LOCK_ID = 0x56494E43
+# Two-key advisory-lock class for serializing grant-request decisions per
+# request (pg_advisory_xact_lock(classid, key)). Same pattern as the policy
+# apply lock in postgres_policy, in a distinct classid keyspace.
+GRANT_REQUEST_DECISION_LOCK_CLASSID = 0x56475244
+
+
+def _grant_request_decision_lock_key(request_id: str) -> int:
+    """Stable non-negative int4 advisory-lock key derived from the request."""
+    digest = hashlib.sha256(request_id.encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
+
+
+@contextmanager
+def _grant_request_decision_transaction(conn: Any, request_id: str) -> Iterator[None]:
+    """One transaction for a whole grant-request decision, serialized per request.
+
+    Takes a request-scoped ``pg_advisory_xact_lock`` up front so concurrent
+    deciders of the same request queue instead of interleaving; the pending
+    check, the compare-and-set claim, the grant issuance, and the audit rows
+    then commit together or roll back together (the repositories' nested
+    ``transaction()`` scopes become savepoints under this outer transaction).
+    The lock is transaction-scoped and releases at commit/rollback.
+    """
+    with conn.transaction():
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(%s::int4, %s::int4)",
+            (
+                GRANT_REQUEST_DECISION_LOCK_CLASSID,
+                _grant_request_decision_lock_key(request_id),
+            ),
+        )
+        yield
 
 
 def connect_postgres(dsn: str):
@@ -1192,31 +1226,33 @@ class PostgresV1Service:
         self, *, request_id: str, workspace_id: str, decided_by: str,
         decision_reason: str | None, now: datetime,
     ) -> GrantRequestDecisionResult:
-        return approve_grant_request(
-            request_id=request_id,
-            workspace_id=workspace_id,
-            decided_by=decided_by,
-            decision_reason=decision_reason,
-            request_repository=self.grant_request_repository,
-            grant_repository=self.grant_repository,
-            scope_bounds_repository=self.scope_bounds_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _grant_request_decision_transaction(self.conn, request_id):
+            return approve_grant_request(
+                request_id=request_id,
+                workspace_id=workspace_id,
+                decided_by=decided_by,
+                decision_reason=decision_reason,
+                request_repository=self.grant_request_repository,
+                grant_repository=self.grant_repository,
+                scope_bounds_repository=self.scope_bounds_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def reject_grant_request(
         self, *, request_id: str, workspace_id: str, decided_by: str,
         decision_reason: str | None, now: datetime,
     ) -> GrantRequestDecisionResult:
-        return reject_grant_request(
-            request_id=request_id,
-            workspace_id=workspace_id,
-            decided_by=decided_by,
-            decision_reason=decision_reason,
-            request_repository=self.grant_request_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _grant_request_decision_transaction(self.conn, request_id):
+            return reject_grant_request(
+                request_id=request_id,
+                workspace_id=workspace_id,
+                decided_by=decided_by,
+                decision_reason=decision_reason,
+                request_repository=self.grant_request_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def mint_subject_token(
         self, *, workspace_id, agent_id, grant_ref, audience, ttl_seconds, now,
@@ -1274,17 +1310,18 @@ class PostgresV1Service:
         self, *, request_id: str, workspace_id: str, decided_by: str,
         now: datetime,
     ) -> GrantRequestDecisionResult:
-        return auto_approve_grant_request(
-            request_id=request_id,
-            workspace_id=workspace_id,
-            decided_by=decided_by,
-            request_repository=self.grant_request_repository,
-            rule_repository=self.auto_approval_rule_repository,
-            grant_repository=self.grant_repository,
-            scope_bounds_repository=self.scope_bounds_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _grant_request_decision_transaction(self.conn, request_id):
+            return auto_approve_grant_request(
+                request_id=request_id,
+                workspace_id=workspace_id,
+                decided_by=decided_by,
+                request_repository=self.grant_request_repository,
+                rule_repository=self.auto_approval_rule_repository,
+                grant_repository=self.grant_repository,
+                scope_bounds_repository=self.scope_bounds_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def register_boundary(
         self, registration: BoundaryRegistrationInput, *,
