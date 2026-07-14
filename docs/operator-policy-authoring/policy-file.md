@@ -45,6 +45,22 @@ vinctor --db .vinctor-local.sqlite \
   operator policy export --file exported-policy.yaml
 ```
 
+Every successful apply records the resulting authorization state as the next
+workspace policy version. Inspect or restore it with:
+
+```bash
+vinctor --db .vinctor-local.sqlite --workspace-id ws_local \
+  operator policy versions
+vinctor --db .vinctor-local.sqlite --workspace-id ws_local \
+  operator policy rollback --version 1
+```
+
+Rollback is an exact replacement for versioned bounds, auto-approval rules,
+and explicit `require_boundary` settings; entries introduced after the target
+version are removed. The rollback itself is append-only and becomes a new
+version. Subject-token and PoP mandates are separate controls and are not
+rolled back by this command.
+
 ## Schema
 
 Top-level fields:

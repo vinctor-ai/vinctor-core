@@ -579,12 +579,13 @@ auto_approval_rules:
 
     assert applied == {
         "bounds_set": 1,
+        "policy_version": 1,
         "rules_created": 1,
         "rules_updated": 0,
         "workspace_id": "ws_demo",
     }
-    assert service_info["schema_versions"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-    assert service_info["schema_version"] == 11
+    assert service_info["schema_versions"] == list(range(1, 13))
+    assert service_info["schema_version"] == 12
     assert exported["agent_bounds"] == 1
     assert exported["auto_approval_rules"] == 1
     assert bounds == ("execute:ci/test", "write:repo/vinctor-core/*")
@@ -642,6 +643,52 @@ require_boundary:
     exported_yaml = yaml.safe_load(exported_path.read_text(encoding="utf-8"))
     assert exported_yaml["require_boundary"]["workspace"] is True
     assert "agent_runner" in exported_yaml["require_boundary"]["agents"]
+
+
+def test_vinctor_cli_policy_versions_and_rollback(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    policy_path = tmp_path / "policy.yaml"
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+    policy_path.write_text(
+        """
+version: 1
+workspace_id: ws_demo
+agent_bounds:
+  - agent_id: agent_a
+    scopes: [read:repo/a]
+""".strip(),
+        encoding="utf-8",
+    )
+    _run([*common, "operator", "policy", "apply", "--file", str(policy_path)])
+    policy_path.write_text(
+        """
+version: 1
+workspace_id: ws_demo
+agent_bounds:
+  - agent_id: agent_b
+    scopes: [write:repo/b]
+""".strip(),
+        encoding="utf-8",
+    )
+    _run([*common, "operator", "policy", "apply", "--file", str(policy_path)])
+
+    listed = _run([*common, "operator", "policy", "versions"])
+    rolled_back = _run(
+        [*common, "operator", "policy", "rollback", "--version", "1"]
+    )
+
+    assert [item["version"] for item in listed["versions"]] == [1, 2]
+    assert rolled_back == {
+        "workspace_id": "ws_demo",
+        "restored_version": 1,
+        "policy_version": 3,
+    }
+    conn = sqlite3.connect(db_path)
+    service = SQLiteV1Service(conn)
+    assert service.scope_bounds_repository.list_bounds_for_workspace("ws_demo") == (
+        ("agent_a", ("read:repo/a",)),
+    )
+    conn.close()
 
 
 def test_vinctor_cli_policy_apply_is_atomic_on_invalid_later_entry(tmp_path: Path) -> None:
@@ -703,11 +750,11 @@ def test_vinctor_cli_storage_backup_and_reset(tmp_path: Path) -> None:
 
     assert backup["output_path"] == str(backup_path)
     assert backup["bytes"] > 0
-    assert backup["schema_versions"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    assert backup["schema_versions"] == list(range(1, 13))
     assert reset == {
         "db_path": str(db_path),
         "reset": True,
-        "schema_versions": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        "schema_versions": list(range(1, 13)),
     }
 
     backup_conn = sqlite3.connect(backup_path)
@@ -779,8 +826,8 @@ def test_vinctor_cli_service_info_reports_schema(tmp_path: Path) -> None:
 
     assert info["mode"] == "local"
     assert info["db_path"] == str(db_path)
-    assert info["schema_version"] == 11
-    assert info["schema_versions"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    assert info["schema_version"] == 12
+    assert info["schema_versions"] == list(range(1, 13))
     assert info["key_storage_mode"] == "sqlite_hashes"
     assert "host" in info
     assert "port" in info
@@ -816,7 +863,7 @@ def test_vinctor_cli_storage_restore_roundtrip(tmp_path: Path) -> None:
         "db_path": str(db_path),
         "input_path": str(backup_path),
         "restored": True,
-        "schema_versions": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        "schema_versions": list(range(1, 13)),
     }
     conn = sqlite3.connect(db_path)
     try:
@@ -896,7 +943,7 @@ def test_vinctor_cli_storage_migrate_reports_versions(tmp_path: Path) -> None:
 
     assert migrate == {
         "db_path": str(db_path),
-        "schema_versions": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        "schema_versions": list(range(1, 13)),
     }
     conn = sqlite3.connect(db_path)
     try:
