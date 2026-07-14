@@ -110,7 +110,7 @@ def test_sqlite_replay_prunes_stale_entries(tmp_path) -> None:
 
 def test_sqlite_schema_records_version_9(tmp_path) -> None:
     conn = _conn(tmp_path / "v.sqlite")
-    assert get_sqlite_schema_versions(conn) == (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
+    assert get_sqlite_schema_versions(conn) == tuple(range(1, 13))
 
 
 # ---- per-token partition (no cross-tenant lockout) -------------------------

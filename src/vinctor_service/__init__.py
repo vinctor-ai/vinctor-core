@@ -32,7 +32,9 @@ from vinctor_service.grants import (
 from vinctor_service.in_memory import InMemoryV1Service
 from vinctor_service.keys import (
     AGENT_KEY_PREFIX,
+    AUDITOR_KEY_PREFIX,
     PEP_KEY_PREFIX,
+    SERVICE_OPERATOR_KEY_PREFIX,
     WORKSPACE_KEY_PREFIX,
     CreatedLocalKey,
     LocalKeyRecord,
@@ -57,6 +59,10 @@ from vinctor_service.models import (
     V1DelegatedEnforceRequest,
     V1EnforceRequest,
     V1EnforceResponse,
+    V1ObserveRequest,
+    V1ObserveResponse,
+    V1SimulateRequest,
+    V1SimulateResponse,
 )
 from vinctor_service.repositories import (
     AgentEnforcementSettingsRepository,
@@ -77,6 +83,7 @@ from vinctor_service.service_runtime import (
     prepare_service_runtime,
     render_service_runtime_banner,
 )
+from vinctor_service.simulations import simulate_v1_contract
 from vinctor_service.sqlite import (
     SQLiteAgentEnforcementSettingsRepository,
     SQLiteAgentIssuableScopeBoundsRepository,
@@ -97,14 +104,19 @@ from vinctor_service.v1_http import (
     AgentIdentity,
     PepIdentity,
     V1HttpResponse,
+    V1ObserveService,
+    V1SimulateService,
     V1TokenService,
     handle_v1_delegated_enforce_http,
     handle_v1_enforce_http,
+    handle_v1_observe_http,
+    handle_v1_simulate_http,
     handle_v1_tokens_http,
 )
 
 __all__ = [
     "AgentIdentity",
+    "AUDITOR_KEY_PREFIX",
     "AuthorizationRequest",
     "AuthorizationResponse",
     "AutoApprovalEvaluationResult",
@@ -145,6 +157,7 @@ __all__ = [
     "SQLiteGrantRepository",
     "SQLiteGrantRequestRepository",
     "SQLiteLocalKeyRepository",
+    "SERVICE_OPERATOR_KEY_PREFIX",
     "SQLiteSubjectTokenRepository",
     "SQLiteV1Service",
     "ServiceRuntimeConfig",
@@ -156,6 +169,12 @@ __all__ = [
     "V1EnforceRequest",
     "V1EnforceResponse",
     "V1HttpResponse",
+    "V1ObserveRequest",
+    "V1ObserveResponse",
+    "V1ObserveService",
+    "V1SimulateRequest",
+    "V1SimulateResponse",
+    "V1SimulateService",
     "V1TokenService",
     "WORKSPACE_KEY_PREFIX",
     "WorkspaceIdentity",
@@ -174,6 +193,8 @@ __all__ = [
     "handle_v1_auto_approval_rules_http",
     "handle_v1_delegated_enforce_http",
     "handle_v1_enforce_http",
+    "handle_v1_observe_http",
+    "handle_v1_simulate_http",
     "handle_v1_grant_requests_http",
     "handle_v1_grants_http",
     "handle_v1_tokens_http",
@@ -189,6 +210,7 @@ __all__ = [
     "prepare_service_runtime",
     "reject_grant_request",
     "render_service_runtime_banner",
+    "simulate_v1_contract",
     "revoke_grant",
     "disable_auto_approval_rule",
     "upsert_auto_approval_rule",

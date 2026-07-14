@@ -156,6 +156,40 @@ authorizes every `operator` command.
 
 ---
 
+## Auditor (read-only workspace key `auk_…`)
+
+An auditor key is workspace-scoped and can call only `GET /v1/audit-events`
+and `GET /v1/audit-events/{event_id}` through `X-Auditor-Key`.
+
+- **Created/rotated by** `vinctor operator keys rotate auditor`; the raw key is
+  printed once.
+- **Listed/revoked** with the same `operator keys` commands as other local keys.
+- It is rejected by boundary, grant, request, rule, token, policy, and other
+  mutation paths; those continue to require the workspace/operator key.
+- `operator audit export` accepts it through `--auditor-key` or
+  `VINCTOR_AUDITOR_KEY`.
+- Authentication failures with no resolvable workspace are not returned to a
+  workspace auditor, preventing cross-tenant leakage.
+
+---
+
+## Service operator (global key `sok_…`)
+
+The service-operator key has one narrow global capability: reading unattributed
+`auth_failed` events that cannot safely be assigned to a workspace.
+
+```bash
+vinctor operator keys rotate service-operator
+vinctor --service-operator-key "$VINCTOR_SERVICE_OPERATOR_KEY" \
+  operator audit auth-failures --limit 50
+```
+
+The HTTP equivalent is `GET /v1/service/audit/auth-failures` with
+`X-Service-Operator-Key`. This key is not a workspace/operator or auditor
+identity and cannot read workspace audit events or mutate policy and grants.
+
+---
+
 ## Agent (agent id and agent key `aak_…`)
 
 An agent identity is what a runtime presents when it calls `/v1/enforce`; the
@@ -342,7 +376,21 @@ vinctor operator rules disable <rule_id>
 
 vinctor operator policy apply  --file policy.yaml   # bounds + rules in one file
 vinctor operator policy export --file policy.yaml
+vinctor operator policy infer --agent agent_ci --min-observations 2
+vinctor operator policy versions
+vinctor operator policy rollback --version 3
 ```
+
+`policy infer` is propose-only. It reports enforced, observed, and simulated
+evidence separately, includes mapped/unmapped and would-permit/would-deny totals,
+and remains exact-scope by default. `--min-observations` removes one-off exact
+pairs before optional wildcard generalization.
+
+Each successful apply appends an immutable workspace version. Rollback restores
+the selected version's issuance bounds, auto-approval rules, and explicit
+require-boundary settings, then appends a new version that records the rollback
+and its source. Subject-token and PoP settings are outside policy-file state and
+are preserved.
 
 For the policy-file format, see
 [Operator policy authoring](operator-policy-authoring/policy-file.md).
@@ -369,6 +417,7 @@ Every permit and deny is recorded; the operator reads or exports it.
 vinctor operator audit list --limit 50 \
   --event action_denied --grant-ref grt_… --boundary-id bnd_… --request-id …
 vinctor operator audit export --format jsonl --file audit.jsonl
+vinctor operator audit auth-failures --limit 50  # service operator only
 ```
 
 All `audit list` filters are optional. `audit export` currently supports

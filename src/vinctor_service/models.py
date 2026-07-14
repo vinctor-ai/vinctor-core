@@ -7,6 +7,7 @@ from typing import Literal
 from vinctor_core.models import Decision, Grant
 
 GrantIssueStatus = Literal["issued", "rejected"]
+ObservationClassification = Literal["mapped", "unmapped"]
 GrantRequestStatus = Literal["pending", "approved", "rejected", "cancelled", "expired"]
 GrantRequestCreateStatus = Literal["created", "rejected"]
 GrantRequestDecisionStatus = Literal["approved", "rejected", "failed"]
@@ -80,6 +81,46 @@ class V1DelegatedEnforceRequest:
 class V1EnforceResponse:
     status_code: int
     decision: Decision | None = None
+    error: str | None = None
+    reason: str | None = None
+    grant_id: str | None = None
+    agent_id: str | None = None
+    scope_matched: str | None = None
+    audit_event_id: str | None = None
+
+
+@dataclass(frozen=True)
+class V1ObserveRequest:
+    workspace_id: str
+    agent_id: str
+    classification: ObservationClassification
+    action: str | None = None
+    resource: str | None = None
+    boundary_id: str | None = None
+
+
+@dataclass(frozen=True)
+class V1ObserveResponse:
+    status_code: int
+    audit_event_id: str | None = None
+    error: str | None = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class V1SimulateRequest:
+    workspace_id: str
+    agent_id: str
+    grant_ref: str
+    action: str
+    resource: str
+    boundary_id: str | None = None
+
+
+@dataclass(frozen=True)
+class V1SimulateResponse:
+    status_code: int
+    would_decision: Decision | None = None
     error: str | None = None
     reason: str | None = None
     grant_id: str | None = None
