@@ -172,7 +172,6 @@ def test_service_runtime_service_operator_reads_only_global_auth_failures(
         assert workspace_body["error"] == "authentication_required"
     finally:
         handle.close()
->>>>>>> origin/main
 
 
 def test_service_runtime_preserves_existing_enforce_routes(tmp_path: Path) -> None:
