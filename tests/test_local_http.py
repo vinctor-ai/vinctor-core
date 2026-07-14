@@ -87,6 +87,7 @@ def running_server(
     workspace_keys: dict[str, WorkspaceIdentity] | None = None,
     pep_keys: dict[str, PepIdentity] | None = None,
     metrics: Metrics | None = None,
+    readiness_check=None,
 ) -> Iterator[ThreadingHTTPServer]:
     server = create_v1_http_server(
         ("127.0.0.1", 0),
@@ -96,6 +97,7 @@ def running_server(
         pep_identities=pep_keys,
         clock=lambda: NOW,
         metrics=metrics,
+        readiness_check=readiness_check,
     )
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -171,6 +173,36 @@ def test_local_http_server_header_hides_python_version() -> None:
 
     assert "Python/" not in server_header, server_header
     assert "VinctorLocalHTTP" in server_header
+
+
+@pytest.mark.parametrize(
+    ("ready", "status", "body_status"),
+    [(True, 200, "ready"), (False, 503, "unavailable")],
+)
+def test_readiness_reflects_storage_check(
+    ready: bool,
+    status: int,
+    body_status: str,
+) -> None:
+    with running_server(service(), readiness_check=lambda: ready) as server:
+        response_status, response = raw_request(server, method="GET", path="/readyz")
+
+    assert response_status == status
+    assert response == {
+        "status": body_status,
+        "service": "vinctor-service",
+    }
+
+
+def test_readiness_fails_closed_when_storage_check_raises() -> None:
+    def fail() -> bool:
+        raise RuntimeError("database unavailable")
+
+    with running_server(service(), readiness_check=fail) as server:
+        status, response = raw_request(server, method="GET", path="/readyz")
+
+    assert status == 503
+    assert response["status"] == "unavailable"
 
 
 def test_local_http_service_permits_v1_enforce_request() -> None:

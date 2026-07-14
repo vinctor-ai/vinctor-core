@@ -29,7 +29,7 @@ def test_preview_compose_routes_tls_through_caddy_to_internal_service() -> None:
     assert "vinctor-data:/data" in vinctor["volumes"]
     assert vinctor["environment"]["VINCTOR_DB"] == "/data/vinctor.sqlite"
     assert vinctor["environment"]["VINCTOR_SERVICE_MODE"] == "self_hosted"
-    assert "/healthz" in " ".join(vinctor["healthcheck"]["test"])
+    assert "/readyz" in " ".join(vinctor["healthcheck"]["test"])
 
     assert caddy["image"].startswith("caddy:")
     assert caddy["restart"] == "unless-stopped"

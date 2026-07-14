@@ -77,6 +77,7 @@ def prepare_service_runtime(
             service_mode=config.service_mode,
             metrics=metrics,
             access_log=config.access_log,
+            readiness_check=lambda: _sqlite_ready(conn),
             oidc_token_verifier=oidc_token_verifier,
         )
     except Exception:
@@ -91,6 +92,10 @@ def prepare_service_runtime(
         config=config,
         endpoint=f"http://{host}:{port}",
     )
+
+
+def _sqlite_ready(conn: sqlite3.Connection) -> bool:
+    return conn.execute("SELECT 1").fetchone() == (1,)
 
 
 def render_service_runtime_banner(handle: ServiceRuntimeHandle) -> str:

@@ -111,6 +111,7 @@ def prepare_local_service(
                 raw_key, now=used_at
             ),
             clock=(lambda: timestamp) if now is not None else None,
+            readiness_check=lambda: conn.execute("SELECT 1").fetchone() == (1,),
         )
     except Exception:
         conn.close()

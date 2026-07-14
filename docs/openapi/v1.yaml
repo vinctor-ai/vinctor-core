@@ -18,6 +18,23 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
+  /readyz:
+    get:
+      summary: Check whether the service can accept traffic.
+      description: Returns 503 when the configured durable store is unavailable.
+      responses:
+        "200":
+          description: Service and durable store are ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+        "503":
+          description: Durable store is unavailable; remove this instance from traffic.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
   /v1/enforce:
     post:
       summary: Enforce one action/resource check with an issued grant.
@@ -450,6 +467,22 @@ components:
           enum:
             - local
             - self_hosted
+    ReadinessResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - service
+      properties:
+        status:
+          type: string
+          enum:
+            - ready
+            - unavailable
+        service:
+          type: string
+          enum:
+            - vinctor-service
     EnforceRequest:
       type: object
       additionalProperties: false

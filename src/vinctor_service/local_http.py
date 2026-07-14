@@ -58,6 +58,7 @@ from vinctor_service.v1_http import (
 )
 
 Clock = Callable[[], datetime]
+ReadinessCheck = Callable[[], bool]
 
 # All legitimate request bodies are tiny JSON payloads. Cap the read so a hostile
 # (or merely huge) Content-Length cannot pin a worker thread or exhaust memory
@@ -87,6 +88,7 @@ def create_v1_http_server(
     service_mode: str = "local",
     metrics: Metrics | None = None,
     access_log: bool = False,
+    readiness_check: ReadinessCheck | None = None,
     oidc_token_verifier: OidcTokenVerifier | None = None,
 ) -> ThreadingHTTPServer:
     handler = create_v1_http_handler(
@@ -105,6 +107,7 @@ def create_v1_http_server(
         service_mode=service_mode,
         metrics=metrics,
         access_log=access_log,
+        readiness_check=readiness_check,
         oidc_token_verifier=oidc_token_verifier,
     )
     return ThreadingHTTPServer(address, handler)
@@ -127,6 +130,7 @@ def create_v1_http_handler(
     service_mode: str = "local",
     metrics: Metrics | None = None,
     access_log: bool = False,
+    readiness_check: ReadinessCheck | None = None,
     oidc_token_verifier: OidcTokenVerifier | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     agent_keys = dict(agent_identities)
@@ -135,6 +139,7 @@ def create_v1_http_handler(
     service_keys = set(service_operator_keys or set())
     pep_keys = dict(pep_identities or {})
     now = clock or _utc_now
+    is_ready = readiness_check or (lambda: True)
 
     def resolve_workspace_identity(raw_key: str, used_at: datetime) -> WorkspaceIdentity | None:
         identity = (
@@ -265,6 +270,9 @@ def create_v1_http_handler(
         if path == "/healthz":
             _handle_health_request(handler, method)
             return
+        if path == "/readyz":
+            _handle_readiness_request(handler, method)
+            return
         if path == "/metrics":
             _handle_metrics_request(handler, method)
             return
@@ -332,6 +340,37 @@ def create_v1_http_handler(
                     "status": "ok",
                     "service": "vinctor-service",
                     "mode": service_mode,
+                },
+            ),
+        )
+
+    def _handle_readiness_request(
+        handler: BaseHTTPRequestHandler,
+        method: str,
+    ) -> None:
+        if method != "GET":
+            _send_json(
+                handler,
+                V1HttpResponse(
+                    status_code=405,
+                    body={
+                        "error": "method_not_allowed",
+                        "reason": "GET is required for /readyz",
+                    },
+                ),
+            )
+            return
+        try:
+            ready = is_ready()
+        except Exception:
+            ready = False
+        _send_json(
+            handler,
+            V1HttpResponse(
+                status_code=200 if ready else 503,
+                body={
+                    "status": "ready" if ready else "unavailable",
+                    "service": "vinctor-service",
                 },
             ),
         )
@@ -732,6 +771,7 @@ def _authorization_headers(
 _EXACT_ROUTES = frozenset(
     {
         "/healthz",
+        "/readyz",
         "/metrics",
         "/v1/enforce/delegated",
         "/v1/enforce",
