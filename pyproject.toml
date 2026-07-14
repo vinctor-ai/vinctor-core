@@ -38,6 +38,9 @@ dev = [
 mcp = [
   "mcp>=1.0",
 ]
+postgres = [
+  "psycopg[binary]>=3.2",
+]
 
 [project.scripts]
 vinctor = "vinctor_service.cli:main"
