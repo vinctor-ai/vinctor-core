@@ -42,10 +42,12 @@ from vinctor_service.v1_http import (
     V1EnforceService,
     V1HttpResponse,
     V1ObserveService,
+    V1SimulateService,
     V1TokenService,
     handle_v1_delegated_enforce_http,
     handle_v1_enforce_http,
     handle_v1_observe_http,
+    handle_v1_simulate_http,
     handle_v1_tokens_http,
 )
 
@@ -210,6 +212,9 @@ def create_v1_http_handler(
             return
         if path == "/v1/observe":
             _handle_observe_request(handler, method)
+            return
+        if path == "/v1/simulate":
+            _handle_simulate_request(handler, method)
             return
         if path == "/v1/tokens":
             _handle_tokens_request(handler, method)
@@ -393,6 +398,35 @@ def create_v1_http_handler(
             agent_identities=agent_keys,
             agent_identity_resolver=agent_identity_resolver,
             service=cast(V1ObserveService, service),
+            now=now(),
+        )
+        _send_json(handler, response)
+
+    def _handle_simulate_request(handler: BaseHTTPRequestHandler, method: str) -> None:
+        if method != "POST":
+            _send_json(
+                handler,
+                V1HttpResponse(
+                    status_code=405,
+                    body={
+                        "error": "method_not_allowed",
+                        "reason": "POST is required for /v1/simulate",
+                    },
+                ),
+            )
+            return
+
+        parsed = _read_json_body(handler)
+        if isinstance(parsed, V1HttpResponse):
+            _send_json(handler, parsed)
+            return
+
+        response = handle_v1_simulate_http(
+            headers=dict(handler.headers.items()),
+            body=parsed,
+            agent_identities=agent_keys,
+            agent_identity_resolver=agent_identity_resolver,
+            service=cast(V1SimulateService, service),
             now=now(),
         )
         _send_json(handler, response)
