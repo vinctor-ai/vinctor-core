@@ -64,6 +64,13 @@ from vinctor_service.models import (
     V1SimulateRequest,
     V1SimulateResponse,
 )
+from vinctor_service.postgres import (
+    PostgresAuditWriter,
+    PostgresGrantRepository,
+    PostgresV1Service,
+    connect_postgres,
+    init_postgres_schema,
+)
 from vinctor_service.repositories import (
     AgentEnforcementSettingsRepository,
     AutoApprovalRuleRepository,
@@ -149,6 +156,9 @@ __all__ = [
     "Metrics",
     "PEP_KEY_PREFIX",
     "PepIdentity",
+    "PostgresAuditWriter",
+    "PostgresGrantRepository",
+    "PostgresV1Service",
     "SQLiteAgentEnforcementSettingsRepository",
     "SQLiteAgentIssuableScopeBoundsRepository",
     "SQLiteAuditWriter",
@@ -185,6 +195,7 @@ __all__ = [
     "create_grant_request",
     "create_v1_http_handler",
     "create_v1_http_server",
+    "connect_postgres",
     "delegated_enforce_v1_contract",
     "enforce_v1_contract",
     "evaluate_auto_approval",
@@ -199,6 +210,7 @@ __all__ = [
     "handle_v1_grants_http",
     "handle_v1_tokens_http",
     "init_sqlite_schema",
+    "init_postgres_schema",
     "insert_grant",
     "issue_grant",
     "list_auto_approval_rules",

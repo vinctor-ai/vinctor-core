@@ -717,6 +717,21 @@ persistence.
 
 Durable audit storage belongs to the service layer.
 
+### Postgres storage foundation
+
+Install the optional Postgres backend with `pip install "vinctor-core[postgres]"`.
+`PostgresV1Service` provides the grant lookup/lifecycle and hash-chained audit
+storage required by the enforce and observe paths. Schema creation is explicit
+through `init_postgres_schema(connection)`; concurrent writers use a Postgres
+transaction advisory lock so multiple service instances cannot fork the audit
+chain.
+
+This first backend slice intentionally does not replace the SQLite-only local
+key, approval workflow, subject-token, or boundary administration stores. Those
+control-plane repositories must move before selecting Postgres for every local
+CLI route. See `docs/deployment/postgres.md` for the supported surface and test
+contract.
+
 Audit-related behavior should remain deterministic and testable. If a decision
 changes, the corresponding audit event semantics should be updated with tests.
 
