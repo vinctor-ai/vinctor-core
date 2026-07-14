@@ -13,6 +13,8 @@ core.
 - `/v1/observe` and audit-backed policy inference
 - boundary registry and boundary-required enforcement
 - agent enforcement settings (`require_boundary`, `require_subject_token`, `require_pop`)
+- agent issuable-scope bounds and auto-approval rules
+- append-only policy versions and exact policy rollback
 - durable audit lookup/filtering
 - one global tamper-evident audit chain serialized across service instances
 
@@ -56,10 +58,11 @@ and closes the connection if either step fails. SQLite remains the default.
 
 ## Deliberately not yet switched
 
-Local key storage, grant-request/approval workflows, subject tokens, and their
-HTTP administration routes remain SQLite-backed. The
-local CLI therefore continues to select SQLite. Promoting Postgres to the
-default service runtime requires those repositories plus migration and backup
+Local key storage, grant-request workflow state, subject tokens, and their HTTP
+administration routes remain SQLite-backed. The local CLI therefore continues
+to select SQLite even though policy apply/version/rollback now works against a
+`PostgresV1Service` programmatically. Promoting Postgres to the default service
+runtime requires those remaining repositories plus migration and backup
 runbooks. `vinctor service serve` rejects a Postgres selection explicitly until
 that control-plane migration is complete instead of starting a partial service.
 
@@ -67,4 +70,5 @@ that control-plane migration is complete instead of starting a partial service.
 
 Set `VINCTOR_TEST_POSTGRES_DSN` to run the real database tests. CI provisions
 Postgres 16 and verifies grant lifecycle, enforce audit persistence,
-observe-to-infer behavior, and concurrent audit-chain serialization.
+observe-to-infer behavior, policy rollback, and concurrent audit-chain
+serialization.
