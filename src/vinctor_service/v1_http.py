@@ -3,12 +3,17 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from vinctor_service.models import (
+    ObservationClassification,
     V1DelegatedEnforceRequest,
     V1EnforceRequest,
     V1EnforceResponse,
+    V1ObserveRequest,
+    V1ObserveResponse,
+    V1SimulateRequest,
+    V1SimulateResponse,
 )
 from vinctor_service.service_config import (
     DEFAULT_SUBJECT_TOKEN_MAX_TTL_SECONDS,
@@ -42,6 +47,22 @@ class V1HttpResponse:
 
 class V1EnforceService(Protocol):
     def enforce(self, request: V1EnforceRequest, *, now: datetime) -> V1EnforceResponse: ...
+
+    def record_auth_failure(
+        self, *, surface: str, boundary_id: str | None, now: datetime
+    ) -> None: ...
+
+
+class V1ObserveService(Protocol):
+    def observe(self, request: V1ObserveRequest, *, now: datetime) -> V1ObserveResponse: ...
+
+    def record_auth_failure(
+        self, *, surface: str, boundary_id: str | None, now: datetime
+    ) -> None: ...
+
+
+class V1SimulateService(Protocol):
+    def simulate(self, request: V1SimulateRequest, *, now: datetime) -> V1SimulateResponse: ...
 
     def record_auth_failure(
         self, *, surface: str, boundary_id: str | None, now: datetime
@@ -125,6 +146,119 @@ def handle_v1_enforce_http(
         boundary_id=normalized_headers.get("x-vinctor-boundary-id"),
     )
     return _http_response_from_enforce(service.enforce(request, now=now))
+
+
+def handle_v1_observe_http(
+    *,
+    headers: Mapping[str, str],
+    body: object,
+    agent_identities: Mapping[str, AgentIdentity] | None = None,
+    agent_identity_resolver: AgentIdentityResolver | None = None,
+    service: V1ObserveService,
+    now: datetime,
+) -> V1HttpResponse:
+    normalized_headers = {key.lower(): value for key, value in headers.items()}
+    agent_key = normalized_headers.get("x-agent-key")
+    boundary_id = normalized_headers.get("x-vinctor-boundary-id")
+    identity = (
+        _resolve_agent_identity(
+            agent_key,
+            agent_identities=agent_identities,
+            agent_identity_resolver=agent_identity_resolver,
+            now=now,
+        )
+        if agent_key is not None
+        else None
+    )
+    if identity is None:
+        service.record_auth_failure(surface="observe", boundary_id=boundary_id, now=now)
+        return _error(401, "authentication_required", "valid X-Agent-Key header is required")
+
+    parsed = _parse_observe_body(body)
+    if isinstance(parsed, V1HttpResponse):
+        return parsed
+    response = service.observe(
+        V1ObserveRequest(
+            workspace_id=identity.workspace_id,
+            agent_id=identity.agent_id,
+            classification=cast(ObservationClassification, parsed["classification"]),
+            action=parsed.get("action"),
+            resource=parsed.get("resource"),
+            boundary_id=boundary_id,
+        ),
+        now=now,
+    )
+    if response.status_code == 200:
+        return V1HttpResponse(
+            status_code=200,
+            body={"status": "recorded", "audit_event_id": response.audit_event_id},
+        )
+    return _error(
+        response.status_code,
+        response.error or "service_unavailable",
+        response.reason or "observation was not recorded",
+    )
+
+
+def handle_v1_simulate_http(
+    *,
+    headers: Mapping[str, str],
+    body: object,
+    agent_identities: Mapping[str, AgentIdentity] | None = None,
+    agent_identity_resolver: AgentIdentityResolver | None = None,
+    service: V1SimulateService,
+    now: datetime,
+) -> V1HttpResponse:
+    normalized_headers = {key.lower(): value for key, value in headers.items()}
+    agent_key = normalized_headers.get("x-agent-key")
+    boundary_id = normalized_headers.get("x-vinctor-boundary-id")
+    identity = (
+        _resolve_agent_identity(
+            agent_key,
+            agent_identities=agent_identities,
+            agent_identity_resolver=agent_identity_resolver,
+            now=now,
+        )
+        if agent_key is not None
+        else None
+    )
+    if identity is None:
+        service.record_auth_failure(surface="simulate", boundary_id=boundary_id, now=now)
+        return _error(401, "authentication_required", "valid X-Agent-Key header is required")
+
+    parsed = _parse_enforce_body(body)
+    if isinstance(parsed, V1HttpResponse):
+        return parsed
+    response = service.simulate(
+        V1SimulateRequest(
+            workspace_id=identity.workspace_id,
+            agent_id=identity.agent_id,
+            grant_ref=parsed["grant_ref"],
+            action=parsed["action"],
+            resource=parsed["resource"],
+            boundary_id=boundary_id,
+        ),
+        now=now,
+    )
+    if response.would_decision is not None:
+        return V1HttpResponse(
+            status_code=response.status_code,
+            body={
+                "status": "simulated",
+                "would_decision": response.would_decision,
+                "error": response.error,
+                "reason": response.reason,
+                "grant_id": response.grant_id,
+                "agent_id": response.agent_id,
+                "scope_matched": response.scope_matched,
+                "audit_event_id": response.audit_event_id,
+            },
+        )
+    return _error(
+        response.status_code,
+        response.error or "service_unavailable",
+        response.reason or "simulation was not recorded",
+    )
 
 
 def handle_v1_delegated_enforce_http(
@@ -296,6 +430,19 @@ def _resolve_pep_identity(
 
 def _parse_enforce_body(body: object) -> dict[str, str] | V1HttpResponse:
     return _parse_string_body(body, required_fields={"grant_ref", "action", "resource"})
+
+
+def _parse_observe_body(body: object) -> dict[str, str] | V1HttpResponse:
+    if not isinstance(body, dict):
+        return _error(400, "invalid_request", "request body must be a JSON object")
+    classification = body.get("classification")
+    if classification == "mapped":
+        required_fields = {"classification", "action", "resource"}
+    elif classification == "unmapped":
+        required_fields = {"classification"}
+    else:
+        return _error(400, "invalid_request", "classification must be mapped or unmapped")
+    return _parse_string_body(body, required_fields=required_fields)
 
 
 def _parse_delegated_enforce_body(body: object) -> dict[str, str] | V1HttpResponse:

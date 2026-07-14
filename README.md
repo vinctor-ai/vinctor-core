@@ -235,6 +235,42 @@ curl -sS "$VINCTOR_ENDPOINT/v1/enforce" \
 The `/v1/enforce` body is intentionally strict: `grant_ref`, `action`, and
 `resource`. Boundary context belongs in headers.
 
+An observe-mode boundary records mapped calls without requiring or applying a
+grant:
+
+```bash
+curl -sS "$VINCTOR_ENDPOINT/v1/observe" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-Key: $VINCTOR_AGENT_KEY" \
+  -H "X-Vinctor-Boundary-Id: $VINCTOR_BOUNDARY_ID" \
+  -d '{"classification":"mapped","action":"write","resource":"repo/feature/readme"}'
+```
+
+Unmapped calls send only `{"classification":"unmapped"}`. The endpoint never
+accepts raw tool input or prompt content. Successful mapped observations are
+stored as `action_observed` audit events and are available to `operator policy
+infer`; inference remains propose-only and exact-scope by default.
+Use `operator policy infer --min-observations 2` (or a higher threshold) to
+exclude one-off pairs before reviewing a proposal. Proposal entries distinguish
+observed, enforced, and simulated evidence, and the document summarizes mapping
+gaps and dry-run outcomes.
+
+Before promoting a policy to enforcement, a boundary can calculate the same
+decision without using it as a gate:
+
+```bash
+curl -sS "$VINCTOR_ENDPOINT/v1/simulate" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-Key: $VINCTOR_AGENT_KEY" \
+  -H "X-Vinctor-Boundary-Id: $VINCTOR_BOUNDARY_ID" \
+  -d "{\"grant_ref\":\"$VINCTOR_GRANT_REF\",\"action\":\"write\",\"resource\":\"repo/feature/readme\"}"
+```
+
+The response is `200` for both evaluated outcomes and reports
+`would_decision: permit|deny`. It never authorizes or blocks the caller's tool
+execution. Every successful calculation is stored as `action_would_permit` or
+`action_would_deny`; invalid requests and unavailable storage fail explicitly.
+
 Restart with explicit keys:
 
 ```bash
@@ -710,6 +746,22 @@ enforce). `vinctor operator audit verify --against-anchor <head-log>` checks the
 live chain against the recorded heads. This is tamper-**evident**, not
 tamper-**proof**; for a compliance system of record, forward audit to durable
 WORM/SIEM storage.
+
+### OTLP audit forwarding
+
+Set `VINCTOR_AUDIT_EXPORT` to an OTLP/HTTP logs endpoint to forward a
+best-effort copy of each durable audit event:
+
+```bash
+VINCTOR_AUDIT_EXPORT=otlp-http:http://otel-collector:4318/v1/logs \
+  vinctor service serve
+```
+
+The exporter sends OTLP JSON (`ExportLogsServiceRequest`) on a bounded
+background queue. Audit persistence completes first; a slow, unavailable, or
+full collector never changes an enforcement decision. Delivery is therefore
+best-effort in this first slice. Use the workspace-key-gated
+`operator audit export` command to replay or reconcile the durable record.
 
 ## Development Principles
 

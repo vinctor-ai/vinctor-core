@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import threading
 from datetime import UTC, datetime
 
 from vinctor_core.models import AuditEvent
@@ -7,6 +8,7 @@ from vinctor_service.audit_export import (
     ExportingAuditWriter,
     FileExport,
     NullExport,
+    OtlpHttpExport,
     StdoutExport,
     audit_export_from_env,
 )
@@ -64,6 +66,97 @@ def test_export_from_env_selects_sink() -> None:
     assert isinstance(
         audit_export_from_env({"VINCTOR_AUDIT_EXPORT": "file:/tmp/x.log"}), FileExport
     )
+    otlp = audit_export_from_env(
+        {"VINCTOR_AUDIT_EXPORT": "otlp-http:http://collector:4318/v1/logs"}
+    )
+    assert isinstance(otlp, OtlpHttpExport)
+    otlp.close()
+
+
+def test_otlp_http_export_emits_otlp_json_off_the_caller_thread() -> None:
+    sent: list[tuple[str, bytes, float]] = []
+    called = threading.Event()
+
+    def sender(endpoint: str, data: bytes, timeout: float) -> None:
+        sent.append((endpoint, data, timeout))
+        called.set()
+
+    export = OtlpHttpExport(
+        "http://collector:4318/v1/logs",
+        sender=sender,
+    )
+    export.emit(_event())
+    assert called.wait(1)
+    export.close()
+
+    endpoint, data, timeout = sent[0]
+    assert endpoint == "http://collector:4318/v1/logs"
+    assert timeout == 1.0
+    payload = json.loads(data)
+    record = payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]
+    assert record["timeUnixNano"] == str(
+        int(NOW.timestamp()) * 1_000_000_000 + NOW.microsecond * 1_000
+    )
+    assert json.loads(record["body"]["stringValue"])["event_id"] == "evt_1"
+    assert {
+        attribute["key"]: attribute["value"]["stringValue"]
+        for attribute in record["attributes"]
+    } == {
+        "vinctor.event_id": "evt_1",
+        "vinctor.event_type": "action_permitted",
+        "vinctor.decision": "permit",
+        "vinctor.workspace_id": "ws_main",
+        "vinctor.agent_id": "agent_a",
+        "vinctor.runtime": "claude-code",
+    }
+    resource_attributes = payload["resourceLogs"][0]["resource"]["attributes"]
+    assert resource_attributes == [
+        {"key": "service.name", "value": {"stringValue": "vinctor"}}
+    ]
+
+
+def test_otlp_http_export_is_fail_open_when_sender_fails(capsys) -> None:
+    called = threading.Event()
+
+    def sender(endpoint: str, data: bytes, timeout: float) -> None:
+        called.set()
+        raise OSError("collector down")
+
+    export = OtlpHttpExport("http://collector:4318/v1/logs", sender=sender)
+    export.emit(_event())
+    assert called.wait(1)
+    export.close()
+    assert "audit export emit failed (otlp-http)" in capsys.readouterr().err
+
+
+def test_otlp_http_export_drops_when_bounded_queue_is_full(capsys) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    def sender(endpoint: str, data: bytes, timeout: float) -> None:
+        entered.set()
+        assert release.wait(1)
+
+    export = OtlpHttpExport(
+        "http://collector:4318/v1/logs",
+        queue_size=1,
+        sender=sender,
+    )
+    export.emit(_event("evt_1"))
+    assert entered.wait(1)
+    export.emit(_event("evt_2"))
+    export.emit(_event("evt_3"))
+    assert "queue full (otlp-http)" in capsys.readouterr().err
+    release.set()
+    export.close()
+
+
+def test_export_from_env_rejects_invalid_otlp_http_endpoint(capsys) -> None:
+    export = audit_export_from_env(
+        {"VINCTOR_AUDIT_EXPORT": "otlp-http:collector:4318/v1/logs"}
+    )
+    assert isinstance(export, NullExport)
+    assert "invalid VINCTOR_AUDIT_EXPORT" in capsys.readouterr().err
 
 
 def test_export_from_env_unknown_spec_is_off_with_warning(capsys) -> None:

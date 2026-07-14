@@ -423,8 +423,35 @@ def test_vinctor_cli_audit_export_requires_valid_workspace_key(tmp_path: Path) -
     )
 
     assert status == 4
-    assert "valid workspace key is required" in stderr.getvalue()
+    assert "valid workspace or auditor key is required" in stderr.getvalue()
     assert stdout.getvalue() == ""
+
+
+def test_vinctor_cli_audit_export_accepts_read_only_auditor_key(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_rejected_request_audit(db_path)
+    conn = sqlite3.connect(db_path)
+    SQLiteLocalKeyRepository(conn).create_auditor_key(
+        workspace_id="ws_demo", raw_key="auk_demo", now=NOW
+    )
+    conn.close()
+
+    output = _run_text(
+        [
+            "--db",
+            str(db_path),
+            "--auditor-key",
+            "auk_demo",
+            "operator",
+            "audit",
+            "export",
+            "--format",
+            "jsonl",
+        ]
+    )
+
+    assert '"event_type": "grant_requested"' in output
+    assert '"event_type": "grant_request_rejected"' in output
 
 
 def test_vinctor_demo_check_runs_smoke_flow() -> None:
@@ -1047,6 +1074,17 @@ def test_vinctor_cli_keys_rotate_agent(tmp_path: Path) -> None:
     assert rotated["raw_key"].startswith("aak_")
     assert rotated["key_type"] == "agent"
     assert rotated["agent_id"] == "agent_runner"
+
+
+def test_vinctor_cli_keys_rotate_auditor(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+
+    rotated = _run([*common, "operator", "keys", "rotate", "auditor"])
+    assert rotated["raw_key"].startswith("auk_")
+    assert rotated["key_type"] == "auditor"
+    assert rotated["agent_id"] is None
 
 
 def test_vinctor_cli_keys_rotate_pep(tmp_path: Path) -> None:

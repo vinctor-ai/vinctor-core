@@ -41,9 +41,13 @@ from vinctor_service.v1_http import (
     V1DelegatedEnforceService,
     V1EnforceService,
     V1HttpResponse,
+    V1ObserveService,
+    V1SimulateService,
     V1TokenService,
     handle_v1_delegated_enforce_http,
     handle_v1_enforce_http,
+    handle_v1_observe_http,
+    handle_v1_simulate_http,
     handle_v1_tokens_http,
 )
 
@@ -65,9 +69,11 @@ def create_v1_http_server(
     service: V1EnforceService,
     agent_identities: Mapping[str, AgentIdentity],
     workspace_identities: Mapping[str, WorkspaceIdentity] | None = None,
+    auditor_identities: Mapping[str, WorkspaceIdentity] | None = None,
     pep_identities: Mapping[str, PepIdentity] | None = None,
     agent_identity_resolver: AgentIdentityResolver | None = None,
     workspace_identity_resolver: WorkspaceIdentityResolver | None = None,
+    auditor_identity_resolver: WorkspaceIdentityResolver | None = None,
     pep_identity_resolver: PepIdentityResolver | None = None,
     clock: Clock | None = None,
     service_mode: str = "local",
@@ -78,9 +84,11 @@ def create_v1_http_server(
         service=service,
         agent_identities=agent_identities,
         workspace_identities=workspace_identities,
+        auditor_identities=auditor_identities,
         pep_identities=pep_identities,
         agent_identity_resolver=agent_identity_resolver,
         workspace_identity_resolver=workspace_identity_resolver,
+        auditor_identity_resolver=auditor_identity_resolver,
         pep_identity_resolver=pep_identity_resolver,
         clock=clock,
         service_mode=service_mode,
@@ -95,9 +103,11 @@ def create_v1_http_handler(
     service: V1EnforceService,
     agent_identities: Mapping[str, AgentIdentity],
     workspace_identities: Mapping[str, WorkspaceIdentity] | None = None,
+    auditor_identities: Mapping[str, WorkspaceIdentity] | None = None,
     pep_identities: Mapping[str, PepIdentity] | None = None,
     agent_identity_resolver: AgentIdentityResolver | None = None,
     workspace_identity_resolver: WorkspaceIdentityResolver | None = None,
+    auditor_identity_resolver: WorkspaceIdentityResolver | None = None,
     pep_identity_resolver: PepIdentityResolver | None = None,
     clock: Clock | None = None,
     service_mode: str = "local",
@@ -106,6 +116,7 @@ def create_v1_http_handler(
 ) -> type[BaseHTTPRequestHandler]:
     agent_keys = dict(agent_identities)
     workspace_keys = dict(workspace_identities or {})
+    auditor_keys = dict(auditor_identities or {})
     pep_keys = dict(pep_identities or {})
     now = clock or _utc_now
 
@@ -205,6 +216,12 @@ def create_v1_http_handler(
             return
         if path == "/v1/enforce":
             _handle_enforce_request(handler, method)
+            return
+        if path == "/v1/observe":
+            _handle_observe_request(handler, method)
+            return
+        if path == "/v1/simulate":
+            _handle_simulate_request(handler, method)
             return
         if path == "/v1/tokens":
             _handle_tokens_request(handler, method)
@@ -359,6 +376,64 @@ def create_v1_http_handler(
             agent_identities=agent_keys,
             agent_identity_resolver=agent_identity_resolver,
             service=service,
+            now=now(),
+        )
+        _send_json(handler, response)
+
+    def _handle_observe_request(handler: BaseHTTPRequestHandler, method: str) -> None:
+        if method != "POST":
+            _send_json(
+                handler,
+                V1HttpResponse(
+                    status_code=405,
+                    body={
+                        "error": "method_not_allowed",
+                        "reason": "POST is required for /v1/observe",
+                    },
+                ),
+            )
+            return
+
+        parsed = _read_json_body(handler)
+        if isinstance(parsed, V1HttpResponse):
+            _send_json(handler, parsed)
+            return
+
+        response = handle_v1_observe_http(
+            headers=dict(handler.headers.items()),
+            body=parsed,
+            agent_identities=agent_keys,
+            agent_identity_resolver=agent_identity_resolver,
+            service=cast(V1ObserveService, service),
+            now=now(),
+        )
+        _send_json(handler, response)
+
+    def _handle_simulate_request(handler: BaseHTTPRequestHandler, method: str) -> None:
+        if method != "POST":
+            _send_json(
+                handler,
+                V1HttpResponse(
+                    status_code=405,
+                    body={
+                        "error": "method_not_allowed",
+                        "reason": "POST is required for /v1/simulate",
+                    },
+                ),
+            )
+            return
+
+        parsed = _read_json_body(handler)
+        if isinstance(parsed, V1HttpResponse):
+            _send_json(handler, parsed)
+            return
+
+        response = handle_v1_simulate_http(
+            headers=dict(handler.headers.items()),
+            body=parsed,
+            agent_identities=agent_keys,
+            agent_identity_resolver=agent_identity_resolver,
+            service=cast(V1SimulateService, service),
             now=now(),
         )
         _send_json(handler, response)
@@ -551,6 +626,8 @@ def create_v1_http_handler(
             headers=dict(handler.headers.items()),
             workspace_identities=workspace_keys,
             workspace_identity_resolver=workspace_identity_resolver,
+            auditor_identities=auditor_keys,
+            auditor_identity_resolver=auditor_identity_resolver,
             service=cast(AuditReadService, service),
             now=now(),
         )
@@ -565,6 +642,7 @@ _EXACT_ROUTES = frozenset(
         "/metrics",
         "/v1/enforce/delegated",
         "/v1/enforce",
+        "/v1/observe",
         "/v1/tokens",
     }
 )
