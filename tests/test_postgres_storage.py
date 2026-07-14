@@ -507,6 +507,8 @@ def test_postgres_observation_feeds_exact_policy_proposal() -> None:
             "scope": "read:repo/feature/readme",
             "count": 1,
             "last_seen": NOW.isoformat(),
+            "generalized": False,
+            "evidence": {"enforced": 0, "observed": 1, "simulated": 0},
         }
     ]
     conn.close()
