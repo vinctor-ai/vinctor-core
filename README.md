@@ -251,6 +251,22 @@ accepts raw tool input or prompt content. Successful mapped observations are
 stored as `action_observed` audit events and are available to `operator policy
 infer`; inference remains propose-only and exact-scope by default.
 
+Before promoting a policy to enforcement, a boundary can calculate the same
+decision without using it as a gate:
+
+```bash
+curl -sS "$VINCTOR_ENDPOINT/v1/simulate" \
+  -H "Content-Type: application/json" \
+  -H "X-Agent-Key: $VINCTOR_AGENT_KEY" \
+  -H "X-Vinctor-Boundary-Id: $VINCTOR_BOUNDARY_ID" \
+  -d "{\"grant_ref\":\"$VINCTOR_GRANT_REF\",\"action\":\"write\",\"resource\":\"repo/feature/readme\"}"
+```
+
+The response is `200` for both evaluated outcomes and reports
+`would_decision: permit|deny`. It never authorizes or blocks the caller's tool
+execution. Every successful calculation is stored as `action_would_permit` or
+`action_would_deny`; invalid requests and unavailable storage fail explicitly.
+
 Restart with explicit keys:
 
 ```bash
