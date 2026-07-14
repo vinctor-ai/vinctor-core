@@ -63,6 +63,16 @@ def test_service_runtime_serves_health_without_secret_leakage(tmp_path: Path) ->
         handle.close()
 
 
+def test_full_service_runtime_rejects_partial_postgres_backend() -> None:
+    config = ServiceRuntimeConfig(
+        storage_backend="postgres",
+        postgres_dsn="postgresql://vinctor@db/vinctor",
+    )
+
+    with pytest.raises(ValueError, match="control-plane repositories"):
+        prepare_service_runtime(config)
+
+
 def test_service_runtime_rejects_non_get_health_method(tmp_path: Path) -> None:
     handle = prepare_service_runtime(
         ServiceRuntimeConfig(sqlite_db_path=tmp_path / "vinctor.sqlite", port=0),

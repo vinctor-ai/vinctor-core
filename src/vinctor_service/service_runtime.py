@@ -33,6 +33,11 @@ def prepare_service_runtime(
     *,
     clock: Callable[[], datetime] | None = None,
 ) -> ServiceRuntimeHandle:
+    if config.storage_backend != "sqlite":
+        raise ValueError(
+            "Postgres cannot run the full service until control-plane repositories "
+            "for keys, boundaries, settings, and tokens are migrated"
+        )
     db_path = config.sqlite_db_path.expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, check_same_thread=False)
