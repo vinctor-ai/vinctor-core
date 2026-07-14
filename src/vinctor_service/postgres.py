@@ -2,23 +2,67 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
-from vinctor_core.models import AuditEvent, Boundary, Grant
+from vinctor_core import (
+    disable_boundary,
+    enable_boundary,
+    get_boundary_for_workspace,
+    register_boundary,
+)
+from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput, Grant
 from vinctor_service.audit import AuthFailureAuditThrottle
 from vinctor_service.audit_anchor import AuditAnchor, NullAnchor
 from vinctor_service.audit_chain import GENESIS_PREV_HASH, row_hash
-from vinctor_service.grants import ScopeBoundsListing, validate_issuable_scope_bounds
+from vinctor_service.auto_approval import (
+    auto_approve_grant_request,
+    create_auto_approval_rule,
+    disable_auto_approval_rule,
+    evaluate_auto_approval,
+    list_auto_approval_rules,
+)
+from vinctor_service.grant_requests import (
+    approve_grant_request,
+    create_grant_request,
+    list_grant_requests,
+    lookup_grant_request,
+    reject_grant_request,
+)
+from vinctor_service.grants import (
+    ScopeBoundsListing,
+    issue_grant,
+    list_grants,
+    lookup_grant,
+    revoke_grant,
+    validate_issuable_scope_bounds,
+)
 from vinctor_service.models import (
+    AutoApprovalEvaluationResult,
     AutoApprovalRule,
+    GrantIssueRequest,
+    GrantIssueResult,
+    GrantRequest,
+    GrantRequestCreateRequest,
+    GrantRequestCreateResult,
+    GrantRequestDecisionResult,
+    V1DelegatedEnforceRequest,
     V1EnforceRequest,
     V1EnforceResponse,
     V1ObserveRequest,
     V1ObserveResponse,
 )
 from vinctor_service.observations import record_observation
-from vinctor_service.v1_enforce import enforce_v1_contract
+from vinctor_service.postgres_control import (
+    PostgresGrantRequestRepository,
+    PostgresReplayStore,
+    PostgresSubjectTokenRepository,
+)
+from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS
+from vinctor_service.subject_tokens import mint_subject_token
+from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 
 AUDIT_CHAIN_LOCK_ID = 0x56494E43
 
@@ -30,7 +74,38 @@ def connect_postgres(dsn: str):
         raise RuntimeError(
             "Postgres support requires `pip install vinctor-core[postgres]`"
         ) from exc
-    return psycopg.connect(dsn)
+    return SerializedPostgresConnection(psycopg.connect(dsn))
+
+
+class SerializedPostgresConnection:
+    """Keep one psycopg connection's transaction scopes thread-safe.
+
+    The stdlib HTTP runtime is threaded. Psycopg serializes statements on a
+    connection, but its transaction is shared by all cursors, so a lock must
+    cover each complete transaction rather than only individual statements.
+    Separate service processes still use separate connections and coordinate
+    through Postgres constraints and advisory locks.
+    """
+
+    def __init__(self, connection: Any) -> None:
+        self._connection = connection
+        self._lock = threading.RLock()
+
+    @contextmanager
+    def transaction(self):
+        with self._lock, self._connection.transaction():
+            yield
+
+    def execute(self, *args: Any, **kwargs: Any):
+        with self._lock:
+            return self._connection.execute(*args, **kwargs)
+
+    def close(self) -> None:
+        with self._lock:
+            self._connection.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._connection, name)
 
 
 def init_postgres_schema(conn: Any) -> None:
@@ -159,6 +234,84 @@ def init_postgres_schema(conn: Any) -> None:
         ON auto_approval_rules(workspace_id, created_at, rule_id)
         """,
         """
+        CREATE TABLE IF NOT EXISTS local_keys (
+            key_id TEXT PRIMARY KEY,
+            key_type TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            agent_id TEXT,
+            key_hash TEXT NOT NULL UNIQUE,
+            key_prefix TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL,
+            last_used_at TIMESTAMPTZ,
+            revoked_at TIMESTAMPTZ
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_postgres_local_keys_workspace
+        ON local_keys(workspace_id, created_at, key_id)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS grant_requests (
+            request_id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            requester_agent_id TEXT NOT NULL,
+            target_agent_id TEXT NOT NULL,
+            requested_scopes_json JSONB NOT NULL,
+            requested_ttl_seconds INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL,
+            decided_at TIMESTAMPTZ,
+            decided_by TEXT,
+            decision_reason TEXT,
+            issued_grant_ref TEXT,
+            task_id TEXT,
+            session_id TEXT,
+            boundary_id TEXT,
+            requester_runtime TEXT,
+            repo TEXT,
+            worktree TEXT
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_postgres_grant_requests_workspace
+        ON grant_requests(workspace_id, created_at, request_id)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS subject_tokens (
+            token_id TEXT PRIMARY KEY,
+            token_hash TEXT NOT NULL UNIQUE,
+            workspace_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            grant_ref TEXT NOT NULL,
+            audience TEXT NOT NULL,
+            issued_at TIMESTAMPTZ NOT NULL,
+            expires_at TIMESTAMPTZ NOT NULL,
+            created_by TEXT NOT NULL,
+            revoked_at TIMESTAMPTZ,
+            bound_action TEXT,
+            bound_resource TEXT,
+            pop_secret TEXT
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_postgres_subject_tokens_workspace
+        ON subject_tokens(workspace_id, issued_at, token_id)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS pop_replay_nonces (
+            token_id TEXT NOT NULL,
+            nonce TEXT NOT NULL,
+            ts BIGINT NOT NULL,
+            PRIMARY KEY (token_id, nonce)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_postgres_pop_replay_ts
+        ON pop_replay_nonces(ts)
+        """,
+        """
         CREATE TABLE IF NOT EXISTS policy_versions (
             workspace_id TEXT NOT NULL,
             version INTEGER NOT NULL,
@@ -174,7 +327,7 @@ def init_postgres_schema(conn: Any) -> None:
     with conn.transaction():
         for statement in statements:
             conn.execute(statement)
-        for version in (1, 2, 3):
+        for version in (1, 2, 3, 4):
             conn.execute(
                 """
                 INSERT INTO schema_migrations (version, applied_at)
@@ -762,10 +915,13 @@ class PostgresV1Service:
         self.audit_writer = PostgresAuditWriter(conn)
         self.boundary_registry = PostgresBoundaryRegistry(conn)
         self.scope_bounds_repository = PostgresAgentIssuableScopeBoundsRepository(conn)
+        self.grant_request_repository = PostgresGrantRequestRepository(conn)
         self.auto_approval_rule_repository = PostgresAutoApprovalRuleRepository(conn)
+        self.subject_token_repository = PostgresSubjectTokenRepository(conn)
         self.agent_enforcement_settings_repository = (
             PostgresAgentEnforcementSettingsRepository(conn)
         )
+        self._pop_replay = PostgresReplayStore(conn)
         self._auth_failures = AuthFailureAuditThrottle()
 
     @property
@@ -780,6 +936,46 @@ class PostgresV1Service:
 
     def insert_grant(self, grant: Grant) -> None:
         self.grant_repository.insert(grant)
+
+    def issue_grant(
+        self, request: GrantIssueRequest, *, now: datetime,
+    ) -> GrantIssueResult:
+        return issue_grant(
+            request,
+            grant_repository=self.grant_repository,
+            scope_bounds_repository=self.scope_bounds_repository,
+            audit_writer=self.audit_writer,
+            now=now,
+        )
+
+    def lookup_grant(self, *, grant_ref: str, workspace_id: str) -> Grant | None:
+        return lookup_grant(
+            grant_ref=grant_ref,
+            workspace_id=workspace_id,
+            grant_repository=self.grant_repository,
+        )
+
+    def list_grants(
+        self, *, workspace_id: str, agent_id: str | None = None,
+        status: str | None = None,
+    ) -> tuple[Grant, ...]:
+        return list_grants(
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            status=status,
+            grant_repository=self.grant_repository,
+        )
+
+    def revoke_grant(
+        self, *, grant_ref: str, workspace_id: str, now: datetime,
+    ) -> tuple[Grant, str] | None:
+        return revoke_grant(
+            grant_ref=grant_ref,
+            workspace_id=workspace_id,
+            grant_repository=self.grant_repository,
+            audit_writer=self.audit_writer,
+            now=now,
+        )
 
     def set_agent_issuable_scope_bounds(
         self,
@@ -798,8 +994,171 @@ class PostgresV1Service:
             now=now,
         )
 
-    def list_auto_approval_rules(self, workspace_id: str) -> tuple[AutoApprovalRule, ...]:
-        return self.auto_approval_rule_repository.list_rules_for_workspace(workspace_id)
+    def create_grant_request(
+        self, request: GrantRequestCreateRequest, *, now: datetime,
+    ) -> GrantRequestCreateResult:
+        return create_grant_request(
+            request,
+            request_repository=self.grant_request_repository,
+            audit_writer=self.audit_writer,
+            now=now,
+        )
+
+    def lookup_grant_request(
+        self, *, request_id: str, workspace_id: str,
+    ) -> GrantRequest | None:
+        return lookup_grant_request(
+            request_id=request_id,
+            workspace_id=workspace_id,
+            request_repository=self.grant_request_repository,
+        )
+
+    def list_grant_requests(self, *, workspace_id: str) -> tuple[GrantRequest, ...]:
+        return list_grant_requests(
+            workspace_id=workspace_id,
+            request_repository=self.grant_request_repository,
+        )
+
+    def approve_grant_request(
+        self, *, request_id: str, workspace_id: str, decided_by: str,
+        decision_reason: str | None, now: datetime,
+    ) -> GrantRequestDecisionResult:
+        return approve_grant_request(
+            request_id=request_id,
+            workspace_id=workspace_id,
+            decided_by=decided_by,
+            decision_reason=decision_reason,
+            request_repository=self.grant_request_repository,
+            grant_repository=self.grant_repository,
+            scope_bounds_repository=self.scope_bounds_repository,
+            audit_writer=self.audit_writer,
+            now=now,
+        )
+
+    def reject_grant_request(
+        self, *, request_id: str, workspace_id: str, decided_by: str,
+        decision_reason: str | None, now: datetime,
+    ) -> GrantRequestDecisionResult:
+        return reject_grant_request(
+            request_id=request_id,
+            workspace_id=workspace_id,
+            decided_by=decided_by,
+            decision_reason=decision_reason,
+            request_repository=self.grant_request_repository,
+            audit_writer=self.audit_writer,
+            now=now,
+        )
+
+    def mint_subject_token(
+        self, *, workspace_id, agent_id, grant_ref, audience, ttl_seconds, now,
+        bound_action=None, bound_resource=None, pop=False,
+    ):
+        return mint_subject_token(
+            grant_repository=self.grant_repository,
+            subject_token_repository=self.subject_token_repository,
+            audit_writer=self.audit_writer,
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            grant_ref=grant_ref,
+            audience=audience,
+            ttl_seconds=ttl_seconds,
+            now=now,
+            bound_action=bound_action,
+            bound_resource=bound_resource,
+            pop=pop,
+        )
+
+    def create_auto_approval_rule(self, rule: AutoApprovalRule) -> AutoApprovalRule:
+        return create_auto_approval_rule(
+            rule_repository=self.auto_approval_rule_repository,
+            rule=rule,
+        )
+
+    def list_auto_approval_rules(
+        self, workspace_id: str,
+    ) -> tuple[AutoApprovalRule, ...]:
+        return list_auto_approval_rules(
+            rule_repository=self.auto_approval_rule_repository,
+            workspace_id=workspace_id,
+        )
+
+    def disable_auto_approval_rule(
+        self, *, rule_id: str, workspace_id: str, disabled_by: str, now: datetime,
+    ) -> AutoApprovalRule | None:
+        return disable_auto_approval_rule(
+            rule_repository=self.auto_approval_rule_repository,
+            rule_id=rule_id,
+            workspace_id=workspace_id,
+            disabled_by=disabled_by,
+            now=now,
+        )
+
+    def evaluate_auto_approval(
+        self, *, request: GrantRequest,
+    ) -> AutoApprovalEvaluationResult:
+        return evaluate_auto_approval(
+            request=request,
+            rule_repository=self.auto_approval_rule_repository,
+        )
+
+    def auto_approve_grant_request(
+        self, *, request_id: str, workspace_id: str, decided_by: str,
+        now: datetime,
+    ) -> GrantRequestDecisionResult:
+        return auto_approve_grant_request(
+            request_id=request_id,
+            workspace_id=workspace_id,
+            decided_by=decided_by,
+            request_repository=self.grant_request_repository,
+            rule_repository=self.auto_approval_rule_repository,
+            grant_repository=self.grant_repository,
+            scope_bounds_repository=self.scope_bounds_repository,
+            audit_writer=self.audit_writer,
+            now=now,
+        )
+
+    def register_boundary(
+        self, registration: BoundaryRegistrationInput, *,
+        now: datetime | None = None, boundary_id: str | None = None,
+    ) -> Boundary:
+        return register_boundary(
+            self.boundary_registry,
+            registration,
+            now=now,
+            boundary_id=boundary_id,
+        )
+
+    def disable_boundary(
+        self, *, boundary_id: str, workspace_id: str,
+        now: datetime | None = None,
+    ) -> Boundary | None:
+        return disable_boundary(
+            self.boundary_registry,
+            boundary_id=boundary_id,
+            workspace_id=workspace_id,
+            now=now,
+        )
+
+    def enable_boundary(
+        self, *, boundary_id: str, workspace_id: str,
+        now: datetime | None = None,
+    ) -> Boundary | None:
+        return enable_boundary(
+            self.boundary_registry,
+            boundary_id=boundary_id,
+            workspace_id=workspace_id,
+            now=now,
+        )
+
+    def list_boundaries(self, workspace_id: str) -> tuple[Boundary, ...]:
+        return tuple(self.boundary_registry.list_for_workspace(workspace_id))
+
+    def get_boundary(self, *, boundary_id: str, workspace_id: str) -> Boundary | None:
+        return get_boundary_for_workspace(
+            self.boundary_registry,
+            boundary_id,
+            workspace_id,
+        )
 
     def record_auth_failure(
         self, *, surface: str, boundary_id: str | None, now: datetime
@@ -827,6 +1186,22 @@ class PostgresV1Service:
             audit_writer=self.audit_writer,
             now=now,
             boundary_registry=self.boundary_registry,
+        )
+
+    def delegated_enforce(
+        self, request: V1DelegatedEnforceRequest, *, now: datetime,
+        pop_skew_seconds: int = DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS,
+    ) -> V1EnforceResponse:
+        return delegated_enforce_v1_contract(
+            request,
+            grant_repository=self.grant_repository,
+            now=now,
+            audit_writer=self.audit_writer,
+            boundary_registry=self.boundary_registry,
+            subject_token_repository=self.subject_token_repository,
+            agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
+            pop_replay_cache=self._pop_replay,
+            pop_skew_seconds=pop_skew_seconds,
         )
 
 
