@@ -162,6 +162,19 @@ class GrantIssueResult:
 
 
 @dataclass(frozen=True)
+class AgentIssuableBounds:
+    """One consistent snapshot of an agent's issuable-scope bounds row.
+
+    Both fields come from a single read of the bounds row so grant issuance
+    validates scopes and max TTL against the same version of the bounds (no
+    torn read across a concurrent set_bounds).
+    """
+
+    scopes: tuple[str, ...]
+    max_ttl_seconds: int | None
+
+
+@dataclass(frozen=True)
 class GrantRequest:
     request_id: str
     workspace_id: str

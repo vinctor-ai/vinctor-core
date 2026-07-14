@@ -12,7 +12,10 @@ from vinctor_core.audit import (
     REASON_TTL_EXCEEDS_ISSUABLE_MAX,
 )
 from vinctor_service import GrantIssueRequest, SQLiteV1Service, V1EnforceRequest
-from vinctor_service.grants import DEFAULT_TTL_SECONDS
+from vinctor_service.audit import InMemoryAuditWriter
+from vinctor_service.grants import DEFAULT_TTL_SECONDS, issue_grant
+from vinctor_service.models import AgentIssuableBounds
+from vinctor_service.repositories import InMemoryGrantRepository
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -388,4 +391,121 @@ def test_lifecycle_audit_event_json_excludes_raw_inputs(tmp_path: Path) -> None:
     event_json = json.loads(row[0])
     assert event_json["event_type"] == "grant_issued"
     assert event_json.keys().isdisjoint({"raw_tool_input", "raw_command", "prompt"})
+    conn.close()
+
+
+class TornReadScopeBoundsRepository:
+    """Simulates a concurrent set_bounds landing between two separate reads.
+
+    The legacy per-field getters expose a torn view: ``get_bounds`` still sees
+    the OLD wide scopes while ``get_max_ttl_seconds`` already sees the NEW max
+    TTL. ``get_bounds_with_max_ttl`` returns the one consistent (NEW) row
+    snapshot.
+    """
+
+    OLD_SCOPES = ("execute:ci/test", "execute:ci/build")
+    NEW_SCOPES = ("execute:ci/build",)
+    NEW_MAX_TTL_SECONDS = 600
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def get_bounds(self, *, workspace_id: str, agent_id: str) -> tuple[str, ...] | None:
+        self.calls.append("get_bounds")
+        return self.OLD_SCOPES
+
+    def get_max_ttl_seconds(self, *, workspace_id: str, agent_id: str) -> int | None:
+        self.calls.append("get_max_ttl_seconds")
+        return self.NEW_MAX_TTL_SECONDS
+
+    def get_bounds_with_max_ttl(
+        self, *, workspace_id: str, agent_id: str
+    ) -> AgentIssuableBounds | None:
+        self.calls.append("get_bounds_with_max_ttl")
+        return AgentIssuableBounds(
+            scopes=self.NEW_SCOPES,
+            max_ttl_seconds=self.NEW_MAX_TTL_SECONDS,
+        )
+
+    def list_bounds_for_workspace(
+        self, workspace_id: str
+    ) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        return ()
+
+    def set_bounds(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        scopes: tuple[str, ...],
+        max_ttl_seconds: int | None = None,
+        now: datetime,
+    ) -> None:
+        raise NotImplementedError
+
+
+def test_issue_grant_reads_scopes_and_max_ttl_in_one_snapshot() -> None:
+    repository = TornReadScopeBoundsRepository()
+    # Scope is inside the OLD bounds only; TTL is within the NEW max TTL. The
+    # torn (old-scopes, new-max-ttl) mix would issue a grant that neither the
+    # fully-old nor the fully-new bounds permit.
+    request = issue_request(scopes=("execute:ci/test",), ttl_seconds=600)
+
+    result = issue_grant(
+        request,
+        grant_repository=InMemoryGrantRepository(),
+        scope_bounds_repository=repository,
+        audit_writer=InMemoryAuditWriter(),
+        now=NOW,
+    )
+
+    assert repository.calls == ["get_bounds_with_max_ttl"]
+    assert result.status == "rejected"
+    assert result.reason == "scope_outside_issuable_bounds"
+
+
+def test_issue_decisions_against_real_bounds_are_unchanged(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_runner",
+        scopes=("execute:ci/test",),
+        max_ttl_seconds=1800,
+        now=NOW,
+    )
+
+    accepted = service.issue_grant(
+        issue_request(ttl_seconds=1800, grant_ref="grt_ok"), now=NOW
+    )
+    assert (accepted.status, accepted.reason) == ("issued", "grant_issued")
+
+    outside = service.issue_grant(
+        issue_request(scopes=("read:secret/env",), grant_ref="grt_scope"), now=NOW
+    )
+    assert (outside.status, outside.reason) == (
+        "rejected",
+        "scope_outside_issuable_bounds",
+    )
+
+    over_ttl = service.issue_grant(
+        issue_request(ttl_seconds=3600, grant_ref="grt_ttl"), now=NOW
+    )
+    assert (over_ttl.status, over_ttl.reason) == ("rejected", "ttl_exceeds_issuable_max")
+
+    unbounded = service.issue_grant(
+        GrantIssueRequest(
+            workspace_id="ws_main",
+            target_agent_id="agent_unbounded",
+            requested_scopes=("execute:ci/test",),
+            ttl_seconds=600,
+            grant_id="grnt_unbounded",
+            grant_ref="grt_unbounded",
+        ),
+        now=NOW,
+    )
+    assert (unbounded.status, unbounded.reason) == (
+        "rejected",
+        "issuable_bounds_not_found",
+    )
     conn.close()

@@ -15,7 +15,7 @@ from vinctor_core.audit import (
 from vinctor_core.models import AuditEvent, Decision, Grant
 from vinctor_core.scope import is_valid_grant_scope, scope_subsumes
 from vinctor_service.audit import AuditWriter
-from vinctor_service.models import GrantIssueRequest, GrantIssueResult
+from vinctor_service.models import AgentIssuableBounds, GrantIssueRequest, GrantIssueResult
 from vinctor_service.repositories import GrantLifecycleRepository
 
 ScopeBoundsListing = tuple[tuple[str, tuple[str, ...]], ...]
@@ -30,6 +30,10 @@ class AgentIssuableScopeBoundsRepository(Protocol):
     def get_bounds(self, *, workspace_id: str, agent_id: str) -> tuple[str, ...] | None: ...
 
     def get_max_ttl_seconds(self, *, workspace_id: str, agent_id: str) -> int | None: ...
+
+    def get_bounds_with_max_ttl(
+        self, *, workspace_id: str, agent_id: str
+    ) -> AgentIssuableBounds | None: ...
 
     def list_bounds_for_workspace(self, workspace_id: str) -> ScopeBoundsListing: ...
 
@@ -57,6 +61,17 @@ class InMemoryAgentIssuableScopeBoundsRepository:
 
     def get_max_ttl_seconds(self, *, workspace_id: str, agent_id: str) -> int | None:
         return self._max_ttl.get((workspace_id, agent_id))
+
+    def get_bounds_with_max_ttl(
+        self, *, workspace_id: str, agent_id: str
+    ) -> AgentIssuableBounds | None:
+        scopes = self._bounds.get((workspace_id, agent_id))
+        if scopes is None:
+            return None
+        return AgentIssuableBounds(
+            scopes=scopes,
+            max_ttl_seconds=self._max_ttl.get((workspace_id, agent_id)),
+        )
 
     def list_bounds_for_workspace(self, workspace_id: str) -> ScopeBoundsListing:
         return tuple(
@@ -95,11 +110,11 @@ def issue_grant(
     if invalid_reason is not None:
         return GrantIssueResult(status="rejected", reason=invalid_reason)
 
-    bounds = scope_bounds_repository.get_bounds(
+    issuable = scope_bounds_repository.get_bounds_with_max_ttl(
         workspace_id=request.workspace_id,
         agent_id=request.target_agent_id,
     )
-    if bounds is None:
+    if issuable is None:
         _record_issue_rejection(audit_writer, request, REASON_ISSUABLE_BOUNDS_NOT_FOUND, now)
         return GrantIssueResult(
             status="rejected",
@@ -109,6 +124,10 @@ def issue_grant(
                 f"'{request.target_agent_id}'"
             ),
         )
+    # Scopes and max TTL come from ONE consistent snapshot of the bounds row,
+    # so a concurrent set_bounds cannot produce a torn (old-scopes, new-ttl)
+    # validation. Both checks below read from this single snapshot.
+    bounds = issuable.scopes
     if any(not is_valid_grant_scope(scope) for scope in bounds):
         return GrantIssueResult(status="rejected", reason="invalid_issuable_scope_bound")
     outside = _scopes_outside_bounds(request.requested_scopes, bounds)
@@ -123,10 +142,7 @@ def issue_grant(
             ),
         )
 
-    max_ttl_seconds = scope_bounds_repository.get_max_ttl_seconds(
-        workspace_id=request.workspace_id,
-        agent_id=request.target_agent_id,
-    )
+    max_ttl_seconds = issuable.max_ttl_seconds
     if max_ttl_seconds is not None and applied_ttl_seconds > max_ttl_seconds:
         _record_issue_rejection(audit_writer, request, REASON_TTL_EXCEEDS_ISSUABLE_MAX, now)
         return GrantIssueResult(

@@ -17,6 +17,7 @@ from vinctor_core import (
 from vinctor_core.models import AuditEvent, Grant
 from vinctor_service.audit_chain import GENESIS_PREV_HASH, AnchorRecord
 from vinctor_service.models import (
+    AgentIssuableBounds,
     GrantRequest,
     GrantRequestCreateRequest,
     SubjectToken,
@@ -31,6 +32,7 @@ from vinctor_service.policy_files import (
 from vinctor_service.policy_infer import infer_policy_document
 from vinctor_service.postgres import (
     PostgresAgentEnforcementSettingsRepository,
+    PostgresAgentIssuableScopeBoundsRepository,
     PostgresAuditWriter,
     PostgresBoundaryRegistry,
     PostgresGrantRepository,
@@ -91,6 +93,40 @@ def test_postgres_grant_repository_lifecycle() -> None:
     revoked = repository.revoke(grant_ref="grt_main", workspace_id="ws_main")
     assert revoked is not None
     assert revoked.status == "revoked"
+    conn.close()
+
+
+def test_postgres_scope_bounds_combined_read_matches_written_row() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    repository = PostgresAgentIssuableScopeBoundsRepository(conn)
+
+    repository.set_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        scopes=("write:repo/feature/*",),
+        max_ttl_seconds=900,
+        now=NOW,
+    )
+    repository.set_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_no_ttl",
+        scopes=("read:docs/*",),
+        now=NOW,
+    )
+
+    assert repository.get_bounds_with_max_ttl(
+        workspace_id="ws_main", agent_id="agent_release"
+    ) == AgentIssuableBounds(scopes=("write:repo/feature/*",), max_ttl_seconds=900)
+    assert repository.get_bounds_with_max_ttl(
+        workspace_id="ws_main", agent_id="agent_no_ttl"
+    ) == AgentIssuableBounds(scopes=("read:docs/*",), max_ttl_seconds=None)
+    assert (
+        repository.get_bounds_with_max_ttl(
+            workspace_id="ws_main", agent_id="agent_absent"
+        )
+        is None
+    )
     conn.close()
 
 

@@ -53,6 +53,7 @@ from vinctor_service.grants import (
     validate_issuable_scope_bounds,
 )
 from vinctor_service.models import (
+    AgentIssuableBounds,
     AutoApprovalEvaluationResult,
     AutoApprovalRule,
     GrantIssueRequest,
@@ -738,6 +739,26 @@ class SQLiteAgentIssuableScopeBoundsRepository:
         if row is None:
             return None
         return row[0]
+
+    def get_bounds_with_max_ttl(
+        self, *, workspace_id: str, agent_id: str
+    ) -> AgentIssuableBounds | None:
+        # Single-row read: scopes and max TTL come from one consistent snapshot
+        # of the bounds row (no torn read across a concurrent set_bounds).
+        row = self._conn.execute(
+            """
+            SELECT scopes_json, max_ttl_seconds
+            FROM agent_issuable_scope_bounds
+            WHERE workspace_id = ? AND agent_id = ?
+            """,
+            (workspace_id, agent_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return AgentIssuableBounds(
+            scopes=tuple(json.loads(row[0])),
+            max_ttl_seconds=row[1],
+        )
 
     def list_bounds_for_workspace(self, workspace_id: str) -> ScopeBoundsListing:
         rows = self._conn.execute(

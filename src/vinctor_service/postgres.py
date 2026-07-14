@@ -49,6 +49,7 @@ from vinctor_service.grants import (
     validate_issuable_scope_bounds,
 )
 from vinctor_service.models import (
+    AgentIssuableBounds,
     AutoApprovalEvaluationResult,
     AutoApprovalRule,
     GrantIssueRequest,
@@ -551,6 +552,24 @@ class PostgresAgentIssuableScopeBoundsRepository:
                 (workspace_id, agent_id),
             ).fetchone()
         return row[0] if row is not None else None
+
+    def get_bounds_with_max_ttl(
+        self, *, workspace_id: str, agent_id: str
+    ) -> AgentIssuableBounds | None:
+        # Single-row read: scopes and max TTL come from one consistent snapshot
+        # of the bounds row (no torn read across a concurrent set_bounds).
+        with self._conn.transaction():
+            row = self._conn.execute(
+                """
+                SELECT scopes_json, max_ttl_seconds FROM agent_issuable_scope_bounds
+                WHERE workspace_id = %s AND agent_id = %s
+                """,
+                (workspace_id, agent_id),
+            ).fetchone()
+        if row is None:
+            return None
+        scopes = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+        return AgentIssuableBounds(scopes=tuple(scopes), max_ttl_seconds=row[1])
 
     def list_bounds_for_workspace(self, workspace_id: str) -> ScopeBoundsListing:
         with self._conn.transaction():
