@@ -16,6 +16,8 @@ from vinctor_service.postgres import (
     connect_postgres,
     init_postgres_schema,
 )
+from vinctor_service.service_config import ServiceRuntimeConfig
+from vinctor_service.storage_runtime import prepare_decision_storage
 
 DSN = os.environ.get("VINCTOR_TEST_POSTGRES_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="VINCTOR_TEST_POSTGRES_DSN is not set")
@@ -57,6 +59,20 @@ def test_postgres_grant_repository_lifecycle() -> None:
     assert revoked is not None
     assert revoked.status == "revoked"
     conn.close()
+
+
+def test_postgres_runtime_selection_initializes_and_reports_ready() -> None:
+    assert DSN is not None
+
+    handle = prepare_decision_storage(
+        ServiceRuntimeConfig(storage_backend="postgres", postgres_dsn=DSN)
+    )
+    try:
+        assert handle.backend == "postgres"
+        assert isinstance(handle.service, PostgresV1Service)
+        assert handle.is_ready()
+    finally:
+        handle.close()
 
 
 def test_postgres_service_enforces_and_persists_audit() -> None:

@@ -105,6 +105,7 @@ from vinctor_service.sqlite import (
     init_sqlite_schema,
     insert_grant,
 )
+from vinctor_service.storage_runtime import DecisionStorageHandle, prepare_decision_storage
 from vinctor_service.subject_tokens import SubjectTokenMintResult
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 from vinctor_service.v1_http import (
@@ -132,6 +133,7 @@ __all__ = [
     "AuditWriter",
     "AGENT_KEY_PREFIX",
     "CreatedLocalKey",
+    "DecisionStorageHandle",
     "AgentEnforcementSettingsRepository",
     "AgentIssuableScopeBoundsRepository",
     "GrantIssueRequest",
@@ -220,6 +222,7 @@ __all__ = [
     "lookup_grant",
     "mask_key",
     "prepare_service_runtime",
+    "prepare_decision_storage",
     "reject_grant_request",
     "render_service_runtime_banner",
     "simulate_v1_contract",

@@ -30,13 +30,36 @@ service = PostgresV1Service(connection)
 Each process should own its connection or pool lease. Do not share one psycopg
 connection concurrently between worker threads.
 
+## Runtime selection foundation
+
+The decision-store startup path can now select and verify either backend from
+the shared runtime configuration:
+
+```bash
+export VINCTOR_STORAGE_BACKEND=postgres
+export VINCTOR_POSTGRES_DSN='postgresql://vinctor:secret@db/vinctor'
+```
+
+```python
+import os
+
+from vinctor_service import load_service_runtime_config, prepare_decision_storage
+
+storage = prepare_decision_storage(load_service_runtime_config(env=os.environ))
+assert storage.is_ready()
+```
+
+Startup initializes the supported schema, runs a `SELECT 1` readiness probe,
+and closes the connection if either step fails. SQLite remains the default.
+
 ## Deliberately not yet switched
 
 Local key storage, grant-request/approval workflows, subject tokens, agent
 enforcement settings, and boundary administration remain SQLite-backed. The
 local CLI therefore continues to select SQLite. Promoting Postgres to the
 default service runtime requires those repositories plus migration and backup
-runbooks; this slice does not imply that cutover.
+runbooks. `vinctor service serve` rejects a Postgres selection explicitly until
+that control-plane migration is complete instead of starting a partial service.
 
 ## Integration contract
 

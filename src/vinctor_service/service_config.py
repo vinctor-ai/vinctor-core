@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from vinctor_service.oidc import OidcConfig, load_oidc_config
@@ -13,6 +13,7 @@ DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS = 30
 SERVICE_MODES = ("local", "self_hosted")
 LOG_LEVELS = ("debug", "info", "warning", "error")
 KEY_STORAGE_MODE = "sqlite_hashes"
+STORAGE_BACKENDS = ("sqlite", "postgres")
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,8 @@ class ServiceRuntimeConfig:
     key_storage_mode: str = KEY_STORAGE_MODE
     metrics: bool = False
     access_log: bool = False
+    storage_backend: str = "sqlite"
+    postgres_dsn: str | None = field(default=None, repr=False)
     oidc: OidcConfig | None = None
 
     def __post_init__(self) -> None:
@@ -38,6 +41,14 @@ class ServiceRuntimeConfig:
             raise ValueError(f"log_level must be one of: {', '.join(LOG_LEVELS)}")
         if self.key_storage_mode != KEY_STORAGE_MODE:
             raise ValueError(f"key_storage_mode must be {KEY_STORAGE_MODE}")
+        if self.storage_backend not in STORAGE_BACKENDS:
+            raise ValueError(
+                f"storage_backend must be one of: {', '.join(STORAGE_BACKENDS)}"
+            )
+        if self.storage_backend == "postgres" and not self.postgres_dsn:
+            raise ValueError(
+                "VINCTOR_POSTGRES_DSN is required when storage_backend is postgres"
+            )
 
 
 def load_service_runtime_config(
@@ -49,6 +60,8 @@ def load_service_runtime_config(
     service_mode: str | None = None,
     metrics: bool | None = None,
     access_log: bool | None = None,
+    storage_backend: str | None = None,
+    postgres_dsn: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> ServiceRuntimeConfig:
     values = env or {}
@@ -69,6 +82,10 @@ def load_service_runtime_config(
         if access_log is not None
         else _parse_bool(values.get("VINCTOR_ACCESS_LOG"))
     )
+    resolved_storage_backend = (
+        storage_backend or values.get("VINCTOR_STORAGE_BACKEND") or "sqlite"
+    ).lower()
+    resolved_postgres_dsn = postgres_dsn or values.get("VINCTOR_POSTGRES_DSN")
     return ServiceRuntimeConfig(
         host=resolved_host,
         port=resolved_port,
@@ -77,6 +94,8 @@ def load_service_runtime_config(
         service_mode=resolved_service_mode,
         metrics=resolved_metrics,
         access_log=resolved_access_log,
+        storage_backend=resolved_storage_backend,
+        postgres_dsn=resolved_postgres_dsn,
         oidc=load_oidc_config(values),
     )
 

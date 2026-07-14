@@ -22,6 +22,8 @@ def test_service_runtime_config_defaults() -> None:
         log_level="info",
         service_mode="local",
         key_storage_mode=KEY_STORAGE_MODE,
+        storage_backend="sqlite",
+        postgres_dsn=None,
     )
 
 
@@ -43,6 +45,32 @@ def test_service_runtime_config_reads_environment(tmp_path: Path) -> None:
     assert config.sqlite_db_path == db_path
     assert config.log_level == "debug"
     assert config.service_mode == "self_hosted"
+
+
+def test_service_runtime_config_selects_postgres_from_environment() -> None:
+    config = load_service_runtime_config(
+        env={
+            "VINCTOR_STORAGE_BACKEND": "postgres",
+            "VINCTOR_POSTGRES_DSN": "postgresql://vinctor@db/vinctor",
+        }
+    )
+
+    assert config.storage_backend == "postgres"
+    assert config.postgres_dsn == "postgresql://vinctor@db/vinctor"
+
+
+def test_service_runtime_config_requires_dsn_for_postgres() -> None:
+    with pytest.raises(ValueError, match="VINCTOR_POSTGRES_DSN"):
+        load_service_runtime_config(env={"VINCTOR_STORAGE_BACKEND": "postgres"})
+
+
+def test_service_runtime_config_repr_does_not_expose_postgres_dsn() -> None:
+    config = ServiceRuntimeConfig(
+        storage_backend="postgres",
+        postgres_dsn="postgresql://vinctor:secret@db/vinctor",
+    )
+
+    assert "secret" not in repr(config)
 
 
 def test_service_runtime_config_cli_values_override_environment(tmp_path: Path) -> None:
@@ -77,6 +105,7 @@ def test_service_runtime_config_cli_values_override_environment(tmp_path: Path) 
         ({"port": 70000}, "port must be between"),
         ({"service_mode": "hosted"}, "service_mode must be one of"),
         ({"log_level": "verbose"}, "log_level must be one of"),
+        ({"storage_backend": "mysql"}, "storage_backend must be one of"),
     ],
 )
 def test_service_runtime_config_rejects_invalid_values(
