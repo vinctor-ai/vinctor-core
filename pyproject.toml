@@ -41,6 +41,9 @@ mcp = [
 postgres = [
   "psycopg[binary]>=3.2",
 ]
+oidc = [
+  "PyJWT[crypto]>=2.13,<3",
+]
 
 [project.scripts]
 vinctor = "vinctor_service.cli:main"

@@ -108,6 +108,28 @@ class V1ObserveResponse:
 
 
 @dataclass(frozen=True)
+class V1SimulateRequest:
+    workspace_id: str
+    agent_id: str
+    grant_ref: str
+    action: str
+    resource: str
+    boundary_id: str | None = None
+
+
+@dataclass(frozen=True)
+class V1SimulateResponse:
+    status_code: int
+    would_decision: Decision | None = None
+    error: str | None = None
+    reason: str | None = None
+    grant_id: str | None = None
+    agent_id: str | None = None
+    scope_matched: str | None = None
+    audit_event_id: str | None = None
+
+
+@dataclass(frozen=True)
 class GrantIssueRequest:
     workspace_id: str
     target_agent_id: str

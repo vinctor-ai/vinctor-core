@@ -423,8 +423,63 @@ def test_vinctor_cli_audit_export_requires_valid_workspace_key(tmp_path: Path) -
     )
 
     assert status == 4
-    assert "valid workspace key is required" in stderr.getvalue()
+    assert "valid workspace or auditor key is required" in stderr.getvalue()
     assert stdout.getvalue() == ""
+
+
+def test_vinctor_cli_audit_export_accepts_read_only_auditor_key(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_rejected_request_audit(db_path)
+    conn = sqlite3.connect(db_path)
+    SQLiteLocalKeyRepository(conn).create_auditor_key(
+        workspace_id="ws_demo", raw_key="auk_demo", now=NOW
+    )
+    conn.close()
+
+    output = _run_text(
+        [
+            "--db",
+            str(db_path),
+            "--auditor-key",
+            "auk_demo",
+            "operator",
+            "audit",
+            "export",
+            "--format",
+            "jsonl",
+        ]
+    )
+
+    assert '"event_type": "grant_requested"' in output
+    assert '"event_type": "grant_request_rejected"' in output
+
+
+def test_vinctor_cli_auth_failures_requires_service_operator_key(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    conn = sqlite3.connect(db_path)
+    service = SQLiteV1Service(conn)
+    SQLiteLocalKeyRepository(conn).create_service_operator_key(
+        raw_key="sok_demo", now=NOW
+    )
+    service.record_auth_failure(surface="enforce", boundary_id=None, now=NOW)
+    conn.close()
+
+    result = _run(
+        [
+            "--json",
+            "--db",
+            str(db_path),
+            "--service-operator-key",
+            "sok_demo",
+            "operator",
+            "audit",
+            "auth-failures",
+        ]
+    )
+
+    assert len(result["auth_failures"]) == 1
+    assert result["auth_failures"][0]["event_type"] == "auth_failed"
+    assert result["auth_failures"][0]["workspace_id"] == ""
 
 
 def test_vinctor_demo_check_runs_smoke_flow() -> None:
@@ -552,12 +607,13 @@ auto_approval_rules:
 
     assert applied == {
         "bounds_set": 1,
+        "policy_version": 1,
         "rules_created": 1,
         "rules_updated": 0,
         "workspace_id": "ws_demo",
     }
-    assert service_info["schema_versions"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
-    assert service_info["schema_version"] == 11
+    assert service_info["schema_versions"] == list(range(1, 13))
+    assert service_info["schema_version"] == 12
     assert exported["agent_bounds"] == 1
     assert exported["auto_approval_rules"] == 1
     assert bounds == ("execute:ci/test", "write:repo/vinctor-core/*")
@@ -615,6 +671,52 @@ require_boundary:
     exported_yaml = yaml.safe_load(exported_path.read_text(encoding="utf-8"))
     assert exported_yaml["require_boundary"]["workspace"] is True
     assert "agent_runner" in exported_yaml["require_boundary"]["agents"]
+
+
+def test_vinctor_cli_policy_versions_and_rollback(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    policy_path = tmp_path / "policy.yaml"
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+    policy_path.write_text(
+        """
+version: 1
+workspace_id: ws_demo
+agent_bounds:
+  - agent_id: agent_a
+    scopes: [read:repo/a]
+""".strip(),
+        encoding="utf-8",
+    )
+    _run([*common, "operator", "policy", "apply", "--file", str(policy_path)])
+    policy_path.write_text(
+        """
+version: 1
+workspace_id: ws_demo
+agent_bounds:
+  - agent_id: agent_b
+    scopes: [write:repo/b]
+""".strip(),
+        encoding="utf-8",
+    )
+    _run([*common, "operator", "policy", "apply", "--file", str(policy_path)])
+
+    listed = _run([*common, "operator", "policy", "versions"])
+    rolled_back = _run(
+        [*common, "operator", "policy", "rollback", "--version", "1"]
+    )
+
+    assert [item["version"] for item in listed["versions"]] == [1, 2]
+    assert rolled_back == {
+        "workspace_id": "ws_demo",
+        "restored_version": 1,
+        "policy_version": 3,
+    }
+    conn = sqlite3.connect(db_path)
+    service = SQLiteV1Service(conn)
+    assert service.scope_bounds_repository.list_bounds_for_workspace("ws_demo") == (
+        ("agent_a", ("read:repo/a",)),
+    )
+    conn.close()
 
 
 def test_vinctor_cli_policy_apply_is_atomic_on_invalid_later_entry(tmp_path: Path) -> None:
@@ -676,11 +778,11 @@ def test_vinctor_cli_storage_backup_and_reset(tmp_path: Path) -> None:
 
     assert backup["output_path"] == str(backup_path)
     assert backup["bytes"] > 0
-    assert backup["schema_versions"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    assert backup["schema_versions"] == list(range(1, 13))
     assert reset == {
         "db_path": str(db_path),
         "reset": True,
-        "schema_versions": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        "schema_versions": list(range(1, 13)),
     }
 
     backup_conn = sqlite3.connect(backup_path)
@@ -752,8 +854,8 @@ def test_vinctor_cli_service_info_reports_schema(tmp_path: Path) -> None:
 
     assert info["mode"] == "local"
     assert info["db_path"] == str(db_path)
-    assert info["schema_version"] == 11
-    assert info["schema_versions"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    assert info["schema_version"] == 12
+    assert info["schema_versions"] == list(range(1, 13))
     assert info["key_storage_mode"] == "sqlite_hashes"
     assert "host" in info
     assert "port" in info
@@ -789,7 +891,7 @@ def test_vinctor_cli_storage_restore_roundtrip(tmp_path: Path) -> None:
         "db_path": str(db_path),
         "input_path": str(backup_path),
         "restored": True,
-        "schema_versions": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        "schema_versions": list(range(1, 13)),
     }
     conn = sqlite3.connect(db_path)
     try:
@@ -869,7 +971,7 @@ def test_vinctor_cli_storage_migrate_reports_versions(tmp_path: Path) -> None:
 
     assert migrate == {
         "db_path": str(db_path),
-        "schema_versions": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        "schema_versions": list(range(1, 13)),
     }
     conn = sqlite3.connect(db_path)
     try:
@@ -1000,6 +1102,31 @@ def test_vinctor_cli_keys_rotate_agent(tmp_path: Path) -> None:
     assert rotated["raw_key"].startswith("aak_")
     assert rotated["key_type"] == "agent"
     assert rotated["agent_id"] == "agent_runner"
+
+
+def test_vinctor_cli_keys_rotate_auditor(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+
+    rotated = _run([*common, "operator", "keys", "rotate", "auditor"])
+    assert rotated["raw_key"].startswith("auk_")
+    assert rotated["key_type"] == "auditor"
+    assert rotated["agent_id"] is None
+
+
+def test_vinctor_cli_keys_rotate_service_operator(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+
+    rotated = _run([*common, "operator", "keys", "rotate", "service-operator"])
+    assert rotated["raw_key"].startswith("sok_")
+    assert rotated["key_type"] == "service_operator"
+    assert rotated["workspace_id"] == "*"
+
+    listed = _run([*common, "operator", "keys", "list", "--service"])
+    assert listed["keys"][0]["key_id"] == rotated["key_id"]
 
 
 def test_vinctor_cli_keys_rotate_pep(tmp_path: Path) -> None:

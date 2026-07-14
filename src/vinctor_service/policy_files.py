@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -22,6 +23,24 @@ class PolicyApplyResult:
     bounds_set: int
     rules_created: int
     rules_updated: int
+    policy_version: int
+
+
+@dataclass(frozen=True)
+class PolicyVersionInfo:
+    workspace_id: str
+    version: int
+    action: str
+    source_version: int | None
+    applied_by: str
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class PolicyRollbackResult:
+    workspace_id: str
+    restored_version: int
+    policy_version: int
 
 
 def apply_policy_file(
@@ -115,12 +134,364 @@ def apply_policy_file(
             now=now,
         )
 
+    policy_version = _record_policy_version(
+        service=service,
+        workspace_id=workspace_id,
+        action="apply",
+        source_version=None,
+        applied_by=applied_by,
+        now=now,
+    )
     return PolicyApplyResult(
         workspace_id=workspace_id,
         bounds_set=len(parsed_bounds),
         rules_created=rules_created,
         rules_updated=rules_updated,
+        policy_version=policy_version,
     )
+
+
+def list_policy_versions(
+    *, service: SQLiteV1Service, workspace_id: str
+) -> tuple[PolicyVersionInfo, ...]:
+    rows = service.conn.execute(
+        """
+        SELECT workspace_id, version, action, source_version, applied_by, created_at
+        FROM policy_versions
+        WHERE workspace_id = ?
+        ORDER BY version
+        """,
+        (workspace_id,),
+    ).fetchall()
+    return tuple(
+        PolicyVersionInfo(
+            workspace_id=row[0],
+            version=row[1],
+            action=row[2],
+            source_version=row[3],
+            applied_by=row[4],
+            created_at=datetime.fromisoformat(row[5]),
+        )
+        for row in rows
+    )
+
+
+def rollback_policy_version(
+    *,
+    service: SQLiteV1Service,
+    workspace_id: str,
+    version: int,
+    applied_by: str,
+    now: datetime,
+) -> PolicyRollbackResult:
+    row = service.conn.execute(
+        """
+        SELECT snapshot_json
+        FROM policy_versions
+        WHERE workspace_id = ? AND version = ?
+        """,
+        (workspace_id, version),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"unknown policy version: {version}")
+    snapshot = _validated_policy_snapshot(json.loads(row[0]))
+    with service.conn:
+        _restore_policy_snapshot(
+            service=service,
+            workspace_id=workspace_id,
+            snapshot=snapshot,
+            now=now,
+        )
+        new_version = _insert_policy_version(
+            service=service,
+            workspace_id=workspace_id,
+            action="rollback",
+            source_version=version,
+            applied_by=applied_by,
+            now=now,
+        )
+    return PolicyRollbackResult(
+        workspace_id=workspace_id,
+        restored_version=version,
+        policy_version=new_version,
+    )
+
+
+def _record_policy_version(
+    *,
+    service: SQLiteV1Service,
+    workspace_id: str,
+    action: str,
+    source_version: int | None,
+    applied_by: str,
+    now: datetime,
+) -> int:
+    with service.conn:
+        return _insert_policy_version(
+            service=service,
+            workspace_id=workspace_id,
+            action=action,
+            source_version=source_version,
+            applied_by=applied_by,
+            now=now,
+        )
+
+
+def _insert_policy_version(
+    *,
+    service: SQLiteV1Service,
+    workspace_id: str,
+    action: str,
+    source_version: int | None,
+    applied_by: str,
+    now: datetime,
+) -> int:
+    row = service.conn.execute(
+        "SELECT COALESCE(MAX(version), 0) FROM policy_versions WHERE workspace_id = ?",
+        (workspace_id,),
+    ).fetchone()
+    version = int(row[0]) + 1
+    snapshot = _snapshot_policy_state(service=service, workspace_id=workspace_id)
+    service.conn.execute(
+        """
+        INSERT INTO policy_versions (
+            workspace_id, version, action, source_version,
+            snapshot_json, applied_by, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            workspace_id,
+            version,
+            action,
+            source_version,
+            json.dumps(snapshot, sort_keys=True),
+            applied_by,
+            now.isoformat(),
+        ),
+    )
+    return version
+
+
+def _snapshot_policy_state(
+    *, service: SQLiteV1Service, workspace_id: str
+) -> dict[str, object]:
+    bounds = service.conn.execute(
+        """
+        SELECT agent_id, scopes_json, max_ttl_seconds, updated_at
+        FROM agent_issuable_scope_bounds
+        WHERE workspace_id = ?
+        ORDER BY agent_id
+        """,
+        (workspace_id,),
+    ).fetchall()
+    rules = service.conn.execute(
+        """
+        SELECT rule_id, name, target_agent_id, allowed_scopes_json,
+               max_ttl_seconds, status, created_by, created_at,
+               updated_by, updated_at
+        FROM auto_approval_rules
+        WHERE workspace_id = ?
+        ORDER BY created_at, rule_id
+        """,
+        (workspace_id,),
+    ).fetchall()
+    settings = service.conn.execute(
+        """
+        SELECT agent_id, require_boundary, updated_at
+        FROM agent_enforcement_settings
+        WHERE workspace_id = ? AND require_boundary_set = 1
+        ORDER BY agent_id
+        """,
+        (workspace_id,),
+    ).fetchall()
+    return {
+        "version": 1,
+        "agent_bounds": [
+            {
+                "agent_id": row[0],
+                "scopes": json.loads(row[1]),
+                "max_ttl_seconds": row[2],
+                "updated_at": row[3],
+            }
+            for row in bounds
+        ],
+        "auto_approval_rules": [
+            {
+                "rule_id": row[0],
+                "name": row[1],
+                "target_agent_id": row[2],
+                "allowed_scopes": json.loads(row[3]),
+                "max_ttl_seconds": row[4],
+                "status": row[5],
+                "created_by": row[6],
+                "created_at": row[7],
+                "updated_by": row[8],
+                "updated_at": row[9],
+            }
+            for row in rules
+        ],
+        "require_boundary_settings": [
+            {
+                "agent_id": row[0],
+                "require_boundary": bool(row[1]),
+                "updated_at": row[2],
+            }
+            for row in settings
+        ],
+    }
+
+
+def _validated_policy_snapshot(value: object) -> dict[str, Any]:
+    snapshot = _mapping(value, "policy snapshot")
+    if snapshot.get("version") != 1:
+        raise ValueError("unsupported policy snapshot version")
+    bounds = _required_list(snapshot, "agent_bounds")
+    rules = _required_list(snapshot, "auto_approval_rules")
+    settings = _required_list(snapshot, "require_boundary_settings")
+
+    for raw in bounds:
+        entry = _mapping(raw, "policy snapshot bound")
+        scopes = _required_string_list(entry, "scopes")
+        max_ttl = entry.get("max_ttl_seconds")
+        if max_ttl is not None and (not isinstance(max_ttl, int) or max_ttl <= 0):
+            raise ValueError("invalid policy snapshot bound max_ttl_seconds")
+        validate_issuable_scope_bounds(tuple(scopes), max_ttl_seconds=max_ttl)
+        _required_string(entry, "agent_id")
+        _required_string(entry, "updated_at")
+
+    for raw in rules:
+        entry = _mapping(raw, "policy snapshot rule")
+        for field in ("rule_id", "name", "target_agent_id", "created_by", "created_at"):
+            _required_string(entry, field)
+        scopes = _required_string_list(entry, "allowed_scopes")
+        if any(not is_valid_grant_scope(scope) for scope in scopes):
+            raise ValueError("invalid policy snapshot rule scope")
+        ttl = entry.get("max_ttl_seconds")
+        if not isinstance(ttl, int) or ttl <= 0:
+            raise ValueError("invalid policy snapshot rule max_ttl_seconds")
+        if entry.get("status") not in {"active", "disabled"}:
+            raise ValueError("invalid policy snapshot rule status")
+        if entry.get("updated_by") is not None:
+            _required_string(entry, "updated_by")
+        if entry.get("updated_at") is not None:
+            _required_string(entry, "updated_at")
+
+    for raw in settings:
+        entry = _mapping(raw, "policy snapshot boundary setting")
+        if not isinstance(entry.get("agent_id"), str):
+            raise ValueError("invalid policy snapshot boundary agent_id")
+        if not isinstance(entry.get("require_boundary"), bool):
+            raise ValueError("invalid policy snapshot require_boundary")
+        _required_string(entry, "updated_at")
+    return snapshot
+
+
+def _restore_policy_snapshot(
+    *,
+    service: SQLiteV1Service,
+    workspace_id: str,
+    snapshot: dict[str, Any],
+    now: datetime,
+) -> None:
+    conn = service.conn
+    conn.execute(
+        "DELETE FROM agent_issuable_scope_bounds WHERE workspace_id = ?",
+        (workspace_id,),
+    )
+    for entry in snapshot["agent_bounds"]:
+        conn.execute(
+            """
+            INSERT INTO agent_issuable_scope_bounds (
+                workspace_id, agent_id, scopes_json, max_ttl_seconds, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                workspace_id,
+                entry["agent_id"],
+                json.dumps(entry["scopes"]),
+                entry["max_ttl_seconds"],
+                entry["updated_at"],
+            ),
+        )
+
+    conn.execute("DELETE FROM auto_approval_rules WHERE workspace_id = ?", (workspace_id,))
+    for entry in snapshot["auto_approval_rules"]:
+        conn.execute(
+            """
+            INSERT INTO auto_approval_rules (
+                rule_id, workspace_id, name, target_agent_id,
+                allowed_scopes_json, max_ttl_seconds, status,
+                created_by, created_at, updated_by, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry["rule_id"],
+                workspace_id,
+                entry["name"],
+                entry["target_agent_id"],
+                json.dumps(entry["allowed_scopes"]),
+                entry["max_ttl_seconds"],
+                entry["status"],
+                entry["created_by"],
+                entry["created_at"],
+                entry["updated_by"],
+                entry["updated_at"],
+            ),
+        )
+
+    settings = snapshot["require_boundary_settings"]
+    conn.execute(
+        """
+        UPDATE agent_enforcement_settings
+        SET require_boundary_set = 0,
+            updated_at = ?
+        WHERE workspace_id = ?
+        """,
+        (now.isoformat(), workspace_id),
+    )
+    saved_agent_ids = [entry["agent_id"] for entry in settings]
+    if saved_agent_ids:
+        placeholders = ",".join("?" for _ in saved_agent_ids)
+        conn.execute(
+            f"""
+            DELETE FROM agent_enforcement_settings
+            WHERE workspace_id = ?
+              AND agent_id NOT IN ({placeholders})
+              AND require_boundary_set = 0
+              AND require_subject_token = 0
+              AND require_pop = 0
+            """,
+            (workspace_id, *saved_agent_ids),
+        )
+    else:
+        conn.execute(
+            """
+            DELETE FROM agent_enforcement_settings
+            WHERE workspace_id = ?
+              AND require_boundary_set = 0
+              AND require_subject_token = 0
+              AND require_pop = 0
+            """,
+            (workspace_id,),
+        )
+    for entry in settings:
+        conn.execute(
+            """
+            INSERT INTO agent_enforcement_settings (
+                workspace_id, agent_id, require_boundary, require_boundary_set, updated_at
+            ) VALUES (?, ?, ?, 1, ?)
+            ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
+                require_boundary = excluded.require_boundary,
+                require_boundary_set = 1,
+                updated_at = excluded.updated_at
+            """,
+            (
+                workspace_id,
+                entry["agent_id"],
+                1 if entry["require_boundary"] else 0,
+                now.isoformat(),
+            ),
+        )
 
 
 def export_policy_document(
