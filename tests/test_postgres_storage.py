@@ -353,6 +353,111 @@ def test_postgres_unrelated_setting_does_not_override_workspace_boundary() -> No
     conn.close()
 
 
+def test_postgres_unrelated_setting_does_not_drop_workspace_token_and_pop_mandates() -> None:
+    # SECURITY: an unrelated agent-level setting must NOT silently disable a
+    # workspace-wide require_subject_token / require_pop mandate. The shared
+    # settings row means "a row exists" was misread as "the agent explicitly
+    # set the mandate = its default false". Presence-bit gated.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    repo = PostgresAgentEnforcementSettingsRepository(conn)
+    repo.set_require_subject_token(
+        workspace_id="ws_main", agent_id="", require_subject_token=True, now=NOW
+    )
+    repo.set_require_pop(workspace_id="ws_main", agent_id="", require_pop=True, now=NOW)
+    repo.set_require_boundary(
+        workspace_id="ws_main", agent_id="agent_bound", require_boundary=False, now=NOW
+    )
+
+    assert repo.is_subject_token_required(
+        workspace_id="ws_main", agent_id="agent_bound"
+    ) is True
+    assert repo.is_pop_required(workspace_id="ws_main", agent_id="agent_bound") is True
+    conn.close()
+
+
+def test_postgres_explicit_subject_token_false_still_exempts() -> None:
+    # The presence bit must still let an operator EXPLICITLY exempt an agent.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    repo = PostgresAgentEnforcementSettingsRepository(conn)
+    repo.set_require_subject_token(
+        workspace_id="ws_main", agent_id="", require_subject_token=True, now=NOW
+    )
+    repo.set_require_subject_token(
+        workspace_id="ws_main",
+        agent_id="agent_exempt",
+        require_subject_token=False,
+        now=NOW,
+    )
+
+    assert repo.is_subject_token_required(
+        workspace_id="ws_main", agent_id="agent_exempt"
+    ) is False
+    conn.close()
+
+
+def test_postgres_enforcement_presence_migration_fail_closed() -> None:
+    # Upgrade path: recreate agent_enforcement_settings at the old schema
+    # (no *_set presence columns), seed rows, clear the version-5 gate, and
+    # re-run init_postgres_schema. Migrated rows must be fail-closed: a value
+    # counts as explicitly set only where it is already TRUE.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    with conn.transaction():
+        conn.execute("DROP TABLE agent_enforcement_settings")
+        conn.execute(
+            """
+            CREATE TABLE agent_enforcement_settings (
+                workspace_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                require_boundary BOOLEAN NOT NULL DEFAULT FALSE,
+                require_subject_token BOOLEAN NOT NULL DEFAULT FALSE,
+                require_pop BOOLEAN NOT NULL DEFAULT FALSE,
+                updated_at TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY (workspace_id, agent_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO agent_enforcement_settings
+                (workspace_id, agent_id, require_boundary, require_subject_token,
+                 require_pop, updated_at)
+            VALUES ('ws_main', '', TRUE, TRUE, TRUE, %s),
+                   ('ws_main', 'agent_subject', FALSE, TRUE, FALSE, %s),
+                   ('ws_main', 'agent_boundary', TRUE, FALSE, FALSE, %s)
+            """,
+            (NOW, NOW, NOW),
+        )
+        conn.execute("DELETE FROM schema_migrations WHERE version = 5")
+
+    init_postgres_schema(conn)
+    repo = PostgresAgentEnforcementSettingsRepository(conn)
+
+    # (a) A row that had require_subject_token=TRUE still reads as required.
+    assert repo.is_subject_token_required(
+        workspace_id="ws_main", agent_id="agent_subject"
+    ) is True
+    # (b) A row that only ever had an unrelated mandate must not drop the
+    # workspace require_subject_token / require_pop mandates.
+    assert repo.is_subject_token_required(
+        workspace_id="ws_main", agent_id="agent_boundary"
+    ) is True
+    assert repo.is_pop_required(
+        workspace_id="ws_main", agent_id="agent_boundary"
+    ) is True
+    assert repo.is_boundary_required(
+        workspace_id="ws_main", agent_id="agent_boundary"
+    ) is True
+    # (c) The require_boundary_set realignment stops a subject-token-only row
+    # from overriding the workspace boundary mandate.
+    assert repo.is_boundary_required(
+        workspace_id="ws_main", agent_id="agent_subject"
+    ) is True
+    conn.close()
+
+
 def test_postgres_policy_apply_versions_and_exact_rollback(tmp_path) -> None:
     assert DSN is not None
     conn = connect_postgres(DSN)

@@ -612,8 +612,8 @@ auto_approval_rules:
         "rules_updated": 0,
         "workspace_id": "ws_demo",
     }
-    assert service_info["schema_versions"] == list(range(1, 13))
-    assert service_info["schema_version"] == 12
+    assert service_info["schema_versions"] == list(range(1, 14))
+    assert service_info["schema_version"] == 13
     assert exported["agent_bounds"] == 1
     assert exported["auto_approval_rules"] == 1
     assert bounds == ("execute:ci/test", "write:repo/vinctor-core/*")
@@ -778,11 +778,11 @@ def test_vinctor_cli_storage_backup_and_reset(tmp_path: Path) -> None:
 
     assert backup["output_path"] == str(backup_path)
     assert backup["bytes"] > 0
-    assert backup["schema_versions"] == list(range(1, 13))
+    assert backup["schema_versions"] == list(range(1, 14))
     assert reset == {
         "db_path": str(db_path),
         "reset": True,
-        "schema_versions": list(range(1, 13)),
+        "schema_versions": list(range(1, 14)),
     }
 
     backup_conn = sqlite3.connect(backup_path)
@@ -854,8 +854,8 @@ def test_vinctor_cli_service_info_reports_schema(tmp_path: Path) -> None:
 
     assert info["mode"] == "local"
     assert info["db_path"] == str(db_path)
-    assert info["schema_version"] == 12
-    assert info["schema_versions"] == list(range(1, 13))
+    assert info["schema_version"] == 13
+    assert info["schema_versions"] == list(range(1, 14))
     assert info["key_storage_mode"] == "sqlite_hashes"
     assert "host" in info
     assert "port" in info
@@ -891,7 +891,7 @@ def test_vinctor_cli_storage_restore_roundtrip(tmp_path: Path) -> None:
         "db_path": str(db_path),
         "input_path": str(backup_path),
         "restored": True,
-        "schema_versions": list(range(1, 13)),
+        "schema_versions": list(range(1, 14)),
     }
     conn = sqlite3.connect(db_path)
     try:
@@ -971,7 +971,7 @@ def test_vinctor_cli_storage_migrate_reports_versions(tmp_path: Path) -> None:
 
     assert migrate == {
         "db_path": str(db_path),
-        "schema_versions": list(range(1, 13)),
+        "schema_versions": list(range(1, 14)),
     }
     conn = sqlite3.connect(db_path)
     try:

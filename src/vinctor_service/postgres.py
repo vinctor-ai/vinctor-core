@@ -114,6 +114,18 @@ class SerializedPostgresConnection:
         return getattr(self._connection, name)
 
 
+def _postgres_column_exists(conn: Any, table_name: str, column_name: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = %s AND column_name = %s
+        """,
+        (table_name, column_name),
+    ).fetchone()
+    return row is not None
+
+
 def init_postgres_schema(conn: Any) -> None:
     statements = (
         """
@@ -201,7 +213,9 @@ def init_postgres_schema(conn: Any) -> None:
             require_boundary BOOLEAN NOT NULL DEFAULT FALSE,
             require_boundary_set BOOLEAN NOT NULL DEFAULT FALSE,
             require_subject_token BOOLEAN NOT NULL DEFAULT FALSE,
+            require_subject_token_set BOOLEAN NOT NULL DEFAULT FALSE,
             require_pop BOOLEAN NOT NULL DEFAULT FALSE,
+            require_pop_set BOOLEAN NOT NULL DEFAULT FALSE,
             updated_at TIMESTAMPTZ NOT NULL,
             PRIMARY KEY (workspace_id, agent_id)
         )
@@ -209,6 +223,14 @@ def init_postgres_schema(conn: Any) -> None:
         """
         ALTER TABLE agent_enforcement_settings
         ADD COLUMN IF NOT EXISTS require_boundary_set BOOLEAN NOT NULL DEFAULT TRUE
+        """,
+        """
+        ALTER TABLE agent_enforcement_settings
+        ADD COLUMN IF NOT EXISTS require_subject_token_set BOOLEAN NOT NULL DEFAULT FALSE
+        """,
+        """
+        ALTER TABLE agent_enforcement_settings
+        ADD COLUMN IF NOT EXISTS require_pop_set BOOLEAN NOT NULL DEFAULT FALSE
         """,
         """
         CREATE TABLE IF NOT EXISTS agent_issuable_scope_bounds (
@@ -331,9 +353,51 @@ def init_postgres_schema(conn: Any) -> None:
         """,
     )
     with conn.transaction():
+        subject_token_set_missing = not _postgres_column_exists(
+            conn, "agent_enforcement_settings", "require_subject_token_set"
+        )
+        pop_set_missing = not _postgres_column_exists(
+            conn, "agent_enforcement_settings", "require_pop_set"
+        )
         for statement in statements:
             conn.execute(statement)
-        for version in (1, 2, 3, 4):
+        # Fail closed: a migrated row counts as an explicit setting only where
+        # its value is already TRUE; a FALSE value becomes "unset" and falls
+        # through to the workspace mandate instead of silently exempting the
+        # agent. Runs once, when the column is first added (a fresh database
+        # has no rows yet, so this is a no-op there).
+        if subject_token_set_missing:
+            conn.execute(
+                """
+                UPDATE agent_enforcement_settings
+                SET require_subject_token_set = require_subject_token
+                """
+            )
+        if pop_set_missing:
+            conn.execute(
+                "UPDATE agent_enforcement_settings SET require_pop_set = require_pop"
+            )
+        # One-time, version-gated realignment (schema version 5). The original
+        # require_boundary_set migration defaulted migrated rows to TRUE, so a
+        # row that only ever carried require_subject_token / require_pop read
+        # as an explicit require_boundary=false override, silently exempting
+        # the agent from a workspace-wide boundary mandate. Fail closed: mark
+        # boundary "set" only where require_boundary is already TRUE. Gated on
+        # the version record (this UPDATE is not idempotent by itself) so an
+        # explicit exemption written after the upgrade is never clobbered by a
+        # later init.
+        realignment_applied = conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = %s",
+            (5,),
+        ).fetchone()
+        if realignment_applied is None:
+            conn.execute(
+                """
+                UPDATE agent_enforcement_settings
+                SET require_boundary_set = require_boundary
+                """
+            )
+        for version in (1, 2, 3, 4, 5):
             conn.execute(
                 """
                 INSERT INTO schema_migrations (version, applied_at)
@@ -639,7 +703,16 @@ class PostgresBoundaryRegistry:
 
 
 class PostgresAgentEnforcementSettingsRepository:
-    _COLUMNS = {"require_boundary", "require_subject_token", "require_pop"}
+    # Maps each enforcement setting column to the presence bit that records
+    # whether the setting was explicitly written for the row. Rows are shared
+    # between the three settings, so "a row exists" must never be read as "the
+    # agent explicitly set this mandate".
+    _PRESENCE = {
+        "require_boundary": "require_boundary_set",
+        "require_subject_token": "require_subject_token_set",
+        "require_pop": "require_pop_set",
+    }
+    _COLUMNS = frozenset(_PRESENCE)
 
     def __init__(self, conn: Any) -> None:
         self._conn = conn
@@ -647,12 +720,12 @@ class PostgresAgentEnforcementSettingsRepository:
     def _get(self, column: str, *, workspace_id: str, agent_id: str) -> bool | None:
         if column not in self._COLUMNS:
             raise ValueError("unknown enforcement setting")
-        presence = " AND require_boundary_set" if column == "require_boundary" else ""
+        presence = self._PRESENCE[column]
         with self._conn.transaction():
             row = self._conn.execute(
                 f"""
                 SELECT {column} FROM agent_enforcement_settings
-                WHERE workspace_id = %s AND agent_id = %s{presence}
+                WHERE workspace_id = %s AND agent_id = %s AND {presence}
                 """,
                 (workspace_id, agent_id),
             ).fetchone()
@@ -676,30 +749,25 @@ class PostgresAgentEnforcementSettingsRepository:
     ) -> None:
         if column not in self._COLUMNS:
             raise ValueError("unknown enforcement setting")
-        if column == "require_boundary":
-            with self._conn.transaction():
-                self._conn.execute(
-                    """
-                    INSERT INTO agent_enforcement_settings (
-                        workspace_id, agent_id, require_boundary,
-                        require_boundary_set, updated_at
-                    ) VALUES (%s, %s, %s, TRUE, %s)
-                    ON CONFLICT (workspace_id, agent_id) DO UPDATE SET
-                        require_boundary = EXCLUDED.require_boundary,
-                        require_boundary_set = TRUE,
-                        updated_at = EXCLUDED.updated_at
-                    """,
-                    (workspace_id, agent_id, value, now),
-                )
-            return
+        presence = self._PRESENCE[column]
+        # On INSERT every presence bit is written explicitly (its own = TRUE,
+        # the other two = FALSE): an ALTER-time column default is baked into
+        # each migrated database, so relying on defaults for the un-set bits
+        # is unsafe. On conflict only this setting's value and presence bit
+        # are touched, preserving the other two.
+        other_bits = ", ".join(
+            bit for name, bit in self._PRESENCE.items() if name != column
+        )
         with self._conn.transaction():
             self._conn.execute(
                 f"""
                 INSERT INTO agent_enforcement_settings (
-                    workspace_id, agent_id, {column}, updated_at
-                ) VALUES (%s, %s, %s, %s)
+                    workspace_id, agent_id, {column},
+                    {presence}, {other_bits}, updated_at
+                ) VALUES (%s, %s, %s, TRUE, FALSE, FALSE, %s)
                 ON CONFLICT (workspace_id, agent_id) DO UPDATE SET
                     {column} = EXCLUDED.{column},
+                    {presence} = TRUE,
                     updated_at = EXCLUDED.updated_at
                 """,
                 (workspace_id, agent_id, value, now),

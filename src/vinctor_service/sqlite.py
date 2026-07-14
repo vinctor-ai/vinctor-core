@@ -220,7 +220,9 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             require_boundary INTEGER NOT NULL DEFAULT 0,
             require_boundary_set INTEGER NOT NULL DEFAULT 0,
             require_subject_token INTEGER NOT NULL DEFAULT 0,
+            require_subject_token_set INTEGER NOT NULL DEFAULT 0,
             require_pop INTEGER NOT NULL DEFAULT 0,
+            require_pop_set INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (workspace_id, agent_id)
         );
@@ -258,7 +260,10 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
     _ensure_agent_enforcement_require_subject_token_column(conn)
     _ensure_agent_enforcement_require_pop_column(conn)
     _ensure_agent_enforcement_require_boundary_set_column(conn)
+    _ensure_agent_enforcement_require_subject_token_set_column(conn)
+    _ensure_agent_enforcement_require_pop_set_column(conn)
     _ensure_audit_events_hashchain_columns(conn)
+    _realign_agent_enforcement_require_boundary_set(conn)
     conn.execute(
         """
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
@@ -342,6 +347,13 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         VALUES (?, ?)
         """,
         (12, datetime.now(UTC).isoformat()),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (13, datetime.now(UTC).isoformat()),
     )
     conn.commit()
 
@@ -463,9 +475,70 @@ def _ensure_agent_enforcement_require_boundary_set_column(
         # Existing rows previously always acted as explicit boundary overrides.
         # Defaulting migrated rows to 1 preserves that behavior; freshly created
         # schemas default to 0 so unrelated settings do not create an override.
+        # _realign_agent_enforcement_require_boundary_set then corrects the
+        # preserve-all default to the fail-closed value-derived presence.
         conn.execute(
             "ALTER TABLE agent_enforcement_settings "
             "ADD COLUMN require_boundary_set INTEGER NOT NULL DEFAULT 1"
+        )
+
+
+def _ensure_agent_enforcement_require_subject_token_set_column(
+    conn: sqlite3.Connection,
+) -> None:
+    existing_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(agent_enforcement_settings)").fetchall()
+    }
+    if "require_subject_token_set" not in existing_columns:
+        # Fail closed: a migrated row counts as an explicit setting only where
+        # its value is already TRUE. A FALSE value becomes "unset" and falls
+        # through to the workspace mandate instead of silently exempting the
+        # agent. Runs once, when the column is first added.
+        conn.execute(
+            "ALTER TABLE agent_enforcement_settings "
+            "ADD COLUMN require_subject_token_set INTEGER NOT NULL DEFAULT 0"
+        )
+        conn.execute(
+            "UPDATE agent_enforcement_settings "
+            "SET require_subject_token_set = require_subject_token"
+        )
+
+
+def _ensure_agent_enforcement_require_pop_set_column(
+    conn: sqlite3.Connection,
+) -> None:
+    existing_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(agent_enforcement_settings)").fetchall()
+    }
+    if "require_pop_set" not in existing_columns:
+        # Fail closed, mirroring require_subject_token_set above.
+        conn.execute(
+            "ALTER TABLE agent_enforcement_settings "
+            "ADD COLUMN require_pop_set INTEGER NOT NULL DEFAULT 0"
+        )
+        conn.execute(
+            "UPDATE agent_enforcement_settings SET require_pop_set = require_pop"
+        )
+
+
+def _realign_agent_enforcement_require_boundary_set(conn: sqlite3.Connection) -> None:
+    # One-time, version-gated realignment (schema version 13). The original
+    # require_boundary_set migration defaulted migrated rows to 1, so a row
+    # that only ever carried require_subject_token / require_pop read as an
+    # explicit require_boundary=false override, silently exempting the agent
+    # from a workspace-wide boundary mandate. Fail closed: mark boundary "set"
+    # only where require_boundary is already TRUE. Gated on the version record
+    # (this UPDATE is not idempotent by itself) so an explicit exemption
+    # written after the upgrade is never clobbered by a later init.
+    already_applied = conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE version = ?",
+        (13,),
+    ).fetchone()
+    if already_applied is None:
+        conn.execute(
+            "UPDATE agent_enforcement_settings SET require_boundary_set = require_boundary"
         )
 
 
@@ -712,8 +785,9 @@ class SQLiteAgentEnforcementSettingsRepository:
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
-                    workspace_id, agent_id, require_boundary, require_boundary_set, updated_at
-                ) VALUES (?, ?, ?, 1, ?)
+                    workspace_id, agent_id, require_boundary, require_boundary_set,
+                    require_subject_token_set, require_pop_set, updated_at
+                ) VALUES (?, ?, ?, 1, 0, 0, ?)
                 ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
                     require_boundary = excluded.require_boundary,
                     require_boundary_set = 1,
@@ -728,7 +802,7 @@ class SQLiteAgentEnforcementSettingsRepository:
         row = self._conn.execute(
             """
             SELECT require_subject_token FROM agent_enforcement_settings
-            WHERE workspace_id = ? AND agent_id = ?
+            WHERE workspace_id = ? AND agent_id = ? AND require_subject_token_set = 1
             """,
             (workspace_id, agent_id),
         ).fetchone()
@@ -750,10 +824,12 @@ class SQLiteAgentEnforcementSettingsRepository:
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
-                    workspace_id, agent_id, require_subject_token, require_boundary_set, updated_at
-                ) VALUES (?, ?, ?, 0, ?)
+                    workspace_id, agent_id, require_subject_token, require_subject_token_set,
+                    require_boundary_set, require_pop_set, updated_at
+                ) VALUES (?, ?, ?, 1, 0, 0, ?)
                 ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
                     require_subject_token = excluded.require_subject_token,
+                    require_subject_token_set = 1,
                     updated_at = excluded.updated_at
                 """,
                 (workspace_id, agent_id, 1 if require_subject_token else 0, now.isoformat()),
@@ -763,7 +839,7 @@ class SQLiteAgentEnforcementSettingsRepository:
         row = self._conn.execute(
             """
             SELECT require_pop FROM agent_enforcement_settings
-            WHERE workspace_id = ? AND agent_id = ?
+            WHERE workspace_id = ? AND agent_id = ? AND require_pop_set = 1
             """,
             (workspace_id, agent_id),
         ).fetchone()
@@ -783,10 +859,12 @@ class SQLiteAgentEnforcementSettingsRepository:
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
-                    workspace_id, agent_id, require_pop, require_boundary_set, updated_at
-                ) VALUES (?, ?, ?, 0, ?)
+                    workspace_id, agent_id, require_pop, require_pop_set,
+                    require_boundary_set, require_subject_token_set, updated_at
+                ) VALUES (?, ?, ?, 1, 0, 0, ?)
                 ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
                     require_pop = excluded.require_pop,
+                    require_pop_set = 1,
                     updated_at = excluded.updated_at
                 """,
                 (workspace_id, agent_id, 1 if require_pop else 0, now.isoformat()),
