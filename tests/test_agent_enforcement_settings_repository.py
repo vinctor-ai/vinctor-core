@@ -28,10 +28,50 @@ def test_sqlite_default_false_and_round_trip(tmp_path) -> None:
     assert repo.get_require_boundary(workspace_id="ws", agent_id="a") is True
 
 
-def test_sqlite_schema_records_version_6(tmp_path) -> None:
+def test_sqlite_schema_records_latest_version(tmp_path) -> None:
     conn = sqlite3.connect(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
-    assert get_sqlite_schema_versions(conn) == (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)
+    assert get_sqlite_schema_versions(conn) == tuple(range(1, 13))
+
+
+def test_unrelated_agent_setting_does_not_override_workspace_boundary(tmp_path) -> None:
+    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    init_sqlite_schema(conn)
+    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    repo.set_require_boundary(
+        workspace_id="ws", agent_id="", require_boundary=True, now=NOW
+    )
+    repo.set_require_subject_token(
+        workspace_id="ws", agent_id="a", require_subject_token=True, now=NOW
+    )
+    assert repo.is_boundary_required(workspace_id="ws", agent_id="a") is True
+
+
+def test_boundary_override_presence_migration_preserves_existing_rows(tmp_path) -> None:
+    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn.executescript(
+        """
+        CREATE TABLE agent_enforcement_settings (
+            workspace_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            require_boundary INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, agent_id)
+        );
+        INSERT INTO agent_enforcement_settings
+            (workspace_id, agent_id, require_boundary, updated_at)
+        VALUES ('ws', 'enabled', 1, '2026-01-01T00:00:00+00:00'),
+               ('ws', 'disabled', 0, '2026-01-01T00:00:00+00:00');
+        """
+    )
+    init_sqlite_schema(conn)
+    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    assert repo.get_require_boundary_setting(
+        workspace_id="ws", agent_id="enabled"
+    ) is True
+    assert repo.get_require_boundary_setting(
+        workspace_id="ws", agent_id="disabled"
+    ) is False
 
 
 def test_in_memory_require_pop_default_false_and_set_get() -> None:

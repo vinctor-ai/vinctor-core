@@ -342,7 +342,15 @@ vinctor operator rules disable <rule_id>
 
 vinctor operator policy apply  --file policy.yaml   # bounds + rules in one file
 vinctor operator policy export --file policy.yaml
+vinctor operator policy versions
+vinctor operator policy rollback --version 3
 ```
+
+Each successful apply appends an immutable workspace version. Rollback restores
+the selected version's issuance bounds, auto-approval rules, and explicit
+require-boundary settings, then appends a new version that records the rollback
+and its source. Subject-token and PoP settings are outside policy-file state and
+are preserved.
 
 For the policy-file format, see
 [Operator policy authoring](operator-policy-authoring/policy-file.md).
