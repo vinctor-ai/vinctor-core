@@ -758,10 +758,23 @@ VINCTOR_AUDIT_EXPORT=otlp-http:http://otel-collector:4318/v1/logs \
 ```
 
 The exporter sends OTLP JSON (`ExportLogsServiceRequest`) on a bounded
-background queue. Audit persistence completes first; a slow, unavailable, or
-full collector never changes an enforcement decision. Delivery is therefore
-best-effort in this first slice. Use the workspace-key-gated
-`operator audit export` command to replay or reconcile the durable record.
+background queue. It batches up to 32 records, retries transient network,
+`408`, `429`, and `5xx` failures up to three times with exponential backoff,
+and performs a bounded flush when the service closes. Audit persistence
+completes first; a slow, unavailable, or full collector never changes an
+enforcement decision.
+
+Tune delivery without moving it onto the enforcement path:
+
+```bash
+export VINCTOR_AUDIT_EXPORT_BATCH_SIZE=64
+export VINCTOR_AUDIT_EXPORT_MAX_ATTEMPTS=5
+export VINCTOR_AUDIT_EXPORT_RETRY_BACKOFF_SECONDS=0.25
+```
+
+The in-memory outbound queue is not durable, so delivery remains best effort.
+Use the workspace-key-gated `operator audit export` command to replay or
+reconcile the authoritative durable record.
 
 ## Development Principles
 

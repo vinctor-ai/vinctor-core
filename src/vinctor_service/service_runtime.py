@@ -26,6 +26,9 @@ class ServiceRuntimeHandle:
 
     def close(self) -> None:
         self.server.server_close()
+        close_export = getattr(self.service.audit_writer, "close_export", None)
+        if callable(close_export):
+            close_export()
         self.conn.close()
 
 

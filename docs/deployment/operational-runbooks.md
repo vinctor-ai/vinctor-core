@@ -298,8 +298,13 @@ VINCTOR_AUDIT_EXPORT=otlp-http:http://otel-collector:4318/v1/logs \
   vinctor service serve
 ```
 
-The local database remains authoritative. Collector failures are fail-open and
-reported on stderr; use `operator audit export` to reconcile missed events.
+The local database remains authoritative. The exporter batches up to 32 events
+per request and retries network, `408`, `429`, and `5xx` failures up to three
+times with exponential backoff. Configure those bounds with
+`VINCTOR_AUDIT_EXPORT_BATCH_SIZE`, `VINCTOR_AUDIT_EXPORT_MAX_ATTEMPTS`, and
+`VINCTOR_AUDIT_EXPORT_RETRY_BACKOFF_SECONDS`. Collector failures and queue or
+shutdown-flush timeouts are fail-open and reported on stderr; use `operator
+audit export` to reconcile missed events.
 
 Capture the service's stdout/stderr through your supervisor:
 
