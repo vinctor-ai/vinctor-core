@@ -32,8 +32,11 @@ class AuditReadService(Protocol):
         limit: int | None = None,
     ) -> tuple[AuditEvent, ...]: ...
 
+    def list_auth_failures(self, *, limit: int) -> tuple[AuditEvent, ...]: ...
+
 
 WorkspaceIdentityResolver = Callable[[str, datetime], WorkspaceIdentity | None]
+ServiceOperatorResolver = Callable[[str, datetime], bool]
 
 
 @dataclass(frozen=True)
@@ -58,17 +61,25 @@ def handle_v1_audit_events_http(
     headers: Mapping[str, str],
     workspace_identities: Mapping[str, WorkspaceIdentity] | None = None,
     workspace_identity_resolver: WorkspaceIdentityResolver | None = None,
+    auditor_identities: Mapping[str, WorkspaceIdentity] | None = None,
+    auditor_identity_resolver: WorkspaceIdentityResolver | None = None,
     service: AuditReadService,
     now: datetime,
 ) -> V1HttpResponse:
-    identity = _workspace_identity(
+    identity = _audit_identity(
         headers,
         workspace_identities=workspace_identities,
         workspace_identity_resolver=workspace_identity_resolver,
+        auditor_identities=auditor_identities,
+        auditor_identity_resolver=auditor_identity_resolver,
         now=now,
     )
     if identity is None:
-        return _error(401, "authentication_required", "valid X-Workspace-Key header is required")
+        return _error(
+            401,
+            "authentication_required",
+            "valid X-Workspace-Key or X-Auditor-Key header is required",
+        )
 
     if path == "/v1/audit-events":
         if method != "GET":
@@ -112,20 +123,73 @@ def handle_v1_audit_events_http(
     return _error(404, "not_found", "route not found")
 
 
-def _workspace_identity(
+def handle_v1_service_auth_failures_http(
+    *,
+    method: str,
+    path: str,
+    query_string: str,
+    headers: Mapping[str, str],
+    service_operator_keys: set[str] | None = None,
+    service_operator_resolver: ServiceOperatorResolver | None = None,
+    service: AuditReadService,
+    now: datetime,
+) -> V1HttpResponse:
+    normalized = {key.lower(): value for key, value in headers.items()}
+    raw_key = normalized.get("x-service-operator-key")
+    authenticated = False
+    if raw_key is not None:
+        authenticated = (
+            service_operator_resolver(raw_key, now)
+            if service_operator_resolver is not None
+            else raw_key in (service_operator_keys or set())
+        )
+    if not authenticated:
+        return _error(
+            401,
+            "authentication_required",
+            "valid X-Service-Operator-Key header is required",
+        )
+    if path != "/v1/service/audit/auth-failures":
+        return _error(404, "not_found", "route not found")
+    if method != "GET":
+        return _error(405, "method_not_allowed", "GET is required")
+    params = parse_qs(query_string, keep_blank_values=True)
+    if set(params) - {"limit"}:
+        return _error(400, "invalid_request", "only limit is supported")
+    try:
+        limit = int(params.get("limit", ["20"])[0])
+    except ValueError:
+        return _error(400, "invalid_request", "limit must be an integer")
+    if limit <= 0 or limit > 200:
+        return _error(400, "invalid_request", "limit must be between 1 and 200")
+    events = service.list_auth_failures(limit=limit)
+    return V1HttpResponse(
+        status_code=200,
+        body={"auth_failures": [_audit_event_body(event) for event in events]},
+    )
+
+
+def _audit_identity(
     headers: Mapping[str, str],
     *,
     workspace_identities: Mapping[str, WorkspaceIdentity] | None,
     workspace_identity_resolver: WorkspaceIdentityResolver | None,
+    auditor_identities: Mapping[str, WorkspaceIdentity] | None,
+    auditor_identity_resolver: WorkspaceIdentityResolver | None,
     now: datetime,
 ) -> WorkspaceIdentity | None:
     normalized_headers = {key.lower(): value for key, value in headers.items()}
     workspace_key = normalized_headers.get("x-workspace-key")
-    if workspace_key is None:
+    if workspace_key is not None:
+        if workspace_identity_resolver is not None:
+            return workspace_identity_resolver(workspace_key, now)
+        return (workspace_identities or {}).get(workspace_key)
+    auditor_key = normalized_headers.get("x-auditor-key")
+    if auditor_key is None:
         return None
-    if workspace_identity_resolver is not None:
-        return workspace_identity_resolver(workspace_key, now)
-    return (workspace_identities or {}).get(workspace_key)
+    if auditor_identity_resolver is not None:
+        return auditor_identity_resolver(auditor_key, now)
+    return (auditor_identities or {}).get(auditor_key)
 
 
 def _parse_filters(query_string: str) -> AuditEventFilters | V1HttpResponse:
