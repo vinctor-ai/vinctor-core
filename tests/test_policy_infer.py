@@ -90,6 +90,105 @@ def test_proposes_exact_scopes_from_mapped_observations_only():
     assert [s["scope"] for s in doc["proposed"]["scopes"]] == [
         "read:repo/feature/readme"
     ]
+    assert doc["proposed"]["scopes"][0]["evidence"] == {
+        "enforced": 0,
+        "observed": 1,
+        "simulated": 0,
+    }
+
+
+def test_infer_reports_evidence_sources_and_simulation_outcomes():
+    events = [
+        _event(
+            agent_id="a1",
+            action="read",
+            resource="repo/feature/readme",
+            decision="permit",
+            event_type="action_observed",
+            created_at=datetime(2026, 7, 1, tzinfo=UTC),
+        ),
+        _event(
+            agent_id="a1",
+            action="read",
+            resource="repo/feature/readme",
+            decision="permit",
+            event_type="action_would_permit",
+            created_at=datetime(2026, 7, 2, tzinfo=UTC),
+        ),
+        _event(
+            agent_id="a1",
+            action="write",
+            resource="repo/other/readme",
+            decision="deny",
+            event_type="action_would_deny",
+            created_at=datetime(2026, 7, 2, tzinfo=UTC),
+        ),
+        _event(
+            agent_id="a1",
+            action="",
+            resource="",
+            decision="permit",
+            event_type="action_unmapped",
+            created_at=datetime(2026, 7, 2, tzinfo=UTC),
+        ),
+    ]
+
+    doc = infer_policy_document(events, agent_id="a1")
+
+    scope = doc["proposed"]["scopes"][0]
+    assert scope["count"] == 2
+    assert scope["evidence"] == {
+        "enforced": 0,
+        "observed": 1,
+        "simulated": 1,
+    }
+    assert doc["proposed"]["evidence_summary"] == {
+        "enforced_permit": 0,
+        "observed_mapped": 1,
+        "observed_unmapped": 1,
+        "simulated_permit": 1,
+        "simulated_deny": 1,
+    }
+
+
+def test_infer_ignores_non_action_permit_events():
+    events = [
+        _event(
+            agent_id="a1",
+            action="write",
+            resource="repo/feature/readme",
+            decision="permit",
+            event_type="grant_issued",
+            created_at=datetime(2026, 7, 1, tzinfo=UTC),
+        )
+    ]
+
+    doc = infer_policy_document(events, agent_id="a1")
+
+    assert doc["proposed"]["scopes"] == []
+
+
+def test_min_observations_filters_before_wildcard_generalization():
+    events = [
+        _event(agent_id="a1", action="read", resource="repo/feature/a",
+               decision="permit", created_at=datetime(2026, 7, 1, tzinfo=UTC)),
+        _event(agent_id="a1", action="read", resource="repo/feature/b",
+               decision="permit", created_at=datetime(2026, 7, 1, tzinfo=UTC)),
+        _event(agent_id="a1", action="read", resource="repo/feature/b",
+               decision="permit", created_at=datetime(2026, 7, 2, tzinfo=UTC)),
+    ]
+
+    doc = infer_policy_document(
+        events,
+        agent_id="a1",
+        generalize=True,
+        min_observations=2,
+    )
+
+    assert [entry["scope"] for entry in doc["proposed"]["scopes"]] == [
+        "read:repo/feature/b"
+    ]
+    assert doc["proposed"]["minimum_observations"] == 2
 
 
 def test_since_and_until_window_filters_events():
@@ -167,3 +266,33 @@ def test_cli_policy_infer_emits_yaml_proposal(tmp_path: Path):
     doc = yaml.safe_load(stdout.getvalue())
     assert doc["proposed"]["apply"] is False
     assert [s["scope"] for s in doc["proposed"]["scopes"]] == ["read:repo/feature/readme"]
+
+
+def test_cli_policy_infer_supports_min_observations(tmp_path: Path):
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed(db_path, [
+        _event(agent_id="a1", action="read", resource="repo/feature/once",
+               decision="permit", created_at=datetime(2026, 7, 1, tzinfo=UTC)),
+        _event(agent_id="a1", action="read", resource="repo/feature/repeated",
+               decision="permit", created_at=datetime(2026, 7, 1, tzinfo=UTC)),
+        _event(agent_id="a1", action="read", resource="repo/feature/repeated",
+               decision="permit", created_at=datetime(2026, 7, 2, tzinfo=UTC)),
+    ])
+    stdout = StringIO()
+
+    status = run_vinctor(
+        [
+            "--db", str(db_path),
+            "operator", "policy", "infer",
+            "--agent", "a1",
+            "--min-observations", "2",
+        ],
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    assert status == 0
+    doc = yaml.safe_load(stdout.getvalue())
+    assert [entry["scope"] for entry in doc["proposed"]["scopes"]] == [
+        "read:repo/feature/repeated"
+    ]

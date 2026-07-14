@@ -64,9 +64,12 @@ from vinctor_service.models import (
     V1EnforceResponse,
     V1ObserveRequest,
     V1ObserveResponse,
+    V1SimulateRequest,
+    V1SimulateResponse,
 )
 from vinctor_service.observations import record_observation
 from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS
+from vinctor_service.simulations import simulate_v1_contract
 from vinctor_service.subject_tokens import mint_subject_token
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 
@@ -747,8 +750,8 @@ class SQLiteAgentEnforcementSettingsRepository:
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
-                    workspace_id, agent_id, require_subject_token, updated_at
-                ) VALUES (?, ?, ?, ?)
+                    workspace_id, agent_id, require_subject_token, require_boundary_set, updated_at
+                ) VALUES (?, ?, ?, 0, ?)
                 ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
                     require_subject_token = excluded.require_subject_token,
                     updated_at = excluded.updated_at
@@ -780,8 +783,8 @@ class SQLiteAgentEnforcementSettingsRepository:
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
-                    workspace_id, agent_id, require_pop, updated_at
-                ) VALUES (?, ?, ?, ?)
+                    workspace_id, agent_id, require_pop, require_boundary_set, updated_at
+                ) VALUES (?, ?, ?, 0, ?)
                 ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
                     require_pop = excluded.require_pop,
                     updated_at = excluded.updated_at
@@ -1225,6 +1228,18 @@ class SQLiteAuditWriter:
             """
         ).fetchall()
         return [_audit_event_from_json(row[0]) for row in rows]
+
+    def list_auth_failures(self, *, limit: int) -> tuple[AuditEvent, ...]:
+        rows = self._conn.execute(
+            """
+            SELECT event_json FROM audit_events
+            WHERE workspace_id = '' AND event_type = 'auth_failed'
+            ORDER BY rowid DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return tuple(_audit_event_from_json(row[0]) for row in reversed(rows))
 
     def list_filtered(
         self,
@@ -1707,6 +1722,9 @@ class SQLiteV1Service:
     def get_audit_event(self, event_id: str) -> AuditEvent | None:
         return self.audit_writer.get(event_id)
 
+    def list_auth_failures(self, *, limit: int) -> tuple[AuditEvent, ...]:
+        return self.audit_writer.list_auth_failures(limit=limit)
+
     def list_filtered(
         self,
         workspace_id: str,
@@ -1809,6 +1827,16 @@ class SQLiteV1Service:
             audit_writer=self.audit_writer,
             now=now,
             boundary_registry=self.boundary_registry,
+        )
+
+    def simulate(self, request: V1SimulateRequest, *, now: datetime) -> V1SimulateResponse:
+        return simulate_v1_contract(
+            request,
+            grant_repository=self.grant_repository,
+            now=now,
+            audit_writer=self.audit_writer,
+            boundary_registry=self.boundary_registry,
+            agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
         )
 
     def delegated_enforce(

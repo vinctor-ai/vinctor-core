@@ -107,3 +107,28 @@ def test_output_is_sorted_by_scope_deterministically():
         ]
     )
     assert _scopes(out) == ["read:repo/x/a", "write:repo/x/z"]
+
+
+def test_min_count_drops_one_off_pairs_before_generalizing():
+    out = propose_scopes(
+        [
+            Observation("read", "repo/feature/a", count=1),
+            Observation("read", "repo/feature/b", count=2),
+            Observation("read", "repo/feature/c", count=2),
+        ],
+        generalize=True,
+        min_count=2,
+    )
+
+    assert _scopes(out) == ["read:repo/feature/*"]
+    assert out[0].covers == (
+        "read:repo/feature/b",
+        "read:repo/feature/c",
+    )
+
+
+def test_min_count_must_be_positive():
+    import pytest
+
+    with pytest.raises(ValueError, match="min_count"):
+        propose_scopes([], min_count=0)
