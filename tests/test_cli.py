@@ -131,6 +131,79 @@ def test_vinctor_cli_agent_enforce_json_deny_emits_single_object(tmp_path: Path)
         _stop_service(handle)
 
 
+def test_vinctor_cli_agent_enforce_output_is_no_disclosure(tmp_path: Path) -> None:
+    # Agent-facing no-disclosure: `agent enforce` output (JSON and text) may
+    # carry only the decision, a coarse reason code, and the audit_event_id --
+    # never the grant_id/agent_id or a detailed reason naming the classified
+    # scope or the grant. (The text summary echoing the caller's own --action/
+    # --resource arguments is local input echo, not server disclosure.)
+    from vinctor_service.cli import EXIT_DENIED
+
+    handle = _start_service(tmp_path, scopes=("execute:ci/test",))
+    try:
+        deny_args = [
+            "agent",
+            "enforce",
+            "--grant-ref",
+            handle.grant_ref,
+            "--action",
+            "write",
+            "--resource",
+            "repo/PROBE_TARGET",
+        ]
+
+        json_out, json_err = StringIO(), StringIO()
+        status = run_vinctor(
+            [*_common_args(handle, json_output=True), *deny_args],
+            stdout=json_out,
+            stderr=json_err,
+        )
+        assert status == EXIT_DENIED
+        decision = json.loads(json_out.getvalue())
+        assert set(decision) == {"decision", "error", "reason", "audit_event_id"}
+        assert decision["decision"] == "deny"
+        assert decision["reason"] == "action_denied"
+        for leak in ("grnt_", "PROBE_TARGET"):
+            assert leak not in json_out.getvalue()
+            assert leak not in json_err.getvalue()
+
+        text_out, text_err = StringIO(), StringIO()
+        status = run_vinctor(
+            [*_common_args(handle, json_output=False), *deny_args],
+            stdout=text_out,
+            stderr=text_err,
+        )
+        assert status == EXIT_DENIED
+        assert "error: action_denied" in text_err.getvalue()
+        for stream in (text_out.getvalue(), text_err.getvalue()):
+            assert "grnt_" not in stream
+            assert "ci/test" not in stream  # the grant's scope stays undisclosed
+
+        permit_out, permit_err = StringIO(), StringIO()
+        status = run_vinctor(
+            [
+                *_common_args(handle, json_output=True),
+                "agent",
+                "enforce",
+                "--grant-ref",
+                handle.grant_ref,
+                "--action",
+                "execute",
+                "--resource",
+                "ci/test",
+            ],
+            stdout=permit_out,
+            stderr=permit_err,
+        )
+        assert status == 0
+        permitted = json.loads(permit_out.getvalue())
+        assert set(permitted) == {"decision", "audit_event_id"}
+        assert permitted["decision"] == "permit"
+        assert "grnt_" not in permit_out.getvalue()
+    finally:
+        _stop_service(handle)
+
+
 def test_vinctor_cli_agent_token_mint(tmp_path: Path) -> None:
     handle = _start_service(tmp_path, scopes=("write:repo/feature/*",))
     try:
@@ -1383,7 +1456,10 @@ def test_vinctor_cli_operator_grants_revoke_then_enforce_denies(tmp_path: Path) 
         assert status != 0
         decision = json.loads(stdout.getvalue())
         assert decision["decision"] == "deny"
-        assert "is revoked" in decision["reason"]
+        # No-disclosure: the deny reason is the coarse code only; it never names
+        # the grant.
+        assert decision["reason"] == "grant_revoked"
+        assert "grnt_" not in stdout.getvalue()
     finally:
         _stop_service(handle)
 

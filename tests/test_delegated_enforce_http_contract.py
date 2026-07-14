@@ -77,7 +77,9 @@ def test_delegated_http_permit() -> None:
 
     assert response.status_code == 200
     assert response.body["decision"] == "permit"
-    assert response.body["agent_id"] == "agent_release"
+    # No-disclosure: the subject agent_id is recorded in the audit, not returned.
+    assert "agent_id" not in response.body
+    assert svc.audit_events[0].agent_id == "agent_release"
     assert svc.audit_events[0].enforcing_principal == "pep_git_host"
 
 

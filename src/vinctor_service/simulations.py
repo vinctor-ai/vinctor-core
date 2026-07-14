@@ -61,7 +61,6 @@ def simulate_v1_contract(
             would_decision="deny",
             error="forbidden",
             reason=_GRANT_FORBIDDEN_MESSAGE,
-            agent_id=request.agent_id,
             audit_event_id=event.event_id,
         )
 
@@ -102,14 +101,14 @@ def simulate_v1_contract(
             "audit write failed; no simulation was recorded",
         )
 
+    # No-disclosure: like enforce, the agent-facing simulate response carries
+    # only the would-decision, coarse reason codes, and the audit_event_id; the
+    # grant/scope detail stays in the operator-only audit event written above.
     return V1SimulateResponse(
         status_code=200,
         would_decision=decision.decision,
         error=None if decision.decision == "permit" else decision.reason,
         reason=None if decision.decision == "permit" else decision.reason,
-        grant_id=decision.grant_id,
-        agent_id=decision.agent_id,
-        scope_matched=decision.scope_matched,
         audit_event_id=event.event_id,
     )
 

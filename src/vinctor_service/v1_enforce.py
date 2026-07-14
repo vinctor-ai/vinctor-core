@@ -453,13 +453,15 @@ def _response_from_decision(
     decision: DecisionResult,
     audit_event: AuditEvent,
 ) -> V1EnforceResponse:
+    # No-disclosure (Codex release-blocker 2026-07): the agent-facing response
+    # carries ONLY the decision, the coarse low-cardinality reason code, and the
+    # audit_event_id. The detail (grant_id/grant_ref, classified action/resource,
+    # scope_attempted/scope_matched) lives in the operator-only audit event
+    # written above — never in the response an agent can read directly.
     if decision.decision == "permit":
         return V1EnforceResponse(
             status_code=200,
             decision="permit",
-            grant_id=decision.grant_id,
-            agent_id=decision.agent_id,
-            scope_matched=decision.scope_matched,
             audit_event_id=audit_event.event_id,
         )
 
@@ -467,9 +469,7 @@ def _response_from_decision(
         status_code=403,
         decision="deny",
         error=decision.reason,
-        reason=_deny_reason(decision),
-        grant_id=decision.grant_id,
-        agent_id=decision.agent_id,
+        reason=decision.reason,
         audit_event_id=audit_event.event_id,
     )
 
@@ -517,18 +517,3 @@ def _invalid_action_reason(action: str) -> str:
             "action 'push' is not a recognized v1 action verb; use 'write' for git push operations"
         )
     return f"action '{action}' is not a recognized v1 action verb"
-
-
-def _deny_reason(decision: DecisionResult) -> str:
-    if decision.reason == "action_denied":
-        return f"scope {decision.scope_attempted} is not covered by grant {decision.grant_id}"
-    if decision.reason == "grant_revoked":
-        return f"grant {decision.grant_id} is revoked"
-    if decision.reason == "grant_expired":
-        return f"grant {decision.grant_id} is expired"
-    if decision.reason == "grant_not_active":
-        return f"grant {decision.grant_id} is not active"
-    if decision.reason.startswith("boundary_"):
-        boundary_id = decision.attempted_boundary_id or "unknown"
-        return f"boundary {boundary_id} could not be used for this enforce request"
-    return decision.reason

@@ -91,9 +91,9 @@ def test_delegated_enforce_permit_records_pep_principal() -> None:
 
     assert response.status_code == 200
     assert response.decision == "permit"
-    assert response.agent_id == "agent_release"
     assert response.audit_event_id == audit.events[0].event_id
     # Subject is the agent; the enforcing principal is the PEP, recorded separately.
+    # (Both live in the audit only — the response is a no-disclosure surface.)
     assert audit.events[0].agent_id == "agent_release"
     assert audit.events[0].enforcing_principal == "pep_git_host"
 

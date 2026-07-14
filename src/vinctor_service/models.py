@@ -79,13 +79,20 @@ class V1DelegatedEnforceRequest:
 
 @dataclass(frozen=True)
 class V1EnforceResponse:
+    """Agent-facing enforce result (no-disclosure surface).
+
+    Deliberately carries ONLY the decision, coarse low-cardinality
+    ``error``/``reason`` codes, and the ``audit_event_id``. It must never grow
+    fields that reveal the classified action/resource, the grant's scopes, or
+    internal identifiers (grant_id/grant_ref/agent_id/boundary_id/
+    scope_matched) — an agent can call the core directly, so that detail
+    belongs to the operator-only audit event exclusively.
+    """
+
     status_code: int
     decision: Decision | None = None
     error: str | None = None
     reason: str | None = None
-    grant_id: str | None = None
-    agent_id: str | None = None
-    scope_matched: str | None = None
     audit_event_id: str | None = None
 
 
@@ -119,13 +126,12 @@ class V1SimulateRequest:
 
 @dataclass(frozen=True)
 class V1SimulateResponse:
+    """Agent-facing simulate result (same no-disclosure surface as enforce)."""
+
     status_code: int
     would_decision: Decision | None = None
     error: str | None = None
     reason: str | None = None
-    grant_id: str | None = None
-    agent_id: str | None = None
-    scope_matched: str | None = None
     audit_event_id: str | None = None
 
 

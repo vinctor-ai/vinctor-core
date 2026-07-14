@@ -241,6 +241,8 @@ def handle_v1_simulate_http(
         now=now,
     )
     if response.would_decision is not None:
+        # No-disclosure: only the would-decision, coarse reason codes, and the
+        # audit_event_id cross the agent-facing boundary (detail is audit-only).
         return V1HttpResponse(
             status_code=response.status_code,
             body={
@@ -248,9 +250,6 @@ def handle_v1_simulate_http(
                 "would_decision": response.would_decision,
                 "error": response.error,
                 "reason": response.reason,
-                "grant_id": response.grant_id,
-                "agent_id": response.agent_id,
-                "scope_matched": response.scope_matched,
                 "audit_event_id": response.audit_event_id,
             },
         )
@@ -478,14 +477,14 @@ def _parse_string_body(
 
 
 def _http_response_from_enforce(response: V1EnforceResponse) -> V1HttpResponse:
+    # No-disclosure: the agent-facing body carries only the decision, coarse
+    # reason codes, and the audit_event_id. Grant/agent identifiers and the
+    # classified scope live exclusively in the operator-only audit event.
     if response.decision == "permit":
         return V1HttpResponse(
             status_code=response.status_code,
             body={
                 "decision": "permit",
-                "grant_id": response.grant_id,
-                "agent_id": response.agent_id,
-                "scope_matched": response.scope_matched,
                 "audit_event_id": response.audit_event_id,
             },
         )
@@ -497,8 +496,6 @@ def _http_response_from_enforce(response: V1EnforceResponse) -> V1HttpResponse:
                 "decision": "deny",
                 "error": response.error,
                 "reason": response.reason,
-                "grant_id": response.grant_id,
-                "agent_id": response.agent_id,
                 "audit_event_id": response.audit_event_id,
             },
         )
