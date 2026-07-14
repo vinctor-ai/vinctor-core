@@ -5,20 +5,24 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from http.server import ThreadingHTTPServer
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.local_http import create_v1_http_server
 from vinctor_service.metrics import Metrics
+from vinctor_service.postgres import PostgresV1Service, connect_postgres
+from vinctor_service.postgres_control import PostgresLocalKeyRepository
 from vinctor_service.service_config import ServiceRuntimeConfig
 from vinctor_service.sqlite import SQLiteV1Service
 
 
 @dataclass
 class ServiceRuntimeHandle:
-    conn: sqlite3.Connection
-    service: SQLiteV1Service
+    conn: Any
+    service: SQLiteV1Service | PostgresV1Service
+    key_repository: SQLiteLocalKeyRepository | PostgresLocalKeyRepository
     server: ThreadingHTTPServer
     config: ServiceRuntimeConfig
     endpoint: str
@@ -33,17 +37,22 @@ def prepare_service_runtime(
     *,
     clock: Callable[[], datetime] | None = None,
 ) -> ServiceRuntimeHandle:
-    if config.storage_backend != "sqlite":
-        raise ValueError(
-            "Postgres cannot run the full service until control-plane repositories "
-            "for keys, boundaries, settings, and tokens are migrated"
-        )
-    db_path = config.sqlite_db_path.expanduser()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, check_same_thread=False)
+    if config.storage_backend == "postgres":
+        assert config.postgres_dsn is not None
+        conn = connect_postgres(config.postgres_dsn)
+    else:
+        db_path = config.sqlite_db_path.expanduser()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path, check_same_thread=False)
     try:
-        service = SQLiteV1Service(conn)
-        key_repository = SQLiteLocalKeyRepository(conn)
+        if config.storage_backend == "postgres":
+            service = PostgresV1Service(conn)
+            key_repository = PostgresLocalKeyRepository(conn)
+            readiness_check = partial(_postgres_ready, conn)
+        else:
+            service = SQLiteV1Service(conn)
+            key_repository = SQLiteLocalKeyRepository(conn)
+            readiness_check = partial(_sqlite_ready, conn)
         metrics = Metrics() if config.metrics else None
         server = create_v1_http_server(
             (config.host, config.port),
@@ -64,7 +73,7 @@ def prepare_service_runtime(
             service_mode=config.service_mode,
             metrics=metrics,
             access_log=config.access_log,
-            readiness_check=lambda: _sqlite_ready(conn),
+            readiness_check=readiness_check,
         )
     except Exception:
         conn.close()
@@ -74,6 +83,7 @@ def prepare_service_runtime(
     return ServiceRuntimeHandle(
         conn=conn,
         service=service,
+        key_repository=key_repository,
         server=server,
         config=config,
         endpoint=f"http://{host}:{port}",
@@ -84,19 +94,30 @@ def _sqlite_ready(conn: sqlite3.Connection) -> bool:
     return conn.execute("SELECT 1").fetchone() == (1,)
 
 
+def _postgres_ready(conn: Any) -> bool:
+    with conn.transaction():
+        return conn.execute("SELECT 1").fetchone() == (1,)
+
+
 def render_service_runtime_banner(handle: ServiceRuntimeHandle) -> str:
     return "\n".join(
         [
             "# Vinctor service listening",
             f"# URL: {handle.endpoint}",
             f"# mode: {handle.config.service_mode}",
-            f"# database: {handle.config.sqlite_db_path}",
+            f"# database: {_database_label(handle.config)}",
             f"# log_level: {handle.config.log_level}",
             "# Local/self-hostable prototype only; not a hosted production service.",
             "# This command does not print raw keys. Bootstrap keys separately when needed.",
             "# Press Ctrl+C to stop.",
         ]
     )
+
+
+def _database_label(config: ServiceRuntimeConfig) -> str:
+    if config.storage_backend == "postgres":
+        return "postgres"
+    return str(config.sqlite_db_path)
 
 
 def serve_service_runtime(config: ServiceRuntimeConfig) -> NoReturn:

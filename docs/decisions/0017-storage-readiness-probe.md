@@ -29,5 +29,5 @@ loops.
 
 An orchestrator can remove an instance from traffic during a durable-store
 outage without treating the process as dead. This is a prerequisite for safe
-multi-instance operation, not a claim that the current partially migrated
-Postgres control plane is production-ready.
+multi-instance operation, not by itself a claim that a deployment has database
+HA, load balancing, backups, or production-ready secret management.

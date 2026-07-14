@@ -69,6 +69,12 @@ from vinctor_service.postgres import (
     connect_postgres,
     init_postgres_schema,
 )
+from vinctor_service.postgres_control import (
+    PostgresGrantRequestRepository,
+    PostgresLocalKeyRepository,
+    PostgresReplayStore,
+    PostgresSubjectTokenRepository,
+)
 from vinctor_service.repositories import (
     AgentEnforcementSettingsRepository,
     AutoApprovalRuleRepository,
@@ -156,6 +162,10 @@ __all__ = [
     "PostgresAgentEnforcementSettingsRepository",
     "PostgresBoundaryRegistry",
     "PostgresGrantRepository",
+    "PostgresGrantRequestRepository",
+    "PostgresLocalKeyRepository",
+    "PostgresReplayStore",
+    "PostgresSubjectTokenRepository",
     "PostgresV1Service",
     "SQLiteAgentEnforcementSettingsRepository",
     "SQLiteAgentIssuableScopeBoundsRepository",

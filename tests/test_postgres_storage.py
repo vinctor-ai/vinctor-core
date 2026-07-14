@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -12,7 +13,13 @@ from vinctor_core import (
     register_boundary,
 )
 from vinctor_core.models import AuditEvent, Grant
-from vinctor_service.models import V1EnforceRequest, V1ObserveRequest
+from vinctor_service.models import (
+    GrantRequest,
+    GrantRequestCreateRequest,
+    SubjectToken,
+    V1EnforceRequest,
+    V1ObserveRequest,
+)
 from vinctor_service.policy_files import (
     apply_policy_file,
     list_policy_versions,
@@ -28,7 +35,14 @@ from vinctor_service.postgres import (
     connect_postgres,
     init_postgres_schema,
 )
+from vinctor_service.postgres_control import (
+    PostgresGrantRequestRepository,
+    PostgresLocalKeyRepository,
+    PostgresReplayStore,
+    PostgresSubjectTokenRepository,
+)
 from vinctor_service.service_config import ServiceRuntimeConfig
+from vinctor_service.service_runtime import prepare_service_runtime
 from vinctor_service.storage_runtime import prepare_decision_storage
 
 DSN = os.environ.get("VINCTOR_TEST_POSTGRES_DSN")
@@ -43,7 +57,8 @@ def clean_database():
     init_postgres_schema(conn)
     with conn.transaction():
         conn.execute(
-            "TRUNCATE TABLE audit_events, grants, boundaries, agent_enforcement_settings, "
+            "TRUNCATE TABLE pop_replay_nonces, subject_tokens, grant_requests, "
+            "local_keys, audit_events, grants, boundaries, agent_enforcement_settings, "
             "agent_issuable_scope_bounds, auto_approval_rules, policy_versions"
         )
     conn.close()
@@ -74,6 +89,138 @@ def test_postgres_grant_repository_lifecycle() -> None:
     assert revoked is not None
     assert revoked.status == "revoked"
     conn.close()
+
+
+def test_postgres_local_key_repository_contract() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    repository = PostgresLocalKeyRepository(conn)
+
+    workspace = repository.create_workspace_key(
+        workspace_id="ws_main", raw_key="wsk_main", key_id="lkey_workspace", now=NOW
+    )
+    agent = repository.create_agent_key(
+        workspace_id="ws_main", agent_id="agent_release", raw_key="aak_main",
+        key_id="lkey_agent", now=NOW,
+    )
+    pep = repository.create_pep_key(
+        workspace_id="ws_main", pep_id="pep_release", raw_key="pep_main",
+        key_id="lkey_pep", now=NOW,
+    )
+
+    assert repository.resolve_workspace_identity("wsk_main", now=NOW).workspace_id == "ws_main"
+    assert repository.resolve_agent_identity("aak_main", now=NOW).agent_id == "agent_release"
+    assert repository.resolve_pep_identity("pep_main", now=NOW).pep_id == "pep_release"
+    assert repository.resolve_agent_identity("wsk_main", now=NOW) is None
+    assert {record.key_id for record in repository.list_for_workspace("ws_main")} == {
+        workspace.record.key_id,
+        agent.record.key_id,
+        pep.record.key_id,
+    }
+    revoked = repository.revoke_key(agent.record.key_id, now=NOW + timedelta(seconds=1))
+    assert revoked is not None and revoked.status == "revoked"
+    assert repository.resolve_agent_identity("aak_main", now=NOW) is None
+    conn.close()
+
+
+def test_postgres_grant_request_and_subject_token_repository_contracts() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    requests = PostgresGrantRequestRepository(conn)
+    tokens = PostgresSubjectTokenRepository(conn)
+    request = GrantRequest(
+        request_id="grq_main", workspace_id="ws_main",
+        requester_agent_id="agent_release", target_agent_id="agent_release",
+        requested_scopes=("write:repo/feature/*",), requested_ttl_seconds=300,
+        reason="release", status="pending", created_at=NOW,
+    )
+    token = SubjectToken(
+        token_id="vtk_main", token_hash="hash_main", workspace_id="ws_main",
+        agent_id="agent_release", grant_ref="grt_main", audience="pep_release",
+        issued_at=NOW, expires_at=NOW + timedelta(minutes=5),
+        created_by="agent_release", pop_secret="secret",
+    )
+
+    requests.insert_request(request)
+    decided = replace(
+        request, status="approved", decided_at=NOW, decided_by="operator:main",
+        issued_grant_ref="grt_main",
+    )
+    requests.update_request(decided)
+    tokens.insert(token)
+
+    assert requests.get_request("grq_main") == decided
+    assert requests.list_requests_for_workspace("ws_main") == (decided,)
+    assert tokens.get_by_hash("hash_main") == token
+    assert tokens.get_by_id("vtk_main") == replace(token, pop_secret=None)
+    assert tokens.list_subject_tokens("ws_main") == (replace(token, pop_secret=None),)
+    assert tokens.revoke("vtk_main", now=NOW + timedelta(seconds=1))
+    assert tokens.get_by_id("vtk_main").revoked_at == NOW + timedelta(seconds=1)
+    conn.close()
+
+
+def test_postgres_replay_store_rejects_cross_instance_duplicate() -> None:
+    assert DSN is not None
+    first_conn = connect_postgres(DSN)
+    second_conn = connect_postgres(DSN)
+    first = PostgresReplayStore(first_conn)
+    second = PostgresReplayStore(second_conn)
+
+    assert first.check_and_record(
+        token_id="vtk_main", nonce="nonce_main", ts=100, now_unix=100, skew=30
+    )
+    assert not second.check_and_record(
+        token_id="vtk_main", nonce="nonce_main", ts=100, now_unix=100, skew=30
+    )
+    first_conn.close()
+    second_conn.close()
+
+
+def test_postgres_full_runtime_shares_control_plane_across_instances() -> None:
+    assert DSN is not None
+    config = ServiceRuntimeConfig(
+        storage_backend="postgres", postgres_dsn=DSN, port=0,
+        service_mode="self_hosted",
+    )
+    first = prepare_service_runtime(config, clock=lambda: NOW)
+    second = prepare_service_runtime(config, clock=lambda: NOW)
+    try:
+        first.key_repository.create_agent_key(
+            workspace_id="ws_main", agent_id="agent_release", raw_key="aak_main",
+            now=NOW,
+        )
+        assert second.key_repository.resolve_agent_identity(
+            "aak_main", now=NOW
+        ).agent_id == "agent_release"
+        first.service.set_agent_issuable_scope_bounds(
+            workspace_id="ws_main", agent_id="agent_release",
+            scopes=("write:repo/feature/*",), max_ttl_seconds=300, now=NOW,
+        )
+        created = first.service.create_grant_request(
+            GrantRequestCreateRequest(
+                workspace_id="ws_main", requester_agent_id="agent_release",
+                requested_scopes=("write:repo/feature/*",),
+                requested_ttl_seconds=300, reason="release", request_id="grq_main",
+            ),
+            now=NOW,
+        )
+        approved = second.service.approve_grant_request(
+            request_id="grq_main", workspace_id="ws_main",
+            decided_by="operator:main", decision_reason=None, now=NOW,
+        )
+        minted = first.service.mint_subject_token(
+            workspace_id="ws_main", agent_id="agent_release",
+            grant_ref=approved.grant.grant_ref, audience="pep_release",
+            ttl_seconds=60, now=NOW,
+        )
+
+        assert created.status == "created"
+        assert approved.status == "approved"
+        assert minted.status == "minted"
+        assert second.service.subject_token_repository.get_by_id(minted.token_id) is not None
+    finally:
+        first.close()
+        second.close()
 
 
 def test_postgres_runtime_selection_initializes_and_reports_ready() -> None:

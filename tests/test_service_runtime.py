@@ -82,14 +82,49 @@ def test_service_runtime_readiness_checks_database(tmp_path: Path) -> None:
         handle.close()
 
 
-def test_full_service_runtime_rejects_partial_postgres_backend() -> None:
+def test_full_service_runtime_selects_postgres_backend(monkeypatch) -> None:
+    class FakeConnection:
+        def close(self) -> None:
+            pass
+
+    class FakeService:
+        pass
+
+    class FakeKeys:
+        def resolve_agent_identity(self, raw_key, now=None):
+            return None
+
+        def resolve_workspace_identity(self, raw_key, now=None):
+            return None
+
+        def resolve_pep_identity(self, raw_key, now=None):
+            return None
+
+    connection = FakeConnection()
+    monkeypatch.setattr(
+        "vinctor_service.service_runtime.connect_postgres", lambda dsn: connection
+    )
+    monkeypatch.setattr(
+        "vinctor_service.service_runtime.PostgresV1Service", lambda conn: FakeService()
+    )
+    monkeypatch.setattr(
+        "vinctor_service.service_runtime.PostgresLocalKeyRepository",
+        lambda conn: FakeKeys(),
+    )
     config = ServiceRuntimeConfig(
         storage_backend="postgres",
         postgres_dsn="postgresql://vinctor@db/vinctor",
+        port=0,
     )
 
-    with pytest.raises(ValueError, match="control-plane repositories"):
-        prepare_service_runtime(config)
+    handle = prepare_service_runtime(config)
+    try:
+        assert handle.conn is connection
+        assert isinstance(handle.service, FakeService)
+        assert "# database: postgres" in render_service_runtime_banner(handle)
+        assert "postgresql://" not in render_service_runtime_banner(handle)
+    finally:
+        handle.close()
 
 
 def test_service_runtime_rejects_non_get_health_method(tmp_path: Path) -> None:

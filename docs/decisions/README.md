@@ -36,3 +36,6 @@ Current decisions:
 - `0009-mandatory-boundary-enforcement.md`
 - `0010-infer-scope-proposals-from-audit.md`
 - `0011-mcp-resource-side-pep.md`
+- `0013-versioned-policy-rollback.md`
+- `0017-storage-readiness-probe.md`
+- `0018-postgres-full-control-plane.md`
