@@ -342,7 +342,13 @@ vinctor operator rules disable <rule_id>
 
 vinctor operator policy apply  --file policy.yaml   # bounds + rules in one file
 vinctor operator policy export --file policy.yaml
+vinctor operator policy infer --agent agent_ci --min-observations 2
 ```
+
+`policy infer` is propose-only. It reports enforced, observed, and simulated
+evidence separately, includes mapped/unmapped and would-permit/would-deny totals,
+and remains exact-scope by default. `--min-observations` removes one-off exact
+pairs before optional wildcard generalization.
 
 For the policy-file format, see
 [Operator policy authoring](operator-policy-authoring/policy-file.md).

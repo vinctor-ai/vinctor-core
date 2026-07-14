@@ -250,6 +250,10 @@ Unmapped calls send only `{"classification":"unmapped"}`. The endpoint never
 accepts raw tool input or prompt content. Successful mapped observations are
 stored as `action_observed` audit events and are available to `operator policy
 infer`; inference remains propose-only and exact-scope by default.
+Use `operator policy infer --min-observations 2` (or a higher threshold) to
+exclude one-off pairs before reviewing a proposal. Proposal entries distinguish
+observed, enforced, and simulated evidence, and the document summarizes mapping
+gaps and dry-run outcomes.
 
 Before promoting a policy to enforcement, a boundary can calculate the same
 decision without using it as a gate:

@@ -670,6 +670,12 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Also propose scopes for DENIED attempts, in a separate candidates list.",
     )
+    policy_infer.add_argument(
+        "--min-observations",
+        type=int,
+        default=1,
+        help="Require this many observations of each exact scope before proposing it.",
+    )
     policy_infer.add_argument("--file", type=Path, help="Write the YAML proposal to a file.")
 
     storage = resources.add_parser(
@@ -1541,6 +1547,8 @@ def _operator_policy(args: argparse.Namespace, *, stdout: TextIO) -> None:
         _emit(args, body, summary, stdout=stdout)
         return
     if args.policy_command == "infer":
+        if args.min_observations < 1:
+            raise CliError("policy infer --min-observations must be positive")
         document = infer_policy_document(
             service.audit_events,
             agent_id=args.agent,
@@ -1548,6 +1556,7 @@ def _operator_policy(args: argparse.Namespace, *, stdout: TextIO) -> None:
             until=args.until,
             generalize=args.generalize,
             include_denied=args.include_denied,
+            min_observations=args.min_observations,
         )
         scope_count = len(document["proposed"]["scopes"])  # type: ignore[index]
         if args.file is not None:
