@@ -23,6 +23,7 @@ from vinctor_service.models import (
     SubjectToken,
     V1EnforceRequest,
     V1ObserveRequest,
+    V1SimulateRequest,
 )
 from vinctor_service.policy_files import (
     apply_policy_file,
@@ -1155,4 +1156,112 @@ def test_postgres_audit_verify_detects_materialized_column_tamper(
         )
     v = writer.verify_chain()
     assert v.ok is False and v.break_kind == "column_mismatch" and v.break_seq == 2
+    conn.close()
+
+
+# --- D1: Postgres service/repository parity with SQLite -------------------
+
+
+def test_postgres_service_simulate_mirrors_enforce_decision() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    service.insert_grant(grant())
+
+    would_permit = service.simulate(
+        V1SimulateRequest(
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            grant_ref="grt_main",
+            action="write",
+            resource="repo/feature/readme",
+        ),
+        now=NOW,
+    )
+    would_deny = service.simulate(
+        V1SimulateRequest(
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            grant_ref="grt_main",
+            action="write",
+            resource="repo/other/readme",
+        ),
+        now=NOW,
+    )
+
+    assert would_permit.status_code == 200
+    assert would_permit.would_decision == "permit"
+    assert would_deny.status_code == 200
+    assert would_deny.would_decision == "deny"
+    # Simulate is non-consuming: the grant is untouched and usable by enforce.
+    assert service.grant_repository.get_by_ref("grt_main") is not None
+    conn.close()
+
+
+def test_postgres_list_auth_failures_returns_recorded_failures() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    writer = PostgresAuditWriter(conn)
+    for i in range(3):
+        writer.write(
+            replace(
+                _pg_audit_event(f"evt_af_{i}"),
+                event_type="auth_failed",
+                decision="deny",
+                reason="auth_failed",
+                workspace_id="",
+            )
+        )
+    # A normal workspace event must never appear among auth failures.
+    writer.write(_pg_audit_event("evt_ok"))
+
+    from_writer = writer.list_auth_failures(limit=10)
+    from_service = PostgresV1Service(conn, initialize_schema=False).list_auth_failures(
+        limit=10
+    )
+
+    assert [e.event_id for e in from_writer] == ["evt_af_0", "evt_af_1", "evt_af_2"]
+    assert [e.event_id for e in from_service] == ["evt_af_0", "evt_af_1", "evt_af_2"]
+    # LIMIT keeps the most recent, returned oldest-first.
+    assert [e.event_id for e in writer.list_auth_failures(limit=2)] == [
+        "evt_af_1",
+        "evt_af_2",
+    ]
+    conn.close()
+
+
+def test_postgres_auditor_key_create_and_resolve() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    init_postgres_schema(conn)
+    repository = PostgresLocalKeyRepository(conn)
+
+    created = repository.create_auditor_key(workspace_id="ws_main", now=NOW)
+
+    assert created.record.key_type == "auditor"
+    identity = repository.resolve_auditor_identity(created.raw_key, now=NOW)
+    assert identity is not None and identity.workspace_id == "ws_main"
+    # An auditor key is not a service-operator key.
+    assert repository.resolve_service_operator(created.raw_key, now=NOW) is False
+    # A workspace key does not resolve as an auditor.
+    other = repository.create_workspace_key(workspace_id="ws_main", now=NOW)
+    assert repository.resolve_auditor_identity(other.raw_key, now=NOW) is None
+    conn.close()
+
+
+def test_postgres_service_operator_key_create_and_resolve() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    init_postgres_schema(conn)
+    repository = PostgresLocalKeyRepository(conn)
+
+    created = repository.create_service_operator_key(now=NOW)
+
+    assert created.record.key_type == "service_operator"
+    assert created.record.workspace_id == "*"
+    assert repository.resolve_service_operator(created.raw_key, now=NOW) is True
+    # A service-operator key does not resolve as an auditor identity.
+    assert repository.resolve_auditor_identity(created.raw_key, now=NOW) is None
+    # An unknown key resolves to neither.
+    assert repository.resolve_service_operator("sok_nonexistent", now=NOW) is False
     conn.close()

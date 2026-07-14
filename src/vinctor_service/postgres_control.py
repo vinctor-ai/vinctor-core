@@ -9,7 +9,9 @@ from typing import Any
 from vinctor_service.boundary_http import WorkspaceIdentity
 from vinctor_service.keys import (
     AGENT_KEY_PREFIX,
+    AUDITOR_KEY_PREFIX,
     PEP_KEY_PREFIX,
+    SERVICE_OPERATOR_KEY_PREFIX,
     WORKSPACE_KEY_PREFIX,
     CreatedLocalKey,
     KeyType,
@@ -63,6 +65,35 @@ class PostgresLocalKeyRepository:
             raw_key=key,
             record=self._create_key(
                 key_type="resource_server", workspace_id=workspace_id, agent_id=pep_id,
+                raw_key=key, now=now, key_id=key_id,
+            ),
+        )
+
+    def create_auditor_key(
+        self, *, workspace_id: str, raw_key: str | None = None,
+        now: datetime | None = None, key_id: str | None = None,
+    ) -> CreatedLocalKey:
+        key = raw_key or _new_key(AUDITOR_KEY_PREFIX)
+        _validate_prefix(key, AUDITOR_KEY_PREFIX)
+        return CreatedLocalKey(
+            raw_key=key,
+            record=self._create_key(
+                key_type="auditor", workspace_id=workspace_id, agent_id=None,
+                raw_key=key, now=now, key_id=key_id,
+            ),
+        )
+
+    def create_service_operator_key(
+        self, *, raw_key: str | None = None,
+        now: datetime | None = None, key_id: str | None = None,
+    ) -> CreatedLocalKey:
+        # Global operator key: workspace_id="*" mirrors the SQLite reference.
+        key = raw_key or _new_key(SERVICE_OPERATOR_KEY_PREFIX)
+        _validate_prefix(key, SERVICE_OPERATOR_KEY_PREFIX)
+        return CreatedLocalKey(
+            raw_key=key,
+            record=self._create_key(
+                key_type="service_operator", workspace_id="*", agent_id=None,
                 raw_key=key, now=now, key_id=key_id,
             ),
         )
@@ -167,6 +198,24 @@ class PostgresLocalKeyRepository:
         ):
             return None
         return PepIdentity(workspace_id=record.workspace_id, pep_id=record.agent_id)
+
+    def resolve_auditor_identity(
+        self, raw_key: str, *, now: datetime | None = None,
+    ) -> WorkspaceIdentity | None:
+        record = self.get_by_raw_key(raw_key, now=now)
+        if record is None or record.status != "active" or record.key_type != "auditor":
+            return None
+        return WorkspaceIdentity(workspace_id=record.workspace_id)
+
+    def resolve_service_operator(
+        self, raw_key: str, *, now: datetime | None = None,
+    ) -> bool:
+        record = self.get_by_raw_key(raw_key, now=now)
+        return bool(
+            record is not None
+            and record.status == "active"
+            and record.key_type == "service_operator"
+        )
 
     def revoke_key(
         self, key_id: str, *, now: datetime | None = None,

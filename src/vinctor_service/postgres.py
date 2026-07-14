@@ -63,6 +63,8 @@ from vinctor_service.models import (
     V1EnforceResponse,
     V1ObserveRequest,
     V1ObserveResponse,
+    V1SimulateRequest,
+    V1SimulateResponse,
 )
 from vinctor_service.observations import record_observation
 from vinctor_service.postgres_control import (
@@ -71,6 +73,7 @@ from vinctor_service.postgres_control import (
     PostgresSubjectTokenRepository,
 )
 from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS
+from vinctor_service.simulations import simulate_v1_contract
 from vinctor_service.subject_tokens import mint_subject_token
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 
@@ -1082,6 +1085,22 @@ class PostgresAuditWriter:
             ).fetchall()
         return [_audit_event_from_json(row[0]) for row in rows]
 
+    def list_auth_failures(self, *, limit: int) -> tuple[AuditEvent, ...]:
+        # Pre-auth auth failures are recorded under the empty workspace; order
+        # by the monotonic chain seq (Postgres has no rowid) and return oldest
+        # first, mirroring the SQLite reader.
+        with self._conn.transaction():
+            rows = self._conn.execute(
+                """
+                SELECT event_json FROM audit_events
+                WHERE workspace_id = '' AND event_type = 'auth_failed'
+                ORDER BY seq DESC
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+        return tuple(_audit_event_from_json(row[0]) for row in reversed(rows))
+
     def list_filtered(
         self,
         workspace_id: str,
@@ -1155,6 +1174,9 @@ class PostgresV1Service:
 
     def list_filtered(self, workspace_id: str, **filters: Any) -> tuple[AuditEvent, ...]:
         return self.audit_writer.list_filtered(workspace_id, **filters)
+
+    def list_auth_failures(self, *, limit: int) -> tuple[AuditEvent, ...]:
+        return self.audit_writer.list_auth_failures(limit=limit)
 
     def insert_grant(self, grant: Grant) -> None:
         self.grant_repository.insert(grant)
@@ -1397,6 +1419,16 @@ class PostgresV1Service:
 
     def enforce(self, request: V1EnforceRequest, *, now: datetime) -> V1EnforceResponse:
         return enforce_v1_contract(
+            request,
+            grant_repository=self.grant_repository,
+            now=now,
+            audit_writer=self.audit_writer,
+            boundary_registry=self.boundary_registry,
+            agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
+        )
+
+    def simulate(self, request: V1SimulateRequest, *, now: datetime) -> V1SimulateResponse:
+        return simulate_v1_contract(
             request,
             grant_repository=self.grant_repository,
             now=now,
