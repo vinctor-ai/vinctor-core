@@ -48,6 +48,8 @@ from vinctor_service.models import (
     V1EnforceResponse,
     V1ObserveRequest,
     V1ObserveResponse,
+    V1SimulateRequest,
+    V1SimulateResponse,
 )
 from vinctor_service.observations import record_observation
 from vinctor_service.pop import PopReplayCache
@@ -59,6 +61,7 @@ from vinctor_service.repositories import (
     InMemorySubjectTokenRepository,
 )
 from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS
+from vinctor_service.simulations import simulate_v1_contract
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 
 
@@ -420,6 +423,16 @@ class InMemoryV1Service:
             audit_writer=self.audit_writer,
             now=now,
             boundary_registry=self.boundary_registry,
+        )
+
+    def simulate(self, request: V1SimulateRequest, *, now: datetime) -> V1SimulateResponse:
+        return simulate_v1_contract(
+            request,
+            grant_repository=self.grant_repository,
+            now=now,
+            audit_writer=self.audit_writer,
+            boundary_registry=self.boundary_registry,
+            agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
         )
 
     def delegated_enforce(
