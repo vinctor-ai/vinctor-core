@@ -29,5 +29,4 @@ cross-tenant activity.
 Operators can hand a SIEM or human auditor a least-privilege credential without
 sharing mutation authority. A future SSO integration can map an `auditor` role
 to the same read contract. Fleet-wide visibility for unscoped authentication
-failures requires a distinct service-operator role and is not part of this
-slice.
+failures uses the separate, narrow service-operator role defined in ADR 0015.

@@ -10,11 +10,14 @@ from typing import Literal
 from vinctor_service.boundary_http import WorkspaceIdentity
 from vinctor_service.v1_http import AgentIdentity, PepIdentity
 
-KeyType = Literal["workspace", "auditor", "agent", "resource_server"]
+KeyType = Literal[
+    "workspace", "auditor", "service_operator", "agent", "resource_server"
+]
 KeyStatus = Literal["active", "revoked"]
 
 WORKSPACE_KEY_PREFIX = "wsk_"
 AUDITOR_KEY_PREFIX = "auk_"
+SERVICE_OPERATOR_KEY_PREFIX = "sok_"
 AGENT_KEY_PREFIX = "aak_"
 PEP_KEY_PREFIX = "pep_"
 
@@ -97,6 +100,25 @@ class SQLiteLocalKeyRepository:
         record = self._create_key(
             key_type="auditor",
             workspace_id=workspace_id,
+            agent_id=None,
+            raw_key=key,
+            now=now,
+            key_id=key_id,
+        )
+        return CreatedLocalKey(raw_key=key, record=record)
+
+    def create_service_operator_key(
+        self,
+        *,
+        raw_key: str | None = None,
+        now: datetime | None = None,
+        key_id: str | None = None,
+    ) -> CreatedLocalKey:
+        key = raw_key or _new_key(SERVICE_OPERATOR_KEY_PREFIX)
+        _validate_prefix(key, SERVICE_OPERATOR_KEY_PREFIX)
+        record = self._create_key(
+            key_type="service_operator",
+            workspace_id="*",
             agent_id=None,
             raw_key=key,
             now=now,
@@ -262,6 +284,19 @@ class SQLiteLocalKeyRepository:
         if record is None or record.status != "active" or record.key_type != "auditor":
             return None
         return WorkspaceIdentity(workspace_id=record.workspace_id)
+
+    def resolve_service_operator(
+        self,
+        raw_key: str,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        record = self.get_by_raw_key(raw_key, now=now)
+        return bool(
+            record is not None
+            and record.status == "active"
+            and record.key_type == "service_operator"
+        )
 
     def resolve_agent_identity(
         self,

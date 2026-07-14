@@ -11,7 +11,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
 from urllib.parse import urlsplit
 
-from vinctor_service.audit_http import AuditReadService, handle_v1_audit_events_http
+from vinctor_service.audit_http import (
+    AuditReadService,
+    ServiceOperatorResolver,
+    handle_v1_audit_events_http,
+    handle_v1_service_auth_failures_http,
+)
 from vinctor_service.auto_approval_http import (
     AutoApprovalAdminService,
     handle_v1_auto_approval_rules_http,
@@ -70,10 +75,12 @@ def create_v1_http_server(
     agent_identities: Mapping[str, AgentIdentity],
     workspace_identities: Mapping[str, WorkspaceIdentity] | None = None,
     auditor_identities: Mapping[str, WorkspaceIdentity] | None = None,
+    service_operator_keys: set[str] | None = None,
     pep_identities: Mapping[str, PepIdentity] | None = None,
     agent_identity_resolver: AgentIdentityResolver | None = None,
     workspace_identity_resolver: WorkspaceIdentityResolver | None = None,
     auditor_identity_resolver: WorkspaceIdentityResolver | None = None,
+    service_operator_resolver: ServiceOperatorResolver | None = None,
     pep_identity_resolver: PepIdentityResolver | None = None,
     clock: Clock | None = None,
     service_mode: str = "local",
@@ -85,10 +92,12 @@ def create_v1_http_server(
         agent_identities=agent_identities,
         workspace_identities=workspace_identities,
         auditor_identities=auditor_identities,
+        service_operator_keys=service_operator_keys,
         pep_identities=pep_identities,
         agent_identity_resolver=agent_identity_resolver,
         workspace_identity_resolver=workspace_identity_resolver,
         auditor_identity_resolver=auditor_identity_resolver,
+        service_operator_resolver=service_operator_resolver,
         pep_identity_resolver=pep_identity_resolver,
         clock=clock,
         service_mode=service_mode,
@@ -104,10 +113,12 @@ def create_v1_http_handler(
     agent_identities: Mapping[str, AgentIdentity],
     workspace_identities: Mapping[str, WorkspaceIdentity] | None = None,
     auditor_identities: Mapping[str, WorkspaceIdentity] | None = None,
+    service_operator_keys: set[str] | None = None,
     pep_identities: Mapping[str, PepIdentity] | None = None,
     agent_identity_resolver: AgentIdentityResolver | None = None,
     workspace_identity_resolver: WorkspaceIdentityResolver | None = None,
     auditor_identity_resolver: WorkspaceIdentityResolver | None = None,
+    service_operator_resolver: ServiceOperatorResolver | None = None,
     pep_identity_resolver: PepIdentityResolver | None = None,
     clock: Clock | None = None,
     service_mode: str = "local",
@@ -117,6 +128,7 @@ def create_v1_http_handler(
     agent_keys = dict(agent_identities)
     workspace_keys = dict(workspace_identities or {})
     auditor_keys = dict(auditor_identities or {})
+    service_keys = set(service_operator_keys or set())
     pep_keys = dict(pep_identities or {})
     now = clock or _utc_now
 
@@ -242,6 +254,11 @@ def create_v1_http_handler(
             return
         if path == "/v1/audit-events" or path.startswith("/v1/audit-events/"):
             _handle_audit_request(handler, method, path, parsed_path.query)
+            return
+        if path == "/v1/service/audit/auth-failures":
+            _handle_service_auth_failures_request(
+                handler, method, path, parsed_path.query
+            )
             return
 
         _send_json(
@@ -633,6 +650,24 @@ def create_v1_http_handler(
         )
         _send_json(handler, response)
 
+    def _handle_service_auth_failures_request(
+        handler: BaseHTTPRequestHandler,
+        method: str,
+        path: str,
+        query_string: str,
+    ) -> None:
+        response = handle_v1_service_auth_failures_http(
+            method=method,
+            path=path,
+            query_string=query_string,
+            headers=dict(handler.headers.items()),
+            service_operator_keys=service_keys,
+            service_operator_resolver=service_operator_resolver,
+            service=cast(AuditReadService, service),
+            now=now(),
+        )
+        _send_json(handler, response)
+
     return V1Handler
 
 
@@ -644,6 +679,7 @@ _EXACT_ROUTES = frozenset(
         "/v1/enforce",
         "/v1/observe",
         "/v1/tokens",
+        "/v1/service/audit/auth-failures",
     }
 )
 

@@ -112,6 +112,40 @@ def test_service_runtime_auditor_key_is_read_only(tmp_path: Path) -> None:
         handle.close()
 
 
+def test_service_runtime_service_operator_reads_only_global_auth_failures(
+    tmp_path: Path,
+) -> None:
+    handle = prepare_service_runtime(
+        ServiceRuntimeConfig(sqlite_db_path=tmp_path / "vinctor.sqlite", port=0),
+        clock=lambda: NOW,
+    )
+    key = SQLiteLocalKeyRepository(handle.conn).create_service_operator_key(
+        raw_key="sok_demo", now=NOW
+    )
+    handle.service.record_auth_failure(surface="enforce", boundary_id=None, now=NOW)
+    try:
+        with running_runtime(handle):
+            global_status, global_body, _ = request_json(
+                handle,
+                "GET",
+                "/v1/service/audit/auth-failures",
+                headers={"X-Service-Operator-Key": key.raw_key},
+            )
+            workspace_status, workspace_body, _ = request_json(
+                handle,
+                "GET",
+                "/v1/audit-events",
+                headers={"X-Service-Operator-Key": key.raw_key},
+            )
+
+        assert global_status == 200
+        assert len(global_body["auth_failures"]) == 1
+        assert workspace_status == 401
+        assert workspace_body["error"] == "authentication_required"
+    finally:
+        handle.close()
+
+
 def test_service_runtime_preserves_existing_enforce_routes(tmp_path: Path) -> None:
     db_path = tmp_path / "vinctor.sqlite"
     bootstrap = prepare_local_service(

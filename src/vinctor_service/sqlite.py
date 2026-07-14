@@ -1229,6 +1229,18 @@ class SQLiteAuditWriter:
         ).fetchall()
         return [_audit_event_from_json(row[0]) for row in rows]
 
+    def list_auth_failures(self, *, limit: int) -> tuple[AuditEvent, ...]:
+        rows = self._conn.execute(
+            """
+            SELECT event_json FROM audit_events
+            WHERE workspace_id = '' AND event_type = 'auth_failed'
+            ORDER BY rowid DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return tuple(_audit_event_from_json(row[0]) for row in reversed(rows))
+
     def list_filtered(
         self,
         workspace_id: str,
@@ -1709,6 +1721,9 @@ class SQLiteV1Service:
 
     def get_audit_event(self, event_id: str) -> AuditEvent | None:
         return self.audit_writer.get(event_id)
+
+    def list_auth_failures(self, *, limit: int) -> tuple[AuditEvent, ...]:
+        return self.audit_writer.list_auth_failures(limit=limit)
 
     def list_filtered(
         self,
