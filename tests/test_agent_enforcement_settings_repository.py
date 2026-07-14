@@ -74,6 +74,56 @@ def test_boundary_override_presence_migration_preserves_existing_rows(tmp_path) 
     ) is False
 
 
+def test_migrated_db_new_subject_token_row_does_not_override_workspace_boundary(
+    tmp_path,
+) -> None:
+    # Upgrade path: an old-schema table (no require_boundary_set) is migrated,
+    # so the added column defaults to 1. A row created afterwards purely via
+    # set_require_subject_token must NOT be read as an explicit boundary
+    # override, or it would silently exempt the agent from a workspace-wide
+    # require_boundary. Regression for the fresh-vs-migrated divergence.
+    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn.executescript(
+        """
+        CREATE TABLE agent_enforcement_settings (
+            workspace_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            require_boundary INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, agent_id)
+        );
+        """
+    )
+    init_sqlite_schema(conn)
+    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    repo.set_require_boundary(workspace_id="ws", agent_id="", require_boundary=True, now=NOW)
+    repo.set_require_subject_token(
+        workspace_id="ws", agent_id="a", require_subject_token=True, now=NOW
+    )
+    assert repo.is_boundary_required(workspace_id="ws", agent_id="a") is True
+
+
+def test_migrated_db_new_pop_row_does_not_override_workspace_boundary(tmp_path) -> None:
+    # Same fresh-vs-migrated divergence, reached through set_require_pop.
+    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn.executescript(
+        """
+        CREATE TABLE agent_enforcement_settings (
+            workspace_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            require_boundary INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, agent_id)
+        );
+        """
+    )
+    init_sqlite_schema(conn)
+    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    repo.set_require_boundary(workspace_id="ws", agent_id="", require_boundary=True, now=NOW)
+    repo.set_require_pop(workspace_id="ws", agent_id="a", require_pop=True, now=NOW)
+    assert repo.is_boundary_required(workspace_id="ws", agent_id="a") is True
+
+
 def test_in_memory_require_pop_default_false_and_set_get() -> None:
     repo = InMemoryAgentEnforcementSettingsRepository()
     assert repo.get_require_pop_setting(workspace_id="ws", agent_id="a") is None

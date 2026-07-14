@@ -12,6 +12,8 @@ from vinctor_service.models import (
     V1EnforceResponse,
     V1ObserveRequest,
     V1ObserveResponse,
+    V1SimulateRequest,
+    V1SimulateResponse,
 )
 from vinctor_service.service_config import (
     DEFAULT_SUBJECT_TOKEN_MAX_TTL_SECONDS,
@@ -53,6 +55,14 @@ class V1EnforceService(Protocol):
 
 class V1ObserveService(Protocol):
     def observe(self, request: V1ObserveRequest, *, now: datetime) -> V1ObserveResponse: ...
+
+    def record_auth_failure(
+        self, *, surface: str, boundary_id: str | None, now: datetime
+    ) -> None: ...
+
+
+class V1SimulateService(Protocol):
+    def simulate(self, request: V1SimulateRequest, *, now: datetime) -> V1SimulateResponse: ...
 
     def record_auth_failure(
         self, *, surface: str, boundary_id: str | None, now: datetime
@@ -187,6 +197,67 @@ def handle_v1_observe_http(
         response.status_code,
         response.error or "service_unavailable",
         response.reason or "observation was not recorded",
+    )
+
+
+def handle_v1_simulate_http(
+    *,
+    headers: Mapping[str, str],
+    body: object,
+    agent_identities: Mapping[str, AgentIdentity] | None = None,
+    agent_identity_resolver: AgentIdentityResolver | None = None,
+    service: V1SimulateService,
+    now: datetime,
+) -> V1HttpResponse:
+    normalized_headers = {key.lower(): value for key, value in headers.items()}
+    agent_key = normalized_headers.get("x-agent-key")
+    boundary_id = normalized_headers.get("x-vinctor-boundary-id")
+    identity = (
+        _resolve_agent_identity(
+            agent_key,
+            agent_identities=agent_identities,
+            agent_identity_resolver=agent_identity_resolver,
+            now=now,
+        )
+        if agent_key is not None
+        else None
+    )
+    if identity is None:
+        service.record_auth_failure(surface="simulate", boundary_id=boundary_id, now=now)
+        return _error(401, "authentication_required", "valid X-Agent-Key header is required")
+
+    parsed = _parse_enforce_body(body)
+    if isinstance(parsed, V1HttpResponse):
+        return parsed
+    response = service.simulate(
+        V1SimulateRequest(
+            workspace_id=identity.workspace_id,
+            agent_id=identity.agent_id,
+            grant_ref=parsed["grant_ref"],
+            action=parsed["action"],
+            resource=parsed["resource"],
+            boundary_id=boundary_id,
+        ),
+        now=now,
+    )
+    if response.would_decision is not None:
+        return V1HttpResponse(
+            status_code=response.status_code,
+            body={
+                "status": "simulated",
+                "would_decision": response.would_decision,
+                "error": response.error,
+                "reason": response.reason,
+                "grant_id": response.grant_id,
+                "agent_id": response.agent_id,
+                "scope_matched": response.scope_matched,
+                "audit_event_id": response.audit_event_id,
+            },
+        )
+    return _error(
+        response.status_code,
+        response.error or "service_unavailable",
+        response.reason or "simulation was not recorded",
     )
 
 

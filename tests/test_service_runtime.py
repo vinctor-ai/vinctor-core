@@ -142,6 +142,102 @@ def test_service_runtime_rejects_non_get_health_method(tmp_path: Path) -> None:
         handle.close()
 
 
+def test_service_runtime_closes_background_audit_export(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Export:
+        closed = False
+
+        def emit(self, event) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    export = Export()
+    monkeypatch.setattr(
+        "vinctor_service.sqlite.audit_export_from_env",
+        lambda _env: export,
+    )
+    handle = prepare_service_runtime(
+        ServiceRuntimeConfig(sqlite_db_path=tmp_path / "vinctor.sqlite", port=0),
+        clock=lambda: NOW,
+    )
+
+    handle.close()
+
+    assert export.closed
+
+
+def test_service_runtime_auditor_key_is_read_only(tmp_path: Path) -> None:
+    handle = prepare_service_runtime(
+        ServiceRuntimeConfig(sqlite_db_path=tmp_path / "vinctor.sqlite", port=0),
+        clock=lambda: NOW,
+    )
+    auditor = SQLiteLocalKeyRepository(handle.conn).create_auditor_key(
+        workspace_id="ws_demo",
+        raw_key="auk_demo",
+        now=NOW,
+    )
+    try:
+        with running_runtime(handle):
+            audit_status, audit_body, _ = request_json(
+                handle,
+                "GET",
+                "/v1/audit-events",
+                headers={"X-Auditor-Key": auditor.raw_key},
+            )
+            admin_status, admin_body, _ = request_json(
+                handle,
+                "POST",
+                "/v1/boundaries",
+                headers={"X-Auditor-Key": auditor.raw_key},
+                body={},
+            )
+
+        assert audit_status == 200
+        assert audit_body == {"audit_events": []}
+        assert admin_status == 401
+        assert admin_body["error"] == "authentication_required"
+    finally:
+        handle.close()
+
+
+def test_service_runtime_service_operator_reads_only_global_auth_failures(
+    tmp_path: Path,
+) -> None:
+    handle = prepare_service_runtime(
+        ServiceRuntimeConfig(sqlite_db_path=tmp_path / "vinctor.sqlite", port=0),
+        clock=lambda: NOW,
+    )
+    key = SQLiteLocalKeyRepository(handle.conn).create_service_operator_key(
+        raw_key="sok_demo", now=NOW
+    )
+    handle.service.record_auth_failure(surface="enforce", boundary_id=None, now=NOW)
+    try:
+        with running_runtime(handle):
+            global_status, global_body, _ = request_json(
+                handle,
+                "GET",
+                "/v1/service/audit/auth-failures",
+                headers={"X-Service-Operator-Key": key.raw_key},
+            )
+            workspace_status, workspace_body, _ = request_json(
+                handle,
+                "GET",
+                "/v1/audit-events",
+                headers={"X-Service-Operator-Key": key.raw_key},
+            )
+
+        assert global_status == 200
+        assert len(global_body["auth_failures"]) == 1
+        assert workspace_status == 401
+        assert workspace_body["error"] == "authentication_required"
+    finally:
+        handle.close()
+
+
 def test_service_runtime_preserves_existing_enforce_routes(tmp_path: Path) -> None:
     db_path = tmp_path / "vinctor.sqlite"
     bootstrap = prepare_local_service(

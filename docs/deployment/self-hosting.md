@@ -80,7 +80,7 @@ publishing remains controlled by the opt-in release configuration:
 - hosted Vinctor service
 - production high availability
 - multi-tenant cloud control plane
-- production auth/session/user management
+- interactive login, session, and user-management UI
 - credential broker
 - sandbox or OS/process isolation
 - approval workflow UI
@@ -102,6 +102,41 @@ publishing remains controlled by the opt-in release configuration:
 | key storage mode | n/a | n/a | `sqlite_hashes` |
 
 Valid service modes are `local` and `self_hosted`.
+
+### Optional OIDC role mapping
+
+Install the OIDC extra and configure all three required identity-provider
+values before starting the service:
+
+```bash
+.venv/bin/python -m pip install "vinctor-core[oidc]"
+
+export VINCTOR_OIDC_ISSUER="https://identity.example.com"
+export VINCTOR_OIDC_AUDIENCE="vinctor-service"
+export VINCTOR_OIDC_JWKS_URL="https://identity.example.com/.well-known/jwks.json"
+vinctor service serve --mode self_hosted
+```
+
+The default group and workspace mapping is:
+
+| Claim or group | Default | Capability |
+| --- | --- | --- |
+| groups claim | `groups` | Array containing the configured role groups. |
+| workspace claim | `vinctor_workspace_id` | Required for operator and auditor identities. |
+| operator group | `vinctor-operator` | Workspace administration and mutations. |
+| auditor group | `vinctor-auditor` | Read-only workspace audit access. |
+| service-operator group | `vinctor-service-operator` | Global unattributed auth-failure view only. |
+
+Override those names with `VINCTOR_OIDC_GROUPS_CLAIM`,
+`VINCTOR_OIDC_WORKSPACE_CLAIM`, `VINCTOR_OIDC_OPERATOR_GROUP`,
+`VINCTOR_OIDC_AUDITOR_GROUP`, and `VINCTOR_OIDC_SERVICE_OPERATOR_GROUP`.
+`VINCTOR_OIDC_ALGORITHMS` is a comma-separated asymmetric allow-list and
+defaults to `RS256`. Tokens are sent as `Authorization: Bearer <token>`.
+
+OIDC is disabled when the issuer, audience, and JWKS URL are all absent. A
+partial configuration is rejected at startup. Local keys remain enabled for
+bootstrap and recovery. This integration validates API bearer tokens; it does
+not provide an interactive browser login or session-management UI.
 
 ## Run Directly
 
@@ -467,6 +502,12 @@ only the hash and it cannot be recovered.
 # Rotate the workspace/admin key:
 vinctor --db .vinctor/vinctor.sqlite --workspace-id ws_local operator keys rotate workspace
 
+# Rotate the read-only workspace auditor key:
+vinctor --db .vinctor/vinctor.sqlite --workspace-id ws_local operator keys rotate auditor
+
+# Rotate the global auth-failure viewer key:
+vinctor --db .vinctor/vinctor.sqlite operator keys rotate service-operator
+
 # Rotate a specific agent's key:
 vinctor --db .vinctor/vinctor.sqlite --workspace-id ws_local operator keys rotate agent \
   --agent-id agent_local
@@ -494,10 +535,15 @@ JSON output (`--json`) includes the raw key **only** for `rotate` — never for
 }
 ```
 
-Rotating the workspace key revokes prior active workspace keys only; rotating an
-agent key revokes prior active keys for that agent id only. After rotating,
-distribute the new key to the relevant caller and update its `VINCTOR_*`
-environment.
+Rotating the workspace or auditor key revokes prior active keys of that same
+type only; rotating an agent key revokes prior active keys for that agent id
+only. Auditor keys (`auk_…`) are accepted only on the audit read endpoints via
+`X-Auditor-Key`; they cannot perform operator mutations. After rotating,
+distribute the new key to the relevant caller and update its environment.
+
+Service-operator keys (`sok_…`) are global but intentionally narrower: they can
+only read `/v1/service/audit/auth-failures` or run `operator audit
+auth-failures`. Store them separately from workspace credentials.
 
 ### Flags
 
@@ -620,8 +666,9 @@ logs/observability, and SQLite/volume backup are documented in
 
 ### Production Hardening
 
-- production auth/session/user management
-- managed identity integration
+- interactive login, session, and user-management UI beyond the shipped OIDC
+  bearer-token role mapping
+- identity-provider-specific provisioning and lifecycle automation
 - high availability and replication strategy
 - multi-tenant cloud control plane
 - hosted managed service
