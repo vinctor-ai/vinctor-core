@@ -382,17 +382,13 @@ class PostgresReplayStore:
                 (token_id,),
             ).fetchone()[0]
             if per_token >= self._max_per_token:
-                self._conn.execute(
-                    """
-                    DELETE FROM pop_replay_nonces
-                    WHERE (token_id, nonce) = (
-                        SELECT token_id, nonce FROM pop_replay_nonces
-                        WHERE token_id = %s ORDER BY ts, nonce LIMIT 1
-                    )
-                    """,
-                    (token_id,),
-                )
-            elif self._conn.execute(
+                # Expired rows were purged above, so this token's cap is full of
+                # still-fresh nonces. NEVER evict a live nonce to make room
+                # (ADR 0007): a dropped fresh nonce would let its captured proof
+                # replay within the window. Fail closed; operators can raise the
+                # cap.
+                return False
+            if self._conn.execute(
                 "SELECT COUNT(*) FROM pop_replay_nonces"
             ).fetchone()[0] >= self._max:
                 return False

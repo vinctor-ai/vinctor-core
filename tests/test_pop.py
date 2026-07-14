@@ -310,46 +310,98 @@ def test_pop_cache_full_of_fresh_entries_rejects() -> None:
 
 def test_pop_cache_token_flood_does_not_lock_out_other_token() -> None:
     # Parity with the durable store: token A flooding its own nonces past its
-    # per-token cap stays bounded to its own footprint and must not lock out a
-    # fresh proof for a different token B (the generous global cap is untouched).
+    # per-token cap is rejected (fail closed) beyond the cap, so A's footprint
+    # stays bounded and a fresh proof for a different token B is never locked
+    # out (the generous global cap is untouched).
     cache = PopReplayCache(max_entries=100, max_per_token=1)
     now_unix = _now_unix()
     assert cache.check_and_record(
         token_id="A", nonce="a1", ts=now_unix, now_unix=now_unix, skew=SKEW
     ) is True
     for i in range(2, 50):
+        # Beyond A's cap of fresh nonces -> rejected, never evicting a1.
         assert cache.check_and_record(
             token_id="A", nonce=f"a{i}", ts=now_unix, now_unix=now_unix, skew=SKEW
-        ) is True
+        ) is False
     assert cache.check_and_record(
         token_id="B", nonce="b1", ts=now_unix, now_unix=now_unix, skew=SKEW
     ) is True
 
 
-def test_pop_cache_per_token_cap_evicts_own_oldest_not_others() -> None:
+def test_pop_cache_flood_cannot_evict_fresh_nonce_for_replay() -> None:
+    # SECURITY (ADR 0007): never evict a still-fresh nonce to make room. An
+    # attacker who captured a valid proof must not be able to flood the same
+    # token's cap with fresh nonces to push the captured nonce out and replay
+    # it inside the freshness window.
+    cap = 4
+    cache = PopReplayCache(max_entries=100, max_per_token=cap)
+    now_unix = _now_unix()
+    # The captured proof's nonce: oldest ts in the window (still fresh).
+    assert cache.check_and_record(
+        token_id="A", nonce="n1", ts=now_unix - 1, now_unix=now_unix, skew=SKEW
+    ) is True
+    # Attacker pushes `cap` more distinct fresh nonces for the SAME token.
+    for i in range(cap):
+        cache.check_and_record(
+            token_id="A", nonce=f"flood{i}", ts=now_unix, now_unix=now_unix,
+            skew=SKEW,
+        )
+    # Re-presenting the captured nonce within the window MUST still be a
+    # replay: n1 was never evicted to make room for the flood.
+    assert cache.check_and_record(
+        token_id="A", nonce="n1", ts=now_unix - 1, now_unix=now_unix, skew=SKEW
+    ) is False
+
+
+def test_pop_cache_per_token_cap_full_of_fresh_fails_closed() -> None:
+    # When a token's cap is full of still-fresh nonces, a brand-new nonce is
+    # rejected (fail closed) — nothing is evicted, and other tokens are
+    # unaffected. Operators can raise the cap; correctness never depends on
+    # evicting a live nonce.
     cache = PopReplayCache(max_entries=100, max_per_token=2)
     t = _now_unix()
     assert cache.check_and_record(
         token_id="A", nonce="a1", ts=t, now_unix=t, skew=SKEW
     ) is True
     assert cache.check_and_record(
-        token_id="B", nonce="b1", ts=t, now_unix=t, skew=SKEW
-    ) is True
-    assert cache.check_and_record(
         token_id="A", nonce="a2", ts=t + 1, now_unix=t, skew=SKEW
     ) is True
-    # A at cap: a3 evicts A's oldest (a1).
+    # A's cap is full of fresh nonces -> a3 rejected (fail closed).
     assert cache.check_and_record(
         token_id="A", nonce="a3", ts=t + 2, now_unix=t, skew=SKEW
-    ) is True
-    # a1 evicted -> fresh again.
+    ) is False
+    # Nothing was evicted: both held nonces are still replays.
     assert cache.check_and_record(
-        token_id="A", nonce="a1", ts=t + 3, now_unix=t, skew=SKEW
-    ) is True
-    # B untouched -> still a replay.
+        token_id="A", nonce="a1", ts=t, now_unix=t, skew=SKEW
+    ) is False
+    assert cache.check_and_record(
+        token_id="A", nonce="a2", ts=t + 1, now_unix=t, skew=SKEW
+    ) is False
+    # A different token is unaffected by A's full cap.
     assert cache.check_and_record(
         token_id="B", nonce="b1", ts=t, now_unix=t, skew=SKEW
-    ) is False
+    ) is True
+
+
+def test_pop_cache_expired_entries_still_purged_at_cap() -> None:
+    # Fail-closed applies only to FRESH entries: once a window passes, expired
+    # entries are purged, so the cache stays bounded across windows and the
+    # token is not locked out forever.
+    cache = PopReplayCache(max_entries=100, max_per_token=2)
+    t0 = _now_unix()
+    assert cache.check_and_record(
+        token_id="A", nonce="a1", ts=t0, now_unix=t0, skew=SKEW
+    ) is True
+    assert cache.check_and_record(
+        token_id="A", nonce="a2", ts=t0, now_unix=t0, skew=SKEW
+    ) is True
+    # Next window: the t0 entries are expired -> purged, so a new nonce is
+    # accepted (no permanent lockout) and the footprint stays bounded.
+    t1 = t0 + SKEW + 1
+    assert cache.check_and_record(
+        token_id="A", nonce="a3", ts=t1, now_unix=t1, skew=SKEW
+    ) is True
+    assert len(cache._seen) == 1
 
 
 def test_pop_token_without_cache_wired_fails_closed() -> None:

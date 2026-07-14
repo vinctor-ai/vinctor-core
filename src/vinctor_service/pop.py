@@ -42,8 +42,8 @@ class PopReplayCache:
         self._seen: dict[tuple[str, str], int] = {}
         self._max = max_entries
         # Per-token-id cap mirrors SQLiteReplayStore: one token's nonce flood is
-        # bounded to its own footprint and evicts only its own oldest within-window
-        # nonce, so it can never saturate the global cap against other tokens.
+        # bounded to its own footprint (fresh proofs beyond the cap are rejected),
+        # so it can never saturate the global cap against other tokens.
         self._max_per_token = max_per_token
 
     def check_and_record(
@@ -56,16 +56,14 @@ class PopReplayCache:
         key = (token_id, nonce)
         if key in self._seen:
             return False  # replay
-        token_keys = [k for k in self._seen if k[0] == token_id]
-        if len(token_keys) >= self._max_per_token:
-            # This token is at its own cap: evict its OWN oldest within-window
-            # nonce (min ts; insertion order as the FIFO tie-break) — net-zero on
-            # the global count, never touching another token's row.
-            # token_keys is already in insertion order; min is stable, so an
-            # equal-ts tie resolves to the earliest-inserted (FIFO) key.
-            oldest = min(token_keys, key=lambda k: self._seen[k])
-            del self._seen[oldest]
-        elif len(self._seen) >= self._max:
+        # Expired entries were purged above, so every entry counted here is
+        # still inside the freshness window. NEVER evict a live nonce to make
+        # room (ADR 0007): a dropped fresh nonce would let its captured proof
+        # replay within the window. When a cap is full of fresh entries, fail
+        # closed (reject the new proof); operators can raise the cap.
+        if sum(1 for k in self._seen if k[0] == token_id) >= self._max_per_token:
+            return False  # per-token cap full of fresh entries -> fail closed
+        if len(self._seen) >= self._max:
             return False  # full of fresh entries -> fail closed
         self._seen[key] = ts
         return True

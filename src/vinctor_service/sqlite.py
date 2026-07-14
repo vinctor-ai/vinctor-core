@@ -1003,8 +1003,8 @@ class SQLiteReplayStore:
         # could mint distinct fresh nonces up to ``max_entries`` and lock out
         # every OTHER token's fresh proof. Bounding each token_id's live footprint
         # to ``max_per_token`` keeps that flood self-contained — a token at its own
-        # cap evicts its OWN oldest within-window nonce, never another token's row
-        # — so the global cap stays a generous backstop, not a cross-tenant lever.
+        # cap has its NEW proofs rejected (fail closed), never evicting any row —
+        # so the global cap stays a generous backstop, not a cross-tenant lever.
         self._max_per_token = max_per_token
         # The live SQLite service shares ONE connection (check_same_thread=False)
         # across ThreadingHTTPServer threads; serialize the multi-statement
@@ -1031,25 +1031,18 @@ class SQLiteReplayStore:
                 (token_id,),
             ).fetchone()[0]
             if per_token >= self._max_per_token:
-                # This token is at its own cap: make room by evicting THIS token's
-                # oldest within-window nonce (min ts; rowid tie-break for stable
-                # FIFO). Net-zero on the global count, and it never touches another
-                # token's rows — so the flood can never lock out other tenants.
-                self._conn.execute(
-                    "DELETE FROM pop_replay_nonces WHERE rowid = ("
-                    "  SELECT rowid FROM pop_replay_nonces WHERE token_id = ?"
-                    "  ORDER BY ts ASC, rowid ASC LIMIT 1"
-                    ")",
-                    (token_id,),
-                )
-            else:
-                # Below the per-token cap: a new row would GROW the global count,
-                # so honor the global backstop (fail closed when saturated).
-                count = self._conn.execute(
-                    "SELECT COUNT(*) FROM pop_replay_nonces"
-                ).fetchone()[0]
-                if count >= self._max:
-                    return False  # full of fresh entries -> fail closed
+                # Expired rows were purged above, so this token's cap is full of
+                # still-fresh nonces. NEVER evict a live nonce to make room
+                # (ADR 0007): a dropped fresh nonce would let its captured proof
+                # replay within the window. Fail closed (reject the new proof);
+                # operators can raise the cap. The flood stays self-contained, so
+                # it still cannot lock out other tenants.
+                return False
+            count = self._conn.execute(
+                "SELECT COUNT(*) FROM pop_replay_nonces"
+            ).fetchone()[0]
+            if count >= self._max:
+                return False  # full of fresh entries -> fail closed
             try:
                 self._conn.execute(
                     "INSERT INTO pop_replay_nonces (token_id, nonce, ts) "

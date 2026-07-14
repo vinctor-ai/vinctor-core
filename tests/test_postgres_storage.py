@@ -178,6 +178,42 @@ def test_postgres_replay_store_rejects_cross_instance_duplicate() -> None:
     second_conn.close()
 
 
+def test_postgres_replay_flood_cannot_evict_fresh_nonce() -> None:
+    # SECURITY (ADR 0007): never evict a still-fresh nonce to make room. An
+    # attacker who captured a valid proof must not be able to flood the same
+    # token's per-token cap with fresh nonces to push the captured nonce out
+    # and replay it inside the freshness window.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    cap = 3
+    store = PostgresReplayStore(conn, max_entries=100, max_per_token=cap)
+    # The captured proof's nonce: oldest ts in the window (still fresh).
+    assert store.check_and_record(
+        token_id="vtk_main", nonce="n1", ts=99, now_unix=100, skew=30
+    )
+    # Attacker pushes `cap` more distinct fresh nonces for the SAME token.
+    for i in range(cap):
+        store.check_and_record(
+            token_id="vtk_main", nonce=f"flood{i}", ts=100, now_unix=100, skew=30
+        )
+    # Re-presenting the captured nonce within the window MUST still be a
+    # replay: n1 was never evicted to make room for the flood.
+    assert not store.check_and_record(
+        token_id="vtk_main", nonce="n1", ts=99, now_unix=100, skew=30
+    )
+    # Cap full of still-fresh nonces -> a brand-new nonce is rejected
+    # (fail closed), never evicting a live entry.
+    assert not store.check_and_record(
+        token_id="vtk_main", nonce="brand_new", ts=100, now_unix=100, skew=30
+    )
+    # Expired entries are still purged: the next window frees capacity, so the
+    # store stays bounded and the token is not locked out forever.
+    assert store.check_and_record(
+        token_id="vtk_main", nonce="next_window", ts=200, now_unix=200, skew=30
+    )
+    conn.close()
+
+
 def test_postgres_full_runtime_shares_control_plane_across_instances() -> None:
     assert DSN is not None
     config = ServiceRuntimeConfig(
