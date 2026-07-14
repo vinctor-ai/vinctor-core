@@ -584,6 +584,139 @@ require_boundary:
     conn.close()
 
 
+def test_postgres_policy_apply_is_all_or_nothing_and_workspace_locked(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vinctor_service.postgres_policy import (
+        POLICY_APPLY_LOCK_CLASSID,
+        _snapshot_state,
+        _workspace_apply_lock_key,
+    )
+
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    first_path = tmp_path / "first.yaml"
+    first_path.write_text(
+        """
+version: 1
+workspace_id: ws_main
+agent_bounds:
+  - agent_id: agent_a
+    scopes: [read:repo/a]
+auto_approval_rules:
+  - rule_id: apr_old
+    name: old
+    target_agent_id: agent_a
+    allowed_scopes: [read:repo/a]
+    max_ttl: 5m
+require_boundary:
+  workspace: true
+""".strip(),
+        encoding="utf-8",
+    )
+    first = apply_policy_file(
+        first_path,
+        service=service,
+        workspace_id="ws_main",
+        applied_by="operator:a",
+        now=NOW,
+    )
+    # Snapshot consistency: the recorded snapshot equals the live policy state.
+    row = conn.execute(
+        "SELECT snapshot_json FROM policy_versions WHERE workspace_id = %s AND version = %s",
+        ("ws_main", first.policy_version),
+    ).fetchone()
+    stored = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+    assert stored == _snapshot_state(service=service, workspace_id="ws_main")
+
+    before = (
+        service.scope_bounds_repository.list_bounds_for_workspace("ws_main"),
+        service.list_auto_approval_rules("ws_main"),
+        service.agent_enforcement_settings_repository.list_require_boundary("ws_main"),
+        list_policy_versions(service=service, workspace_id="ws_main"),
+    )
+
+    second_path = tmp_path / "second.yaml"
+    second_path.write_text(
+        """
+version: 1
+workspace_id: ws_main
+agent_bounds:
+  - agent_id: agent_a
+    scopes: [write:repo/a/elevated]
+  - agent_id: agent_b
+    scopes: [write:repo/b]
+auto_approval_rules:
+  - rule_id: apr_old
+    name: old
+    target_agent_id: agent_a
+    allowed_scopes: [write:repo/a/elevated]
+    max_ttl: 9m
+  - rule_id: apr_new
+    name: new
+    target_agent_id: agent_b
+    allowed_scopes: [write:repo/b]
+    max_ttl: 10m
+require_boundary:
+  workspace: false
+""".strip(),
+        encoding="utf-8",
+    )
+
+    observed: dict[str, object] = {}
+
+    # The boundary write is the LAST write step before the version record; by
+    # the time it runs, the bounds and rule writes have already happened
+    # inside the apply transaction.
+    def boom(**_kwargs: object) -> None:
+        rival = connect_postgres(DSN)
+        try:
+            observed["advisory_lock"] = rival.execute(
+                """
+                SELECT granted FROM pg_locks
+                WHERE locktype = 'advisory' AND classid::int8 = %s AND objid::int8 = %s
+                """,
+                (POLICY_APPLY_LOCK_CLASSID, _workspace_apply_lock_key("ws_main")),
+            ).fetchone()
+            observed["rival_sees_agent_b"] = rival.execute(
+                """
+                SELECT COUNT(*) FROM agent_issuable_scope_bounds
+                WHERE workspace_id = %s AND agent_id = %s
+                """,
+                ("ws_main", "agent_b"),
+            ).fetchone()[0]
+        finally:
+            rival.close()
+        raise RuntimeError("boundary write failed")
+
+    monkeypatch.setattr(
+        service.agent_enforcement_settings_repository, "set_require_boundary", boom
+    )
+    with pytest.raises(RuntimeError, match="boundary write failed"):
+        apply_policy_file(
+            second_path,
+            service=service,
+            workspace_id="ws_main",
+            applied_by="operator:b",
+            now=NOW,
+        )
+
+    # The whole apply ran under the workspace advisory lock, and no other
+    # connection ever observed the half-applied writes.
+    assert observed["advisory_lock"] == (True,)
+    assert observed["rival_sees_agent_b"] == 0
+    # All-or-nothing: every earlier write plus the version record unwound.
+    after = (
+        service.scope_bounds_repository.list_bounds_for_workspace("ws_main"),
+        service.list_auto_approval_rules("ws_main"),
+        service.agent_enforcement_settings_repository.list_require_boundary("ws_main"),
+        list_policy_versions(service=service, workspace_id="ws_main"),
+    )
+    assert after == before
+    conn.close()
+
+
 def test_postgres_boundary_name_is_unique_per_workspace() -> None:
     assert DSN is not None
     conn = connect_postgres(DSN)

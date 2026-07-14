@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -664,6 +666,25 @@ class SQLiteGrantRepository:
         return revoked
 
 
+@contextmanager
+def _write_scope(conn: sqlite3.Connection) -> Iterator[None]:
+    """Commit scope for a single repository write.
+
+    Standalone calls keep today's behavior: ``with conn:`` opens the write and
+    commits (or rolls back) it on exit. When the caller already holds an
+    explicit transaction (policy apply's all-or-nothing BEGIN IMMEDIATE unit
+    of work), sqlite3's connection context manager must NOT be entered — its
+    exit would commit the caller's WHOLE transaction mid-way — so the write
+    joins the open transaction instead and the outer owner commits or rolls
+    back everything together.
+    """
+    if conn.in_transaction:
+        yield
+        return
+    with conn:
+        yield
+
+
 class SQLiteAgentIssuableScopeBoundsRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
@@ -716,7 +737,7 @@ class SQLiteAgentIssuableScopeBoundsRepository:
         now: datetime,
     ) -> None:
         validate_issuable_scope_bounds(scopes, max_ttl_seconds=max_ttl_seconds)
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO agent_issuable_scope_bounds (
@@ -782,7 +803,7 @@ class SQLiteAgentEnforcementSettingsRepository:
     def set_require_boundary(
         self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime
     ) -> None:
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
@@ -1145,7 +1166,7 @@ class SQLiteAutoApprovalRuleRepository:
     def add_rule(self, rule: AutoApprovalRule) -> None:
         if self.get_rule(rule.rule_id) is not None:
             raise ValueError(f"duplicate auto-approval rule_id: {rule.rule_id}")
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO auto_approval_rules (
@@ -1191,7 +1212,7 @@ class SQLiteAutoApprovalRuleRepository:
     def update_rule(self, rule: AutoApprovalRule) -> None:
         if self.get_rule(rule.rule_id) is None:
             raise ValueError(f"unknown auto-approval rule_id: {rule.rule_id}")
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 UPDATE auto_approval_rules

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
@@ -11,6 +14,37 @@ from vinctor_service.policy_files import (
 )
 
 POLICY_VERSION_LOCK_ID = 0x56504F4C
+# Two-key advisory-lock class for serializing whole policy applies per
+# workspace (pg_advisory_xact_lock(classid, key)). The two-int form lives in a
+# distinct keyspace from the single-bigint POLICY_VERSION_LOCK_ID above, so
+# the locks cannot collide.
+POLICY_APPLY_LOCK_CLASSID = 0x56504150
+
+
+def _workspace_apply_lock_key(workspace_id: str) -> int:
+    """Stable non-negative int4 advisory-lock key derived from the workspace."""
+    digest = hashlib.sha256(workspace_id.encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
+
+
+@contextmanager
+def postgres_policy_apply_transaction(*, service: Any, workspace_id: str) -> Iterator[None]:
+    """One transaction for the WHOLE policy apply, serialized per workspace.
+
+    Takes a workspace-scoped ``pg_advisory_xact_lock`` up front so two
+    concurrent applies to the same workspace queue instead of interleaving,
+    then keeps every write plus the version-snapshot record inside this single
+    transaction: the repositories' nested ``transaction()`` scopes become
+    savepoints under it, so everything commits together on success or rolls
+    back together on any failure. The lock is transaction-scoped and releases
+    automatically at commit/rollback.
+    """
+    with service.conn.transaction():
+        service.conn.execute(
+            "SELECT pg_advisory_xact_lock(%s::int4, %s::int4)",
+            (POLICY_APPLY_LOCK_CLASSID, _workspace_apply_lock_key(workspace_id)),
+        )
+        yield
 
 
 def record_postgres_policy_version(
