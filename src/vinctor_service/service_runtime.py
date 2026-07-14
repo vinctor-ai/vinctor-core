@@ -12,9 +12,9 @@ from typing import Any, NoReturn
 from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.local_http import create_v1_http_server
 from vinctor_service.metrics import Metrics
+from vinctor_service.oidc import PyJwtOidcTokenVerifier
 from vinctor_service.postgres import PostgresV1Service, connect_postgres
 from vinctor_service.postgres_control import PostgresLocalKeyRepository
-from vinctor_service.oidc import PyJwtOidcTokenVerifier
 from vinctor_service.service_config import ServiceRuntimeConfig
 from vinctor_service.sqlite import SQLiteV1Service
 
@@ -30,7 +30,8 @@ class ServiceRuntimeHandle:
 
     def close(self) -> None:
         self.server.server_close()
-        close_export = getattr(self.service.audit_writer, "close_export", None)
+        audit_writer = getattr(self.service, "audit_writer", None)
+        close_export = getattr(audit_writer, "close_export", None)
         if callable(close_export):
             close_export()
         self.conn.close()
