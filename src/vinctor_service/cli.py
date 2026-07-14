@@ -19,6 +19,7 @@ from vinctor_core.models import Grant
 from vinctor_service.audit_chain import AnchorRecord
 from vinctor_service.key_ops import (
     rotate_agent_key,
+    rotate_auditor_key,
     rotate_pep_key,
     rotate_workspace_key,
     serialize_key_record,
@@ -178,6 +179,11 @@ def _add_global_flags(parser: argparse.ArgumentParser, *, defaults: bool) -> Non
         default=os.environ.get("VINCTOR_WORKSPACE_KEY"),
         help="Operator/workspace API key for operator-side calls "
         "(env: VINCTOR_WORKSPACE_KEY).",
+    )
+    add(
+        ["--auditor-key"],
+        default=os.environ.get("VINCTOR_AUDITOR_KEY"),
+        help="Read-only workspace audit key (env: VINCTOR_AUDITOR_KEY).",
     )
     add(
         ["--agent-key"],
@@ -738,7 +744,7 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
     keys_revoke.add_argument("key_id")
     keys_rotate = keys_commands.add_parser(
         "rotate",
-        help="Rotate a workspace, agent, or PEP key.",
+        help="Rotate a workspace, auditor, agent, or PEP key.",
         description="Rotate a key, issuing a new secret and revoking the old one. The "
         "raw key is printed once and cannot be recovered later.",
     )
@@ -747,6 +753,11 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
         "workspace",
         help="Rotate the workspace key.",
         description="Rotate the workspace key.",
+    )
+    rotate_targets.add_parser(
+        "auditor",
+        help="Rotate the read-only workspace auditor key.",
+        description="Rotate the read-only key used only for workspace audit access.",
     )
     rotate_agent = rotate_targets.add_parser(
         "agent",
@@ -1478,13 +1489,21 @@ def _operator_audit(args: argparse.Namespace, *, stdout: TextIO) -> None:
 
 def _operator_audit_export(args: argparse.Namespace, *, stdout: TextIO) -> None:
     service = _sqlite_service(args.db)
-    workspace_key = _required(args.workspace_key, "workspace key")
-    identity = SQLiteLocalKeyRepository(service.conn).resolve_workspace_identity(
-        workspace_key,
-        now=datetime.now(UTC),
-    )
+    repository = SQLiteLocalKeyRepository(service.conn)
+    if args.auditor_key:
+        identity = repository.resolve_auditor_identity(
+            args.auditor_key, now=datetime.now(UTC)
+        )
+    else:
+        workspace_key = _required(args.workspace_key, "workspace or auditor key")
+        identity = repository.resolve_workspace_identity(
+            workspace_key, now=datetime.now(UTC)
+        )
     if identity is None:
-        raise CliError("valid workspace key is required for audit export", code=EXIT_AUTH)
+        raise CliError(
+            "valid workspace or auditor key is required for audit export",
+            code=EXIT_AUTH,
+        )
 
     events = service.list_filtered(identity.workspace_id)
     payload = "\n".join(json.dumps(_audit_body(event), sort_keys=True) for event in events)
@@ -1680,6 +1699,12 @@ def _operator_keys(args: argparse.Namespace, *, stdout: TextIO) -> None:
         if args.rotate_target == "workspace":
             result = rotate_workspace_key(repository, workspace_id=args.workspace_id, now=now)
             key_type = "workspace"
+            agent_id = None
+        elif args.rotate_target == "auditor":
+            result = rotate_auditor_key(
+                repository, workspace_id=args.workspace_id, now=now
+            )
+            key_type = "auditor"
             agent_id = None
         elif args.rotate_target == "agent":
             result = rotate_agent_key(

@@ -156,6 +156,23 @@ authorizes every `operator` command.
 
 ---
 
+## Auditor (read-only workspace key `auk_…`)
+
+An auditor key is workspace-scoped and can call only `GET /v1/audit-events`
+and `GET /v1/audit-events/{event_id}` through `X-Auditor-Key`.
+
+- **Created/rotated by** `vinctor operator keys rotate auditor`; the raw key is
+  printed once.
+- **Listed/revoked** with the same `operator keys` commands as other local keys.
+- It is rejected by boundary, grant, request, rule, token, policy, and other
+  mutation paths; those continue to require the workspace/operator key.
+- `operator audit export` accepts it through `--auditor-key` or
+  `VINCTOR_AUDITOR_KEY`.
+- Authentication failures with no resolvable workspace are not returned to a
+  workspace auditor, preventing cross-tenant leakage.
+
+---
+
 ## Agent (agent id and agent key `aak_…`)
 
 An agent identity is what a runtime presents when it calls `/v1/enforce`; the

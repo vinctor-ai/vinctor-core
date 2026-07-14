@@ -457,6 +457,9 @@ only the hash and it cannot be recovered.
 # Rotate the workspace/admin key:
 vinctor --db .vinctor/vinctor.sqlite --workspace-id ws_local operator keys rotate workspace
 
+# Rotate the read-only workspace auditor key:
+vinctor --db .vinctor/vinctor.sqlite --workspace-id ws_local operator keys rotate auditor
+
 # Rotate a specific agent's key:
 vinctor --db .vinctor/vinctor.sqlite --workspace-id ws_local operator keys rotate agent \
   --agent-id agent_local
@@ -484,10 +487,11 @@ JSON output (`--json`) includes the raw key **only** for `rotate` — never for
 }
 ```
 
-Rotating the workspace key revokes prior active workspace keys only; rotating an
-agent key revokes prior active keys for that agent id only. After rotating,
-distribute the new key to the relevant caller and update its `VINCTOR_*`
-environment.
+Rotating the workspace or auditor key revokes prior active keys of that same
+type only; rotating an agent key revokes prior active keys for that agent id
+only. Auditor keys (`auk_…`) are accepted only on the audit read endpoints via
+`X-Auditor-Key`; they cannot perform operator mutations. After rotating,
+distribute the new key to the relevant caller and update its environment.
 
 ### Flags
 
