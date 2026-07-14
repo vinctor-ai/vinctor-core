@@ -6,11 +6,18 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from vinctor_core import (
+    BoundaryRegistrationInput,
+    disable_boundary,
+    register_boundary,
+)
 from vinctor_core.models import AuditEvent, Grant
 from vinctor_service.models import V1EnforceRequest, V1ObserveRequest
 from vinctor_service.policy_infer import infer_policy_document
 from vinctor_service.postgres import (
+    PostgresAgentEnforcementSettingsRepository,
     PostgresAuditWriter,
+    PostgresBoundaryRegistry,
     PostgresGrantRepository,
     PostgresV1Service,
     connect_postgres,
@@ -30,7 +37,9 @@ def clean_database():
     conn = connect_postgres(DSN)
     init_postgres_schema(conn)
     with conn.transaction():
-        conn.execute("TRUNCATE TABLE audit_events, grants")
+        conn.execute(
+            "TRUNCATE TABLE audit_events, grants, boundaries, agent_enforcement_settings"
+        )
     conn.close()
 
 
@@ -73,6 +82,122 @@ def test_postgres_runtime_selection_initializes_and_reports_ready() -> None:
         assert handle.is_ready()
     finally:
         handle.close()
+
+
+def test_postgres_boundary_and_settings_drive_enforcement() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    service.insert_grant(grant())
+    service.agent_enforcement_settings_repository.set_require_boundary(
+        workspace_id="ws_main",
+        agent_id="",
+        require_boundary=True,
+        now=NOW,
+    )
+
+    missing = service.enforce(
+        V1EnforceRequest(
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            grant_ref="grt_main",
+            action="write",
+            resource="repo/feature/readme",
+        ),
+        now=NOW,
+    )
+    boundary = register_boundary(
+        service.boundary_registry,
+        BoundaryRegistrationInput(
+            workspace_id="ws_main",
+            name="claude-code",
+            runtime="claude-code",
+            boundary_type="pretooluse",
+        ),
+        boundary_id="bnd_main",
+        now=NOW,
+    )
+    permit = service.enforce(
+        V1EnforceRequest(
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            grant_ref="grt_main",
+            action="write",
+            resource="repo/feature/readme",
+            boundary_id=boundary.boundary_id,
+        ),
+        now=NOW,
+    )
+    disable_boundary(
+        service.boundary_registry,
+        boundary_id=boundary.boundary_id,
+        workspace_id="ws_main",
+        now=NOW + timedelta(seconds=1),
+    )
+    disabled = service.enforce(
+        V1EnforceRequest(
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            grant_ref="grt_main",
+            action="write",
+            resource="repo/feature/readme",
+            boundary_id=boundary.boundary_id,
+        ),
+        now=NOW + timedelta(seconds=1),
+    )
+
+    assert missing.error == "boundary_required"
+    assert permit.status_code == 200
+    event = service.get_audit_event(permit.audit_event_id or "")
+    assert event is not None
+    assert event.runtime == "claude-code"
+    assert disabled.error == "boundary_inactive"
+    conn.close()
+
+
+def test_postgres_enforcement_setting_agent_override() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    repo = PostgresAgentEnforcementSettingsRepository(conn)
+    repo.set_require_boundary(
+        workspace_id="ws_main", agent_id="", require_boundary=True, now=NOW
+    )
+    repo.set_require_boundary(
+        workspace_id="ws_main",
+        agent_id="agent_exempt",
+        require_boundary=False,
+        now=NOW,
+    )
+
+    assert repo.is_boundary_required(workspace_id="ws_main", agent_id="agent_other")
+    assert not repo.is_boundary_required(
+        workspace_id="ws_main", agent_id="agent_exempt"
+    )
+    assert repo.list_require_boundary("ws_main") == (
+        ("", True),
+        ("agent_exempt", False),
+    )
+    conn.close()
+
+
+def test_postgres_boundary_name_is_unique_per_workspace() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    registry = PostgresBoundaryRegistry(conn)
+    registration = BoundaryRegistrationInput(
+        workspace_id="ws_main",
+        name="claude-code",
+        runtime="claude-code",
+        boundary_type="pretooluse",
+    )
+    first = register_boundary(registry, registration, boundary_id="bnd_one", now=NOW)
+
+    with pytest.raises(ValueError, match="boundary name must be unique"):
+        register_boundary(registry, registration, boundary_id="bnd_two", now=NOW)
+
+    assert registry.get(first.boundary_id) == first
+    assert registry.list_for_workspace("ws_main") == [first]
+    conn.close()
 
 
 def test_postgres_service_enforces_and_persists_audit() -> None:

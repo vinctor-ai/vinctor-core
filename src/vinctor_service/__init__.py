@@ -61,7 +61,9 @@ from vinctor_service.models import (
     V1ObserveResponse,
 )
 from vinctor_service.postgres import (
+    PostgresAgentEnforcementSettingsRepository,
     PostgresAuditWriter,
+    PostgresBoundaryRegistry,
     PostgresGrantRepository,
     PostgresV1Service,
     connect_postgres,
@@ -151,6 +153,8 @@ __all__ = [
     "PEP_KEY_PREFIX",
     "PepIdentity",
     "PostgresAuditWriter",
+    "PostgresAgentEnforcementSettingsRepository",
+    "PostgresBoundaryRegistry",
     "PostgresGrantRepository",
     "PostgresV1Service",
     "SQLiteAgentEnforcementSettingsRepository",

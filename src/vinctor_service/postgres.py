@@ -5,7 +5,7 @@ import sys
 from datetime import UTC, datetime
 from typing import Any
 
-from vinctor_core.models import AuditEvent, Grant
+from vinctor_core.models import AuditEvent, Boundary, Grant
 from vinctor_service.audit import AuthFailureAuditThrottle
 from vinctor_service.audit_anchor import AuditAnchor, NullAnchor
 from vinctor_service.audit_chain import GENESIS_PREV_HASH, row_hash
@@ -93,18 +93,48 @@ def init_postgres_schema(conn: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_postgres_audit_agent
         ON audit_events(workspace_id, agent_id, seq DESC)
         """,
+        """
+        CREATE TABLE IF NOT EXISTS boundaries (
+            boundary_id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            runtime TEXT NOT NULL,
+            boundary_type TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL,
+            updated_at TIMESTAMPTZ NOT NULL,
+            UNIQUE (workspace_id, name)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_postgres_boundaries_workspace
+        ON boundaries(workspace_id, created_at, boundary_id)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS agent_enforcement_settings (
+            workspace_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            require_boundary BOOLEAN NOT NULL DEFAULT FALSE,
+            require_subject_token BOOLEAN NOT NULL DEFAULT FALSE,
+            require_pop BOOLEAN NOT NULL DEFAULT FALSE,
+            updated_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (workspace_id, agent_id)
+        )
+        """,
     )
     with conn.transaction():
         for statement in statements:
             conn.execute(statement)
-        conn.execute(
-            """
-            INSERT INTO schema_migrations (version, applied_at)
-            VALUES (%s, %s)
-            ON CONFLICT (version) DO NOTHING
-            """,
-            (1, datetime.now(UTC)),
-        )
+        for version in (1, 2):
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, applied_at)
+                VALUES (%s, %s)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                (version, datetime.now(UTC)),
+            )
 
 
 class PostgresGrantRepository:
@@ -186,6 +216,204 @@ class PostgresGrantRepository:
             ).fetchone()
         return _grant_from_row(row)
 
+
+class PostgresBoundaryRegistry:
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    def add(self, boundary: Boundary) -> Boundary:
+        try:
+            with self._conn.transaction():
+                self._conn.execute(
+                    """
+                    INSERT INTO boundaries (
+                        boundary_id, workspace_id, name, runtime, boundary_type,
+                        mode, status, created_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (boundary_id) DO UPDATE SET
+                        workspace_id = EXCLUDED.workspace_id,
+                        name = EXCLUDED.name,
+                        runtime = EXCLUDED.runtime,
+                        boundary_type = EXCLUDED.boundary_type,
+                        mode = EXCLUDED.mode,
+                        status = EXCLUDED.status,
+                        created_at = EXCLUDED.created_at,
+                        updated_at = EXCLUDED.updated_at
+                    """,
+                    (
+                        boundary.boundary_id,
+                        boundary.workspace_id,
+                        boundary.name,
+                        boundary.runtime,
+                        boundary.boundary_type,
+                        boundary.mode,
+                        boundary.status,
+                        boundary.created_at,
+                        boundary.updated_at,
+                    ),
+                )
+        except Exception as exc:
+            if getattr(exc, "sqlstate", None) == "23505":
+                raise ValueError("boundary name must be unique within workspace") from exc
+            raise
+        return boundary
+
+    def get(self, boundary_id: str) -> Boundary | None:
+        with self._conn.transaction():
+            row = self._conn.execute(
+                """
+                SELECT boundary_id, workspace_id, name, runtime, boundary_type,
+                       mode, status, created_at, updated_at
+                FROM boundaries
+                WHERE boundary_id = %s
+                """,
+                (boundary_id,),
+            ).fetchone()
+        return _boundary_from_row(row)
+
+    def list_for_workspace(self, workspace_id: str) -> list[Boundary]:
+        with self._conn.transaction():
+            rows = self._conn.execute(
+                """
+                SELECT boundary_id, workspace_id, name, runtime, boundary_type,
+                       mode, status, created_at, updated_at
+                FROM boundaries
+                WHERE workspace_id = %s
+                ORDER BY created_at, boundary_id
+                """,
+                (workspace_id,),
+            ).fetchall()
+        return [boundary for row in rows if (boundary := _boundary_from_row(row))]
+
+
+class PostgresAgentEnforcementSettingsRepository:
+    _COLUMNS = {"require_boundary", "require_subject_token", "require_pop"}
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    def _get(self, column: str, *, workspace_id: str, agent_id: str) -> bool | None:
+        if column not in self._COLUMNS:
+            raise ValueError("unknown enforcement setting")
+        with self._conn.transaction():
+            row = self._conn.execute(
+                f"""
+                SELECT {column} FROM agent_enforcement_settings
+                WHERE workspace_id = %s AND agent_id = %s
+                """,
+                (workspace_id, agent_id),
+            ).fetchone()
+        return bool(row[0]) if row is not None else None
+
+    def _required(self, column: str, *, workspace_id: str, agent_id: str) -> bool:
+        agent = self._get(column, workspace_id=workspace_id, agent_id=agent_id)
+        if agent is not None:
+            return agent
+        workspace = self._get(column, workspace_id=workspace_id, agent_id="")
+        return workspace if workspace is not None else False
+
+    def _set(
+        self,
+        column: str,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        value: bool,
+        now: datetime,
+    ) -> None:
+        if column not in self._COLUMNS:
+            raise ValueError("unknown enforcement setting")
+        with self._conn.transaction():
+            self._conn.execute(
+                f"""
+                INSERT INTO agent_enforcement_settings (
+                    workspace_id, agent_id, {column}, updated_at
+                ) VALUES (%s, %s, %s, %s)
+                ON CONFLICT (workspace_id, agent_id) DO UPDATE SET
+                    {column} = EXCLUDED.{column},
+                    updated_at = EXCLUDED.updated_at
+                """,
+                (workspace_id, agent_id, value, now),
+            )
+
+    def get_require_boundary(self, *, workspace_id: str, agent_id: str) -> bool:
+        return bool(
+            self._get("require_boundary", workspace_id=workspace_id, agent_id=agent_id)
+        )
+
+    def get_require_boundary_setting(
+        self, *, workspace_id: str, agent_id: str
+    ) -> bool | None:
+        return self._get("require_boundary", workspace_id=workspace_id, agent_id=agent_id)
+
+    def is_boundary_required(self, *, workspace_id: str, agent_id: str) -> bool:
+        return self._required("require_boundary", workspace_id=workspace_id, agent_id=agent_id)
+
+    def list_require_boundary(self, workspace_id: str) -> tuple[tuple[str, bool], ...]:
+        with self._conn.transaction():
+            rows = self._conn.execute(
+                """
+                SELECT agent_id, require_boundary
+                FROM agent_enforcement_settings
+                WHERE workspace_id = %s
+                ORDER BY agent_id
+                """,
+                (workspace_id,),
+            ).fetchall()
+        return tuple((row[0], bool(row[1])) for row in rows)
+
+    def set_require_boundary(
+        self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime
+    ) -> None:
+        self._set(
+            "require_boundary",
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            value=require_boundary,
+            now=now,
+        )
+
+    def get_require_subject_token_setting(
+        self, *, workspace_id: str, agent_id: str
+    ) -> bool | None:
+        return self._get(
+            "require_subject_token", workspace_id=workspace_id, agent_id=agent_id
+        )
+
+    def is_subject_token_required(self, *, workspace_id: str, agent_id: str) -> bool:
+        return self._required(
+            "require_subject_token", workspace_id=workspace_id, agent_id=agent_id
+        )
+
+    def set_require_subject_token(
+        self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime
+    ) -> None:
+        self._set(
+            "require_subject_token",
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            value=require_subject_token,
+            now=now,
+        )
+
+    def get_require_pop_setting(
+        self, *, workspace_id: str, agent_id: str
+    ) -> bool | None:
+        return self._get("require_pop", workspace_id=workspace_id, agent_id=agent_id)
+
+    def is_pop_required(self, *, workspace_id: str, agent_id: str) -> bool:
+        return self._required("require_pop", workspace_id=workspace_id, agent_id=agent_id)
+
+    def set_require_pop(
+        self, *, workspace_id: str, agent_id: str, require_pop: bool, now: datetime
+    ) -> None:
+        self._set(
+            "require_pop",
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            value=require_pop,
+            now=now,
+        )
 
 class PostgresAuditWriter:
     def __init__(self, conn: Any, anchor: AuditAnchor | None = None) -> None:
@@ -320,6 +548,10 @@ class PostgresV1Service:
             init_postgres_schema(conn)
         self.grant_repository = PostgresGrantRepository(conn)
         self.audit_writer = PostgresAuditWriter(conn)
+        self.boundary_registry = PostgresBoundaryRegistry(conn)
+        self.agent_enforcement_settings_repository = (
+            PostgresAgentEnforcementSettingsRepository(conn)
+        )
         self._auth_failures = AuthFailureAuditThrottle()
 
     @property
@@ -351,10 +583,17 @@ class PostgresV1Service:
             grant_repository=self.grant_repository,
             now=now,
             audit_writer=self.audit_writer,
+            boundary_registry=self.boundary_registry,
+            agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
         )
 
     def observe(self, request: V1ObserveRequest, *, now: datetime) -> V1ObserveResponse:
-        return record_observation(request, audit_writer=self.audit_writer, now=now)
+        return record_observation(
+            request,
+            audit_writer=self.audit_writer,
+            now=now,
+            boundary_registry=self.boundary_registry,
+        )
 
 
 def _grant_from_row(row: Any) -> Grant | None:
@@ -372,6 +611,28 @@ def _grant_from_row(row: Any) -> Grant | None:
         scopes=tuple(scopes),
         status=row[5],
         expires_at=expires_at,
+    )
+
+
+def _boundary_from_row(row: Any) -> Boundary | None:
+    if row is None:
+        return None
+    created_at = row[7]
+    updated_at = row[8]
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=UTC)
+    return Boundary(
+        boundary_id=row[0],
+        workspace_id=row[1],
+        name=row[2],
+        runtime=row[3],
+        boundary_type=row[4],
+        mode=row[5],
+        status=row[6],
+        created_at=created_at,
+        updated_at=updated_at,
     )
 
 

@@ -11,6 +11,8 @@ core.
 - grant insert, lookup, workspace listing, and revocation
 - `/v1/enforce` through `PostgresV1Service`
 - `/v1/observe` and audit-backed policy inference
+- boundary registry and boundary-required enforcement
+- agent enforcement settings (`require_boundary`, `require_subject_token`, `require_pop`)
 - durable audit lookup/filtering
 - one global tamper-evident audit chain serialized across service instances
 
@@ -54,8 +56,8 @@ and closes the connection if either step fails. SQLite remains the default.
 
 ## Deliberately not yet switched
 
-Local key storage, grant-request/approval workflows, subject tokens, agent
-enforcement settings, and boundary administration remain SQLite-backed. The
+Local key storage, grant-request/approval workflows, subject tokens, and their
+HTTP administration routes remain SQLite-backed. The
 local CLI therefore continues to select SQLite. Promoting Postgres to the
 default service runtime requires those repositories plus migration and backup
 runbooks. `vinctor service serve` rejects a Postgres selection explicitly until
