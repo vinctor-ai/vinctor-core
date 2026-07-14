@@ -454,6 +454,34 @@ def test_vinctor_cli_audit_export_accepts_read_only_auditor_key(tmp_path: Path) 
     assert '"event_type": "grant_request_rejected"' in output
 
 
+def test_vinctor_cli_auth_failures_requires_service_operator_key(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    conn = sqlite3.connect(db_path)
+    service = SQLiteV1Service(conn)
+    SQLiteLocalKeyRepository(conn).create_service_operator_key(
+        raw_key="sok_demo", now=NOW
+    )
+    service.record_auth_failure(surface="enforce", boundary_id=None, now=NOW)
+    conn.close()
+
+    result = _run(
+        [
+            "--json",
+            "--db",
+            str(db_path),
+            "--service-operator-key",
+            "sok_demo",
+            "operator",
+            "audit",
+            "auth-failures",
+        ]
+    )
+
+    assert len(result["auth_failures"]) == 1
+    assert result["auth_failures"][0]["event_type"] == "auth_failed"
+    assert result["auth_failures"][0]["workspace_id"] == ""
+
+
 def test_vinctor_demo_check_runs_smoke_flow() -> None:
     result = _run(["--json", "demo", "check"])
 
@@ -1038,6 +1066,20 @@ def test_vinctor_cli_keys_rotate_auditor(tmp_path: Path) -> None:
     assert rotated["raw_key"].startswith("auk_")
     assert rotated["key_type"] == "auditor"
     assert rotated["agent_id"] is None
+
+
+def test_vinctor_cli_keys_rotate_service_operator(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+    common = ["--json", "--db", str(db_path), "--workspace-id", "ws_demo"]
+
+    rotated = _run([*common, "operator", "keys", "rotate", "service-operator"])
+    assert rotated["raw_key"].startswith("sok_")
+    assert rotated["key_type"] == "service_operator"
+    assert rotated["workspace_id"] == "*"
+
+    listed = _run([*common, "operator", "keys", "list", "--service"])
+    assert listed["keys"][0]["key_id"] == rotated["key_id"]
 
 
 def test_vinctor_cli_keys_rotate_pep(tmp_path: Path) -> None:

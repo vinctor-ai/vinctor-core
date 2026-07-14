@@ -460,6 +460,9 @@ vinctor --db .vinctor/vinctor.sqlite --workspace-id ws_local operator keys rotat
 # Rotate the read-only workspace auditor key:
 vinctor --db .vinctor/vinctor.sqlite --workspace-id ws_local operator keys rotate auditor
 
+# Rotate the global auth-failure viewer key:
+vinctor --db .vinctor/vinctor.sqlite operator keys rotate service-operator
+
 # Rotate a specific agent's key:
 vinctor --db .vinctor/vinctor.sqlite --workspace-id ws_local operator keys rotate agent \
   --agent-id agent_local
@@ -492,6 +495,10 @@ type only; rotating an agent key revokes prior active keys for that agent id
 only. Auditor keys (`auk_…`) are accepted only on the audit read endpoints via
 `X-Auditor-Key`; they cannot perform operator mutations. After rotating,
 distribute the new key to the relevant caller and update its environment.
+
+Service-operator keys (`sok_…`) are global but intentionally narrower: they can
+only read `/v1/service/audit/auth-failures` or run `operator audit
+auth-failures`. Store them separately from workspace credentials.
 
 ### Flags
 

@@ -72,6 +72,27 @@ def rotate_auditor_key(
     )
 
 
+def rotate_service_operator_key(
+    repository: SQLiteLocalKeyRepository,
+    *,
+    now: datetime,
+) -> RotationResult:
+    """Mint one global service-operator key and revoke its predecessors."""
+    created = repository.create_service_operator_key(now=now)
+    revoked = _revoke_prior(
+        repository,
+        workspace_id="*",
+        new_key_id=created.record.key_id,
+        keep=lambda record: record.key_type == "service_operator",
+        now=now,
+    )
+    return RotationResult(
+        raw_key=created.raw_key,
+        new_key_id=created.record.key_id,
+        revoked_key_ids=revoked,
+    )
+
+
 def rotate_agent_key(
     repository: SQLiteLocalKeyRepository,
     *,

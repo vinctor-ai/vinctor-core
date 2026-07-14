@@ -32,8 +32,11 @@ class AuditReadService(Protocol):
         limit: int | None = None,
     ) -> tuple[AuditEvent, ...]: ...
 
+    def list_auth_failures(self, *, limit: int) -> tuple[AuditEvent, ...]: ...
+
 
 WorkspaceIdentityResolver = Callable[[str, datetime], WorkspaceIdentity | None]
+ServiceOperatorResolver = Callable[[str, datetime], bool]
 
 
 @dataclass(frozen=True)
@@ -118,6 +121,52 @@ def handle_v1_audit_events_http(
         return V1HttpResponse(status_code=200, body=_audit_event_body(event))
 
     return _error(404, "not_found", "route not found")
+
+
+def handle_v1_service_auth_failures_http(
+    *,
+    method: str,
+    path: str,
+    query_string: str,
+    headers: Mapping[str, str],
+    service_operator_keys: set[str] | None = None,
+    service_operator_resolver: ServiceOperatorResolver | None = None,
+    service: AuditReadService,
+    now: datetime,
+) -> V1HttpResponse:
+    normalized = {key.lower(): value for key, value in headers.items()}
+    raw_key = normalized.get("x-service-operator-key")
+    authenticated = False
+    if raw_key is not None:
+        authenticated = (
+            service_operator_resolver(raw_key, now)
+            if service_operator_resolver is not None
+            else raw_key in (service_operator_keys or set())
+        )
+    if not authenticated:
+        return _error(
+            401,
+            "authentication_required",
+            "valid X-Service-Operator-Key header is required",
+        )
+    if path != "/v1/service/audit/auth-failures":
+        return _error(404, "not_found", "route not found")
+    if method != "GET":
+        return _error(405, "method_not_allowed", "GET is required")
+    params = parse_qs(query_string, keep_blank_values=True)
+    if set(params) - {"limit"}:
+        return _error(400, "invalid_request", "only limit is supported")
+    try:
+        limit = int(params.get("limit", ["20"])[0])
+    except ValueError:
+        return _error(400, "invalid_request", "limit must be an integer")
+    if limit <= 0 or limit > 200:
+        return _error(400, "invalid_request", "limit must be between 1 and 200")
+    events = service.list_auth_failures(limit=limit)
+    return V1HttpResponse(
+        status_code=200,
+        body={"auth_failures": [_audit_event_body(event) for event in events]},
+    )
 
 
 def _audit_identity(

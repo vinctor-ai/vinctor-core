@@ -173,6 +173,23 @@ and `GET /v1/audit-events/{event_id}` through `X-Auditor-Key`.
 
 ---
 
+## Service operator (global key `sok_…`)
+
+The service-operator key has one narrow global capability: reading unattributed
+`auth_failed` events that cannot safely be assigned to a workspace.
+
+```bash
+vinctor operator keys rotate service-operator
+vinctor --service-operator-key "$VINCTOR_SERVICE_OPERATOR_KEY" \
+  operator audit auth-failures --limit 50
+```
+
+The HTTP equivalent is `GET /v1/service/audit/auth-failures` with
+`X-Service-Operator-Key`. This key is not a workspace/operator or auditor
+identity and cannot read workspace audit events or mutate policy and grants.
+
+---
+
 ## Agent (agent id and agent key `aak_…`)
 
 An agent identity is what a runtime presents when it calls `/v1/enforce`; the
@@ -386,6 +403,7 @@ Every permit and deny is recorded; the operator reads or exports it.
 vinctor operator audit list --limit 50 \
   --event action_denied --grant-ref grt_… --boundary-id bnd_… --request-id …
 vinctor operator audit export --format jsonl --file audit.jsonl
+vinctor operator audit auth-failures --limit 50  # service operator only
 ```
 
 All `audit list` filters are optional. `audit export` currently supports

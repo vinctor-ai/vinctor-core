@@ -55,6 +55,9 @@ def prepare_service_runtime(
             auditor_identity_resolver=lambda raw_key, used_at: (
                 key_repository.resolve_auditor_identity(raw_key, now=used_at)
             ),
+            service_operator_resolver=lambda raw_key, used_at: (
+                key_repository.resolve_service_operator(raw_key, now=used_at)
+            ),
             pep_identity_resolver=lambda raw_key, used_at: key_repository.resolve_pep_identity(
                 raw_key, now=used_at
             ),

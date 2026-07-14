@@ -21,6 +21,7 @@ from vinctor_service.key_ops import (
     rotate_agent_key,
     rotate_auditor_key,
     rotate_pep_key,
+    rotate_service_operator_key,
     rotate_workspace_key,
     serialize_key_record,
 )
@@ -184,6 +185,11 @@ def _add_global_flags(parser: argparse.ArgumentParser, *, defaults: bool) -> Non
         ["--auditor-key"],
         default=os.environ.get("VINCTOR_AUDITOR_KEY"),
         help="Read-only workspace audit key (env: VINCTOR_AUDITOR_KEY).",
+    )
+    add(
+        ["--service-operator-key"],
+        default=os.environ.get("VINCTOR_SERVICE_OPERATOR_KEY"),
+        help="Global service-operator API key (env: VINCTOR_SERVICE_OPERATOR_KEY).",
     )
     add(
         ["--agent-key"],
@@ -607,6 +613,13 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
     audit_list.add_argument("--grant-ref")
     audit_list.add_argument("--boundary-id")
     audit_list.add_argument("--request-id")
+    auth_failures = audit_commands.add_parser(
+        "auth-failures",
+        help="List unattributed authentication failures (service operator only).",
+        description="List global auth_failed events that cannot be assigned to a "
+        "workspace. Requires a service-operator key.",
+    )
+    auth_failures.add_argument("--limit", type=int, default=20)
     audit_export = audit_commands.add_parser(
         "export",
         help="Export the workspace audit log as JSONL.",
@@ -731,10 +744,15 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
         "keys.",
     )
     keys_commands = keys.add_subparsers(dest="keys_command", required=True)
-    keys_commands.add_parser(
+    keys_list = keys_commands.add_parser(
         "list",
         help="List keys for the workspace.",
         description="List API keys for the workspace.",
+    )
+    keys_list.add_argument(
+        "--service",
+        action="store_true",
+        help="List global service-operator keys instead of workspace keys.",
     )
     keys_revoke = keys_commands.add_parser(
         "revoke",
@@ -758,6 +776,11 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
         "auditor",
         help="Rotate the read-only workspace auditor key.",
         description="Rotate the read-only key used only for workspace audit access.",
+    )
+    rotate_targets.add_parser(
+        "service-operator",
+        help="Rotate the global service-operator key.",
+        description="Rotate the key for global unattributed auth-failure visibility.",
     )
     rotate_agent = rotate_targets.add_parser(
         "agent",
@@ -1474,6 +1497,19 @@ def _operator_audit(args: argparse.Namespace, *, stdout: TextIO) -> None:
     if args.audit_command == "export":
         _operator_audit_export(args, stdout=stdout)
         return
+    if args.audit_command == "auth-failures":
+        if args.limit <= 0 or args.limit > 200:
+            raise CliError("audit auth-failures --limit must be between 1 and 200")
+        service = _sqlite_service(args.db)
+        key = _required(args.service_operator_key, "service operator key")
+        if not SQLiteLocalKeyRepository(service.conn).resolve_service_operator(
+            key, now=datetime.now(UTC)
+        ):
+            raise CliError("valid service operator key is required", code=EXIT_AUTH)
+        events = service.list_auth_failures(limit=args.limit)
+        body = {"auth_failures": [_audit_body(event) for event in events]}
+        _emit(args, body, _audit_list_text(events), stdout=stdout)
+        return
     if args.audit_command != "list":
         raise CliError(f"unknown audit command: {args.audit_command}")
     if args.limit <= 0:
@@ -1684,7 +1720,8 @@ def _operator_keys(args: argparse.Namespace, *, stdout: TextIO) -> None:
     command = args.keys_command
     now = datetime.now(UTC)
     if command == "list":
-        records = repository.list_for_workspace(args.workspace_id)
+        workspace_id = "*" if args.service else args.workspace_id
+        records = repository.list_for_workspace(workspace_id)
         body = {"keys": [serialize_key_record(record) for record in records]}
         _emit(args, body, _keys_list_text(records), stdout=stdout)
         return
@@ -1705,6 +1742,10 @@ def _operator_keys(args: argparse.Namespace, *, stdout: TextIO) -> None:
                 repository, workspace_id=args.workspace_id, now=now
             )
             key_type = "auditor"
+            agent_id = None
+        elif args.rotate_target == "service-operator":
+            result = rotate_service_operator_key(repository, now=now)
+            key_type = "service_operator"
             agent_id = None
         elif args.rotate_target == "agent":
             result = rotate_agent_key(
@@ -1730,7 +1771,7 @@ def _operator_keys(args: argparse.Namespace, *, stdout: TextIO) -> None:
             "key_id": result.new_key_id,
             "key_type": key_type,
             "agent_id": agent_id,
-            "workspace_id": args.workspace_id,
+            "workspace_id": "*" if key_type == "service_operator" else args.workspace_id,
             "raw_key": result.raw_key,
             "revoked_key_ids": list(result.revoked_key_ids),
         }
@@ -2529,9 +2570,10 @@ def _audit_event_matches(event: object, args: argparse.Namespace) -> bool:
 
 def _audit_body(event: object) -> dict[str, object]:
     body = asdict(event)
-    created_at = body.get("created_at")
-    if isinstance(created_at, datetime):
-        body["created_at"] = created_at.isoformat()
+    for field in ("created_at", "first_seen_at", "last_seen_at"):
+        value = body.get(field)
+        if isinstance(value, datetime):
+            body[field] = value.isoformat()
     return body
 
 
