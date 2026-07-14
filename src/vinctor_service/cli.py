@@ -1413,12 +1413,17 @@ def _operator_require_pop(args: argparse.Namespace, *, stdout: TextIO) -> None:
         "require_pop": value,
         "scope": "workspace" if args.workspace else "agent",
     }
-    _emit(
-        args,
-        body,
-        f"require_pop workspace={args.workspace_id} agent={agent_id} value={value}",
-        stdout=stdout,
-    )
+    text = f"require_pop workspace={args.workspace_id} agent={agent_id} value={value}"
+    if args.require_pop_command == "enable" and value:
+        target = f"workspace {args.workspace_id}" if args.workspace else f"agent {agent_id}"
+        warning = (
+            f"require_pop is now enforced for {target}; enforce will DENY it unless the "
+            "client presents proof-of-possession (PoP)-bound subject tokens. Confirm the "
+            "client/PEP supports PoP before relying on this, or the agent is locked out."
+        )
+        body["warning"] = warning
+        text += f"\nwarning: {warning}"
+    _emit(args, body, text, stdout=stdout)
 
 
 def _operator_tokens(args: argparse.Namespace, *, stdout: TextIO) -> None:
