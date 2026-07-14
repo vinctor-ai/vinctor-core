@@ -187,6 +187,26 @@ def test_local_http_service_permits_v1_enforce_request() -> None:
     assert len(svc.audit_events) == 1
 
 
+def test_local_http_service_records_observation_without_grant() -> None:
+    svc = InMemoryV1Service()
+
+    with running_server(svc) as server:
+        status, response = post_json(
+            server,
+            path="/v1/observe",
+            payload={
+                "classification": "mapped",
+                "action": "read",
+                "resource": "repo/feature/readme",
+            },
+        )
+
+    assert status == 200
+    assert response["status"] == "recorded"
+    assert response["audit_event_id"] == svc.audit_events[0].event_id
+    assert svc.audit_events[0].event_type == "action_observed"
+
+
 def test_local_http_service_denies_and_records_audit() -> None:
     svc = service()
 

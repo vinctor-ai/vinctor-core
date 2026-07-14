@@ -5,7 +5,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from vinctor_core import BoundaryRegistrationInput, Grant, register_boundary
-from vinctor_service import SQLiteV1Service, V1DelegatedEnforceRequest, V1EnforceRequest
+from vinctor_service import (
+    SQLiteV1Service,
+    V1DelegatedEnforceRequest,
+    V1EnforceRequest,
+    V1ObserveRequest,
+)
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -84,6 +89,31 @@ def test_sqlite_v1_service_permits_and_records_audit(tmp_path: Path) -> None:
         (response.audit_event_id,),
     ).fetchone()
     assert row == ("permit", "permitted", "write:repo/feature/*")
+    conn.close()
+
+
+def test_sqlite_v1_service_records_mapped_observation(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+
+    response = service.observe(
+        V1ObserveRequest(
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            classification="mapped",
+            action="read",
+            resource="repo/feature/readme",
+        ),
+        now=NOW,
+    )
+
+    assert response.status_code == 200
+    row = conn.execute(
+        "SELECT event_type, decision, grant_ref, scope_attempted "
+        "FROM audit_events WHERE event_id = ?",
+        (response.audit_event_id,),
+    ).fetchone()
+    assert row == ("action_observed", "permit", "", "read:repo/feature/readme")
     conn.close()
 
 

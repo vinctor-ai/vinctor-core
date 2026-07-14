@@ -41,9 +41,11 @@ from vinctor_service.v1_http import (
     V1DelegatedEnforceService,
     V1EnforceService,
     V1HttpResponse,
+    V1ObserveService,
     V1TokenService,
     handle_v1_delegated_enforce_http,
     handle_v1_enforce_http,
+    handle_v1_observe_http,
     handle_v1_tokens_http,
 )
 
@@ -206,6 +208,9 @@ def create_v1_http_handler(
         if path == "/v1/enforce":
             _handle_enforce_request(handler, method)
             return
+        if path == "/v1/observe":
+            _handle_observe_request(handler, method)
+            return
         if path == "/v1/tokens":
             _handle_tokens_request(handler, method)
             return
@@ -359,6 +364,35 @@ def create_v1_http_handler(
             agent_identities=agent_keys,
             agent_identity_resolver=agent_identity_resolver,
             service=service,
+            now=now(),
+        )
+        _send_json(handler, response)
+
+    def _handle_observe_request(handler: BaseHTTPRequestHandler, method: str) -> None:
+        if method != "POST":
+            _send_json(
+                handler,
+                V1HttpResponse(
+                    status_code=405,
+                    body={
+                        "error": "method_not_allowed",
+                        "reason": "POST is required for /v1/observe",
+                    },
+                ),
+            )
+            return
+
+        parsed = _read_json_body(handler)
+        if isinstance(parsed, V1HttpResponse):
+            _send_json(handler, parsed)
+            return
+
+        response = handle_v1_observe_http(
+            headers=dict(handler.headers.items()),
+            body=parsed,
+            agent_identities=agent_keys,
+            agent_identity_resolver=agent_identity_resolver,
+            service=cast(V1ObserveService, service),
             now=now(),
         )
         _send_json(handler, response)
@@ -565,6 +599,7 @@ _EXACT_ROUTES = frozenset(
         "/metrics",
         "/v1/enforce/delegated",
         "/v1/enforce",
+        "/v1/observe",
         "/v1/tokens",
     }
 )
