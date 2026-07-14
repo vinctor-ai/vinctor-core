@@ -56,7 +56,7 @@ def test_auditor_header_can_read_only_its_workspace_audit() -> None:
 
 def test_workspace_auditor_cannot_read_unscoped_auth_failures() -> None:
     service = SQLiteV1Service(sqlite3.connect(":memory:"))
-    service.record_auth_failure(surface="enforce", boundary_id=None, now=NOW)
+    service.record_auth_failure(surface="enforce", now=NOW)
 
     response = handle_v1_audit_events_http(
         method="GET",

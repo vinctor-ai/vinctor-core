@@ -276,8 +276,8 @@ def test_auth_failure_throttle_emits_timely_event_then_suppresses_window() -> No
     writer = InMemoryAuditWriter()
     throttle = AuthFailureAuditThrottle(window_seconds=60)
 
-    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW)
-    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW + timedelta(seconds=30))
+    throttle.record(writer, surface="enforce", now=NOW)
+    throttle.record(writer, surface="enforce", now=NOW + timedelta(seconds=30))
 
     # First failure emits a timely count=1 event immediately; the in-window
     # repeat is counted in memory but emits nothing (no audit-store flood).
@@ -294,9 +294,29 @@ def test_auth_failure_throttle_emits_timely_event_then_suppresses_window() -> No
     assert timely.grant_ref == ""
 
     # A different surface is tracked independently (its own timely event).
-    throttle.record(writer, surface="delegated", boundary_id=None, now=NOW)
+    throttle.record(writer, surface="delegated", now=NOW)
     assert [e.event_type for e in writer.events] == [EVENT_AUTH_FAILED, EVENT_AUTH_FAILED]
     assert writer.events[1].action == "delegated"
+
+
+def test_auth_failure_throttle_is_bounded_by_surface_not_request_input() -> None:
+    # A pre-auth probe hammering one surface (previously able to vary the
+    # untrusted x-vinctor-boundary-id header per request, minting one throttle
+    # window and one timely audit row per distinct value) must not be able to
+    # grow the window map or the audit store: the throttle keys on the trusted
+    # surface alone.
+    writer = InMemoryAuditWriter()
+    throttle = AuthFailureAuditThrottle(window_seconds=60)
+
+    for i in range(1000):
+        throttle.record(writer, surface="enforce", now=NOW + timedelta(seconds=i % 30))
+
+    # Bounded cardinality: exactly one window for the surface, any probe volume.
+    assert len(throttle._windows) == 1
+    # Bounded emissions: a single timely event for the window (no flood).
+    assert [e.event_type for e in writer.events] == [EVENT_AUTH_FAILED]
+    # No attacker-controlled boundary is attributed into the audit trail.
+    assert writer.events[0].boundary_id is None
 
 
 def test_auth_failure_throttle_aggregates_window_into_summary_on_roll() -> None:
@@ -305,16 +325,16 @@ def test_auth_failure_throttle_aggregates_window_into_summary_on_roll() -> None:
 
     # Three failures inside one window: a timely count=1 event, then two
     # in-memory increments (no emit).
-    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW)
-    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW + timedelta(seconds=20))
-    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW + timedelta(seconds=40))
+    throttle.record(writer, surface="enforce", now=NOW)
+    throttle.record(writer, surface="enforce", now=NOW + timedelta(seconds=20))
+    throttle.record(writer, surface="enforce", now=NOW + timedelta(seconds=40))
     assert len(writer.events) == 1
     assert writer.events[0].occurrence_count == 1
 
     # A failure after the window rolls: first a summary for the just-closed
     # window (occurrence_count=3 spanning its first/last seen), then the timely
     # first event of the freshly opened window.
-    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW + timedelta(seconds=61))
+    throttle.record(writer, surface="enforce", now=NOW + timedelta(seconds=61))
     assert len(writer.events) == 3
 
     summary = writer.events[1]
@@ -336,8 +356,8 @@ def test_auth_failure_throttle_window_roll_without_repeats_emits_no_summary() ->
 
     # A single failure per window: each window only ever emits its timely
     # count=1 event; a roll with no in-window repeats emits no summary.
-    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW)
-    throttle.record(writer, surface="enforce", boundary_id=None, now=NOW + timedelta(seconds=61))
+    throttle.record(writer, surface="enforce", now=NOW)
+    throttle.record(writer, surface="enforce", now=NOW + timedelta(seconds=61))
 
     assert len(writer.events) == 2
     assert [e.occurrence_count for e in writer.events] == [1, 1]

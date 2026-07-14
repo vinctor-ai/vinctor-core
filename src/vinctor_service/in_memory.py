@@ -139,10 +139,8 @@ class InMemoryV1Service:
             matched = matched[-limit:]
         return tuple(matched)
 
-    def record_auth_failure(self, *, surface: str, boundary_id: str | None, now: datetime) -> None:
-        self._auth_failures.record(
-            self.audit_writer, surface=surface, boundary_id=boundary_id, now=now
-        )
+    def record_auth_failure(self, *, surface: str, now: datetime) -> None:
+        self._auth_failures.record(self.audit_writer, surface=surface, now=now)
 
     def register_boundary(
         self,

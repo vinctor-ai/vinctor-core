@@ -54,8 +54,8 @@ class AuthFailureAuditThrottle:
     """Aggregate `auth_failed` audit events per window (ADR 0008 item 2).
 
     An attacker probing with bad credentials could otherwise turn failed-auth
-    logging into an audit-store flood (a log-amplification DoS). Per
-    (surface, source) window of ``window_seconds`` this emits:
+    logging into an audit-store flood (a log-amplification DoS). Per trusted
+    ``surface`` window of ``window_seconds`` this emits:
 
     - one *timely* event immediately on the first failure of a window
       (``occurrence_count=1``, ``first_seen_at == last_seen_at == now``), so the
@@ -71,17 +71,21 @@ class AuthFailureAuditThrottle:
 
     def __init__(self, window_seconds: int = AUTH_FAILURE_WINDOW_SECONDS) -> None:
         self._window = timedelta(seconds=window_seconds)
-        self._windows: dict[tuple[str, str], _AuthFailureWindow] = {}
+        self._windows: dict[str, _AuthFailureWindow] = {}
 
     def record(
         self,
         audit_writer: AuditWriter,
         *,
         surface: str,
-        boundary_id: str | None,
         now: datetime,
     ) -> None:
-        key = (surface, boundary_id or "-")
+        # Key only on the server-trusted, low-cardinality surface. The request's
+        # boundary id arrives pre-authentication (attacker-controlled), so keying
+        # on it would let a probe mint unbounded throttle windows (a memory DoS)
+        # and emit one "timely" audit row per distinct value, defeating the very
+        # throttle meant to collapse a probing flood.
+        key = surface
         window = self._windows.get(key)
 
         if window is not None and now - window.start < self._window:
@@ -98,7 +102,6 @@ class AuthFailureAuditThrottle:
             self._emit(
                 audit_writer,
                 surface=surface,
-                boundary_id=boundary_id,
                 created_at=window.last_seen,
                 occurrence_count=window.count,
                 first_seen_at=window.start,
@@ -110,7 +113,6 @@ class AuthFailureAuditThrottle:
         self._emit(
             audit_writer,
             surface=surface,
-            boundary_id=boundary_id,
             created_at=now,
             occurrence_count=1,
             first_seen_at=now,
@@ -122,14 +124,14 @@ class AuthFailureAuditThrottle:
         audit_writer: AuditWriter,
         *,
         surface: str,
-        boundary_id: str | None,
         created_at: datetime,
         occurrence_count: int,
         first_seen_at: datetime,
         last_seen_at: datetime,
     ) -> None:
-        # The credential is invalid, so no agent/workspace is resolvable; attribute
-        # to the surface and (when present) the boundary only, and disclose nothing.
+        # The credential is invalid, so no agent/workspace is resolvable, and the
+        # request's boundary id is unauthenticated (spoofable) — attribute only to
+        # the surface and disclose nothing, including no attacker-supplied boundary.
         record_rejection(
             audit_writer,
             build_rejection_audit_event(
@@ -140,7 +142,7 @@ class AuthFailureAuditThrottle:
                 event_type=EVENT_AUTH_FAILED,
                 action=surface,
                 scope_attempted="",
-                boundary_id=boundary_id,
+                boundary_id=None,
                 occurrence_count=occurrence_count,
                 first_seen_at=first_seen_at,
                 last_seen_at=last_seen_at,

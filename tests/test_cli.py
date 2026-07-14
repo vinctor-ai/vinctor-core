@@ -534,7 +534,7 @@ def test_vinctor_cli_auth_failures_requires_service_operator_key(tmp_path: Path)
     SQLiteLocalKeyRepository(conn).create_service_operator_key(
         raw_key="sok_demo", now=NOW
     )
-    service.record_auth_failure(surface="enforce", boundary_id=None, now=NOW)
+    service.record_auth_failure(surface="enforce", now=NOW)
     conn.close()
 
     result = _run(

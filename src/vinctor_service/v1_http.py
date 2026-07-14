@@ -119,7 +119,6 @@ def handle_v1_enforce_http(
 ) -> V1HttpResponse:
     normalized_headers = {key.lower(): value for key, value in headers.items()}
     agent_key = normalized_headers.get("x-agent-key")
-    boundary_id = normalized_headers.get("x-vinctor-boundary-id")
     identity = (
         _resolve_agent_identity(
             agent_key,
@@ -131,7 +130,7 @@ def handle_v1_enforce_http(
         else None
     )
     if identity is None:
-        service.record_auth_failure(surface="enforce", boundary_id=boundary_id, now=now)
+        service.record_auth_failure(surface="enforce", now=now)
         return _error(401, "authentication_required", "valid X-Agent-Key header is required")
 
     parsed = _parse_enforce_body(body)
@@ -172,7 +171,7 @@ def handle_v1_observe_http(
         else None
     )
     if identity is None:
-        service.record_auth_failure(surface="observe", boundary_id=boundary_id, now=now)
+        service.record_auth_failure(surface="observe", now=now)
         return _error(401, "authentication_required", "valid X-Agent-Key header is required")
 
     parsed = _parse_observe_body(body)
@@ -224,7 +223,7 @@ def handle_v1_simulate_http(
         else None
     )
     if identity is None:
-        service.record_auth_failure(surface="simulate", boundary_id=boundary_id, now=now)
+        service.record_auth_failure(surface="simulate", now=now)
         return _error(401, "authentication_required", "valid X-Agent-Key header is required")
 
     parsed = _parse_enforce_body(body)
@@ -273,7 +272,6 @@ def handle_v1_delegated_enforce_http(
 ) -> V1HttpResponse:
     normalized_headers = {key.lower(): value for key, value in headers.items()}
     pep_key = normalized_headers.get("x-pep-key")
-    boundary_id = normalized_headers.get("x-vinctor-boundary-id")
     identity = (
         _resolve_pep_identity(
             pep_key,
@@ -285,7 +283,7 @@ def handle_v1_delegated_enforce_http(
         else None
     )
     if identity is None:
-        service.record_auth_failure(surface="delegated", boundary_id=boundary_id, now=now)
+        service.record_auth_failure(surface="delegated", now=now)
         return _error(401, "authentication_required", "valid X-PEP-Key header is required")
 
     parsed = _parse_delegated_enforce_body(body)
@@ -339,7 +337,7 @@ def handle_v1_tokens_http(
         else None
     )
     if identity is None:
-        service.record_auth_failure(surface="tokens", boundary_id=None, now=now)
+        service.record_auth_failure(surface="tokens", now=now)
         return _error(401, "authentication_required", "valid X-Agent-Key header is required")
 
     parsed = _parse_tokens_body(body, max_ttl=max_ttl)

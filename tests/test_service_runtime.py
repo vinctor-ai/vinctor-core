@@ -214,7 +214,7 @@ def test_service_runtime_service_operator_reads_only_global_auth_failures(
     key = SQLiteLocalKeyRepository(handle.conn).create_service_operator_key(
         raw_key="sok_demo", now=NOW
     )
-    handle.service.record_auth_failure(surface="enforce", boundary_id=None, now=NOW)
+    handle.service.record_auth_failure(surface="enforce", now=NOW)
     try:
         with running_runtime(handle):
             global_status, global_body, _ = request_json(
