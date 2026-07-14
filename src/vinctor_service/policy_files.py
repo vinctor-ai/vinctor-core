@@ -46,7 +46,7 @@ class PolicyRollbackResult:
 def apply_policy_file(
     path: Path,
     *,
-    service: SQLiteV1Service,
+    service: Any,
     workspace_id: str,
     applied_by: str,
     now: datetime,
@@ -152,8 +152,12 @@ def apply_policy_file(
 
 
 def list_policy_versions(
-    *, service: SQLiteV1Service, workspace_id: str
+    *, service: Any, workspace_id: str
 ) -> tuple[PolicyVersionInfo, ...]:
+    if getattr(service, "storage_backend", None) == "postgres":
+        from vinctor_service.postgres_policy import list_postgres_policy_versions
+
+        return list_postgres_policy_versions(service=service, workspace_id=workspace_id)
     rows = service.conn.execute(
         """
         SELECT workspace_id, version, action, source_version, applied_by, created_at
@@ -178,12 +182,22 @@ def list_policy_versions(
 
 def rollback_policy_version(
     *,
-    service: SQLiteV1Service,
+    service: Any,
     workspace_id: str,
     version: int,
     applied_by: str,
     now: datetime,
 ) -> PolicyRollbackResult:
+    if getattr(service, "storage_backend", None) == "postgres":
+        from vinctor_service.postgres_policy import rollback_postgres_policy_version
+
+        return rollback_postgres_policy_version(
+            service=service,
+            workspace_id=workspace_id,
+            version=version,
+            applied_by=applied_by,
+            now=now,
+        )
     row = service.conn.execute(
         """
         SELECT snapshot_json
@@ -219,13 +233,24 @@ def rollback_policy_version(
 
 def _record_policy_version(
     *,
-    service: SQLiteV1Service,
+    service: Any,
     workspace_id: str,
     action: str,
     source_version: int | None,
     applied_by: str,
     now: datetime,
 ) -> int:
+    if getattr(service, "storage_backend", None) == "postgres":
+        from vinctor_service.postgres_policy import record_postgres_policy_version
+
+        return record_postgres_policy_version(
+            service=service,
+            workspace_id=workspace_id,
+            action=action,
+            source_version=source_version,
+            applied_by=applied_by,
+            now=now,
+        )
     with service.conn:
         return _insert_policy_version(
             service=service,
@@ -496,7 +521,7 @@ def _restore_policy_snapshot(
 
 def export_policy_document(
     *,
-    service: SQLiteV1Service,
+    service: Any,
     workspace_id: str,
 ) -> dict[str, object]:
     document: dict[str, object] = {

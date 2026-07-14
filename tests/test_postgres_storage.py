@@ -13,6 +13,11 @@ from vinctor_core import (
 )
 from vinctor_core.models import AuditEvent, Grant
 from vinctor_service.models import V1EnforceRequest, V1ObserveRequest
+from vinctor_service.policy_files import (
+    apply_policy_file,
+    list_policy_versions,
+    rollback_policy_version,
+)
 from vinctor_service.policy_infer import infer_policy_document
 from vinctor_service.postgres import (
     PostgresAgentEnforcementSettingsRepository,
@@ -38,7 +43,8 @@ def clean_database():
     init_postgres_schema(conn)
     with conn.transaction():
         conn.execute(
-            "TRUNCATE TABLE audit_events, grants, boundaries, agent_enforcement_settings"
+            "TRUNCATE TABLE audit_events, grants, boundaries, agent_enforcement_settings, "
+            "agent_issuable_scope_bounds, auto_approval_rules, policy_versions"
         )
     conn.close()
 
@@ -177,6 +183,114 @@ def test_postgres_enforcement_setting_agent_override() -> None:
         ("", True),
         ("agent_exempt", False),
     )
+    conn.close()
+
+
+def test_postgres_unrelated_setting_does_not_override_workspace_boundary() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    repo = PostgresAgentEnforcementSettingsRepository(conn)
+    repo.set_require_boundary(
+        workspace_id="ws_main", agent_id="", require_boundary=True, now=NOW
+    )
+    repo.set_require_subject_token(
+        workspace_id="ws_main",
+        agent_id="agent_subject",
+        require_subject_token=True,
+        now=NOW,
+    )
+
+    assert repo.is_boundary_required(workspace_id="ws_main", agent_id="agent_subject")
+    conn.close()
+
+
+def test_postgres_policy_apply_versions_and_exact_rollback(tmp_path) -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    first_path = tmp_path / "first.yaml"
+    first_path.write_text(
+        """
+version: 1
+workspace_id: ws_main
+agent_bounds:
+  - agent_id: agent_a
+    scopes: [read:repo/a]
+auto_approval_rules:
+  - rule_id: apr_old
+    name: old
+    target_agent_id: agent_a
+    allowed_scopes: [read:repo/a]
+    max_ttl: 5m
+require_boundary:
+  workspace: true
+""".strip(),
+        encoding="utf-8",
+    )
+    first = apply_policy_file(
+        first_path,
+        service=service,
+        workspace_id="ws_main",
+        applied_by="operator:a",
+        now=NOW,
+    )
+    second_path = tmp_path / "second.yaml"
+    second_path.write_text(
+        """
+version: 1
+workspace_id: ws_main
+agent_bounds:
+  - agent_id: agent_b
+    scopes: [write:repo/b]
+auto_approval_rules:
+  - rule_id: apr_new
+    name: new
+    target_agent_id: agent_b
+    allowed_scopes: [write:repo/b]
+    max_ttl: 10m
+require_boundary:
+  workspace: false
+""".strip(),
+        encoding="utf-8",
+    )
+    apply_policy_file(
+        second_path,
+        service=service,
+        workspace_id="ws_main",
+        applied_by="operator:b",
+        now=NOW,
+    )
+    service.agent_enforcement_settings_repository.set_require_subject_token(
+        workspace_id="ws_main",
+        agent_id="agent_subject",
+        require_subject_token=True,
+        now=NOW,
+    )
+
+    result = rollback_policy_version(
+        service=service,
+        workspace_id="ws_main",
+        version=first.policy_version,
+        applied_by="operator:rollback",
+        now=NOW,
+    )
+
+    assert result.policy_version == 3
+    assert service.scope_bounds_repository.list_bounds_for_workspace("ws_main") == (
+        ("agent_a", ("read:repo/a",)),
+    )
+    assert [rule.rule_id for rule in service.list_auto_approval_rules("ws_main")] == [
+        "apr_old"
+    ]
+    assert service.agent_enforcement_settings_repository.is_subject_token_required(
+        workspace_id="ws_main", agent_id="agent_subject"
+    )
+    assert service.agent_enforcement_settings_repository.is_boundary_required(
+        workspace_id="ws_main", agent_id="agent_subject"
+    )
+    assert [item.action for item in list_policy_versions(
+        service=service, workspace_id="ws_main"
+    )] == ["apply", "apply", "rollback"]
     conn.close()
 
 

@@ -706,11 +706,11 @@ through `init_postgres_schema(connection)`; concurrent writers use a Postgres
 transaction advisory lock so multiple service instances cannot fork the audit
 chain.
 
-This first backend slice intentionally does not replace the SQLite-only local
-key, approval workflow, subject-token, or boundary administration stores. Those
-control-plane repositories must move before selecting Postgres for every local
-CLI route. See `docs/deployment/postgres.md` for the supported surface and test
-contract.
+The backend also persists boundaries, enforcement settings, issuable bounds,
+auto-approval rules, and append-only policy versions with exact rollback. Local
+keys, grant-request workflow state, and subject tokens remain SQLite-only, so
+Postgres is not yet selected for every local CLI route. See
+`docs/deployment/postgres.md` for the supported surface and test contract.
 
 Audit-related behavior should remain deterministic and testable. If a decision
 changes, the corresponding audit event semantics should be updated with tests.

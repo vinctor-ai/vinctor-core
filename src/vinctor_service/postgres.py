@@ -9,7 +9,9 @@ from vinctor_core.models import AuditEvent, Boundary, Grant
 from vinctor_service.audit import AuthFailureAuditThrottle
 from vinctor_service.audit_anchor import AuditAnchor, NullAnchor
 from vinctor_service.audit_chain import GENESIS_PREV_HASH, row_hash
+from vinctor_service.grants import ScopeBoundsListing, validate_issuable_scope_bounds
 from vinctor_service.models import (
+    AutoApprovalRule,
     V1EnforceRequest,
     V1EnforceResponse,
     V1ObserveRequest,
@@ -116,17 +118,63 @@ def init_postgres_schema(conn: Any) -> None:
             workspace_id TEXT NOT NULL,
             agent_id TEXT NOT NULL,
             require_boundary BOOLEAN NOT NULL DEFAULT FALSE,
+            require_boundary_set BOOLEAN NOT NULL DEFAULT FALSE,
             require_subject_token BOOLEAN NOT NULL DEFAULT FALSE,
             require_pop BOOLEAN NOT NULL DEFAULT FALSE,
             updated_at TIMESTAMPTZ NOT NULL,
             PRIMARY KEY (workspace_id, agent_id)
         )
         """,
+        """
+        ALTER TABLE agent_enforcement_settings
+        ADD COLUMN IF NOT EXISTS require_boundary_set BOOLEAN NOT NULL DEFAULT TRUE
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS agent_issuable_scope_bounds (
+            workspace_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            scopes_json JSONB NOT NULL,
+            max_ttl_seconds INTEGER,
+            updated_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (workspace_id, agent_id)
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS auto_approval_rules (
+            rule_id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            target_agent_id TEXT NOT NULL,
+            allowed_scopes_json JSONB NOT NULL,
+            max_ttl_seconds INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL,
+            updated_by TEXT,
+            updated_at TIMESTAMPTZ
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_postgres_auto_approval_workspace
+        ON auto_approval_rules(workspace_id, created_at, rule_id)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS policy_versions (
+            workspace_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            source_version INTEGER,
+            snapshot_json JSONB NOT NULL,
+            applied_by TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL,
+            PRIMARY KEY (workspace_id, version)
+        )
+        """,
     )
     with conn.transaction():
         for statement in statements:
             conn.execute(statement)
-        for version in (1, 2):
+        for version in (1, 2, 3):
             conn.execute(
                 """
                 INSERT INTO schema_migrations (version, applied_at)
@@ -217,6 +265,151 @@ class PostgresGrantRepository:
         return _grant_from_row(row)
 
 
+class PostgresAgentIssuableScopeBoundsRepository:
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    def get_bounds(self, *, workspace_id: str, agent_id: str) -> tuple[str, ...] | None:
+        with self._conn.transaction():
+            row = self._conn.execute(
+                """
+                SELECT scopes_json FROM agent_issuable_scope_bounds
+                WHERE workspace_id = %s AND agent_id = %s
+                """,
+                (workspace_id, agent_id),
+            ).fetchone()
+        if row is None:
+            return None
+        scopes = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+        return tuple(scopes)
+
+    def get_max_ttl_seconds(self, *, workspace_id: str, agent_id: str) -> int | None:
+        with self._conn.transaction():
+            row = self._conn.execute(
+                """
+                SELECT max_ttl_seconds FROM agent_issuable_scope_bounds
+                WHERE workspace_id = %s AND agent_id = %s
+                """,
+                (workspace_id, agent_id),
+            ).fetchone()
+        return row[0] if row is not None else None
+
+    def list_bounds_for_workspace(self, workspace_id: str) -> ScopeBoundsListing:
+        with self._conn.transaction():
+            rows = self._conn.execute(
+                """
+                SELECT agent_id, scopes_json FROM agent_issuable_scope_bounds
+                WHERE workspace_id = %s
+                ORDER BY agent_id
+                """,
+                (workspace_id,),
+            ).fetchall()
+        return tuple(
+            (
+                row[0],
+                tuple(json.loads(row[1]) if isinstance(row[1], str) else row[1]),
+            )
+            for row in rows
+        )
+
+    def set_bounds(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        scopes: tuple[str, ...],
+        max_ttl_seconds: int | None = None,
+        now: datetime,
+    ) -> None:
+        validate_issuable_scope_bounds(scopes, max_ttl_seconds=max_ttl_seconds)
+        with self._conn.transaction():
+            self._conn.execute(
+                """
+                INSERT INTO agent_issuable_scope_bounds (
+                    workspace_id, agent_id, scopes_json, max_ttl_seconds, updated_at
+                ) VALUES (%s, %s, %s::jsonb, %s, %s)
+                ON CONFLICT (workspace_id, agent_id) DO UPDATE SET
+                    scopes_json = EXCLUDED.scopes_json,
+                    max_ttl_seconds = EXCLUDED.max_ttl_seconds,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                (
+                    workspace_id,
+                    agent_id,
+                    json.dumps(list(scopes)),
+                    max_ttl_seconds,
+                    now,
+                ),
+            )
+
+
+class PostgresAutoApprovalRuleRepository:
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    def add_rule(self, rule: AutoApprovalRule) -> None:
+        with self._conn.transaction():
+            self._conn.execute(
+                """
+                INSERT INTO auto_approval_rules (
+                    rule_id, workspace_id, name, target_agent_id,
+                    allowed_scopes_json, max_ttl_seconds, status,
+                    created_by, created_at, updated_by, updated_at
+                ) VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)
+                """,
+                _postgres_auto_approval_values(rule),
+            )
+
+    def get_rule(self, rule_id: str) -> AutoApprovalRule | None:
+        with self._conn.transaction():
+            row = self._conn.execute(
+                """
+                SELECT rule_id, workspace_id, name, target_agent_id,
+                       allowed_scopes_json, max_ttl_seconds, status,
+                       created_by, created_at, updated_by, updated_at
+                FROM auto_approval_rules
+                WHERE rule_id = %s
+                """,
+                (rule_id,),
+            ).fetchone()
+        return _postgres_auto_approval_from_row(row)
+
+    def list_rules_for_workspace(self, workspace_id: str) -> tuple[AutoApprovalRule, ...]:
+        with self._conn.transaction():
+            rows = self._conn.execute(
+                """
+                SELECT rule_id, workspace_id, name, target_agent_id,
+                       allowed_scopes_json, max_ttl_seconds, status,
+                       created_by, created_at, updated_by, updated_at
+                FROM auto_approval_rules
+                WHERE workspace_id = %s
+                ORDER BY created_at, rule_id
+                """,
+                (workspace_id,),
+            ).fetchall()
+        return tuple(
+            rule
+            for row in rows
+            if (rule := _postgres_auto_approval_from_row(row)) is not None
+        )
+
+    def update_rule(self, rule: AutoApprovalRule) -> None:
+        with self._conn.transaction():
+            row = self._conn.execute(
+                """
+                UPDATE auto_approval_rules
+                SET workspace_id = %s, name = %s, target_agent_id = %s,
+                    allowed_scopes_json = %s::jsonb, max_ttl_seconds = %s,
+                    status = %s, created_by = %s, created_at = %s,
+                    updated_by = %s, updated_at = %s
+                WHERE rule_id = %s
+                RETURNING rule_id
+                """,
+                (*_postgres_auto_approval_values(rule)[1:], rule.rule_id),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown auto-approval rule_id: {rule.rule_id}")
+
 class PostgresBoundaryRegistry:
     def __init__(self, conn: Any) -> None:
         self._conn = conn
@@ -295,11 +488,12 @@ class PostgresAgentEnforcementSettingsRepository:
     def _get(self, column: str, *, workspace_id: str, agent_id: str) -> bool | None:
         if column not in self._COLUMNS:
             raise ValueError("unknown enforcement setting")
+        presence = " AND require_boundary_set" if column == "require_boundary" else ""
         with self._conn.transaction():
             row = self._conn.execute(
                 f"""
                 SELECT {column} FROM agent_enforcement_settings
-                WHERE workspace_id = %s AND agent_id = %s
+                WHERE workspace_id = %s AND agent_id = %s{presence}
                 """,
                 (workspace_id, agent_id),
             ).fetchone()
@@ -323,6 +517,22 @@ class PostgresAgentEnforcementSettingsRepository:
     ) -> None:
         if column not in self._COLUMNS:
             raise ValueError("unknown enforcement setting")
+        if column == "require_boundary":
+            with self._conn.transaction():
+                self._conn.execute(
+                    """
+                    INSERT INTO agent_enforcement_settings (
+                        workspace_id, agent_id, require_boundary,
+                        require_boundary_set, updated_at
+                    ) VALUES (%s, %s, %s, TRUE, %s)
+                    ON CONFLICT (workspace_id, agent_id) DO UPDATE SET
+                        require_boundary = EXCLUDED.require_boundary,
+                        require_boundary_set = TRUE,
+                        updated_at = EXCLUDED.updated_at
+                    """,
+                    (workspace_id, agent_id, value, now),
+                )
+            return
         with self._conn.transaction():
             self._conn.execute(
                 f"""
@@ -355,7 +565,7 @@ class PostgresAgentEnforcementSettingsRepository:
                 """
                 SELECT agent_id, require_boundary
                 FROM agent_enforcement_settings
-                WHERE workspace_id = %s
+                WHERE workspace_id = %s AND require_boundary_set
                 ORDER BY agent_id
                 """,
                 (workspace_id,),
@@ -542,6 +752,8 @@ class PostgresAuditWriter:
 
 
 class PostgresV1Service:
+    storage_backend = "postgres"
+
     def __init__(self, conn: Any, *, initialize_schema: bool = True) -> None:
         self.conn = conn
         if initialize_schema:
@@ -549,6 +761,8 @@ class PostgresV1Service:
         self.grant_repository = PostgresGrantRepository(conn)
         self.audit_writer = PostgresAuditWriter(conn)
         self.boundary_registry = PostgresBoundaryRegistry(conn)
+        self.scope_bounds_repository = PostgresAgentIssuableScopeBoundsRepository(conn)
+        self.auto_approval_rule_repository = PostgresAutoApprovalRuleRepository(conn)
         self.agent_enforcement_settings_repository = (
             PostgresAgentEnforcementSettingsRepository(conn)
         )
@@ -566,6 +780,26 @@ class PostgresV1Service:
 
     def insert_grant(self, grant: Grant) -> None:
         self.grant_repository.insert(grant)
+
+    def set_agent_issuable_scope_bounds(
+        self,
+        *,
+        workspace_id: str,
+        agent_id: str,
+        scopes: tuple[str, ...],
+        max_ttl_seconds: int | None = None,
+        now: datetime,
+    ) -> None:
+        self.scope_bounds_repository.set_bounds(
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            scopes=scopes,
+            max_ttl_seconds=max_ttl_seconds,
+            now=now,
+        )
+
+    def list_auto_approval_rules(self, workspace_id: str) -> tuple[AutoApprovalRule, ...]:
+        return self.auto_approval_rule_repository.list_rules_for_workspace(workspace_id)
 
     def record_auth_failure(
         self, *, surface: str, boundary_id: str | None, now: datetime
@@ -611,6 +845,47 @@ def _grant_from_row(row: Any) -> Grant | None:
         scopes=tuple(scopes),
         status=row[5],
         expires_at=expires_at,
+    )
+
+
+def _postgres_auto_approval_values(rule: AutoApprovalRule) -> tuple[object, ...]:
+    return (
+        rule.rule_id,
+        rule.workspace_id,
+        rule.name,
+        rule.target_agent_id,
+        json.dumps(list(rule.allowed_scopes)),
+        rule.max_ttl_seconds,
+        rule.status,
+        rule.created_by,
+        rule.created_at,
+        rule.updated_by,
+        rule.updated_at,
+    )
+
+
+def _postgres_auto_approval_from_row(row: Any) -> AutoApprovalRule | None:
+    if row is None:
+        return None
+    scopes = json.loads(row[4]) if isinstance(row[4], str) else row[4]
+    created_at = row[8]
+    updated_at = row[10]
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    if updated_at is not None and updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=UTC)
+    return AutoApprovalRule(
+        rule_id=row[0],
+        workspace_id=row[1],
+        name=row[2],
+        target_agent_id=row[3],
+        allowed_scopes=tuple(scopes),
+        max_ttl_seconds=row[5],
+        status=row[6],
+        created_by=row[7],
+        created_at=created_at,
+        updated_by=row[9],
+        updated_at=updated_at,
     )
 
 
