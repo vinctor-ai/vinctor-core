@@ -747,6 +747,22 @@ live chain against the recorded heads. This is tamper-**evident**, not
 tamper-**proof**; for a compliance system of record, forward audit to durable
 WORM/SIEM storage.
 
+### OTLP audit forwarding
+
+Set `VINCTOR_AUDIT_EXPORT` to an OTLP/HTTP logs endpoint to forward a
+best-effort copy of each durable audit event:
+
+```bash
+VINCTOR_AUDIT_EXPORT=otlp-http:http://otel-collector:4318/v1/logs \
+  vinctor service serve
+```
+
+The exporter sends OTLP JSON (`ExportLogsServiceRequest`) on a bounded
+background queue. Audit persistence completes first; a slow, unavailable, or
+full collector never changes an enforcement decision. Delivery is therefore
+best-effort in this first slice. Use the workspace-key-gated
+`operator audit export` command to replay or reconcile the durable record.
+
 ## Development Principles
 
 This repo should stay small and deterministic.

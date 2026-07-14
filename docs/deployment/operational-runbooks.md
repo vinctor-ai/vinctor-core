@@ -290,6 +290,17 @@ vinctor --db /var/lib/vinctor/vinctor.sqlite \
 Audit records intentionally exclude raw tool input, raw command text, prompts,
 and model-facing reason strings.
 
+To stream a best-effort copy to an OpenTelemetry Collector without putting the
+collector on the enforcement path:
+
+```bash
+VINCTOR_AUDIT_EXPORT=otlp-http:http://otel-collector:4318/v1/logs \
+  vinctor service serve
+```
+
+The local database remains authoritative. Collector failures are fail-open and
+reported on stderr; use `operator audit export` to reconcile missed events.
+
 Capture the service's stdout/stderr through your supervisor:
 
 ```bash
