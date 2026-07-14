@@ -162,6 +162,16 @@ Expected response:
 The health response intentionally omits secrets, raw keys, grant refs, database
 paths, and internal configuration.
 
+Use the readiness endpoint for a load balancer or orchestrator traffic probe:
+
+```bash
+curl -f http://127.0.0.1:8765/readyz
+```
+
+It returns `200` while the durable store answers its probe and `503` when the
+store is unavailable. Keep `/healthz` as the process liveness probe so a brief
+database outage removes the instance from traffic without forcing a restart.
+
 ## Bootstrap And Hook Environment
 
 The self-hostable runtime opens existing SQLite service state. It does not

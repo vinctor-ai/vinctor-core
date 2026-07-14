@@ -63,6 +63,25 @@ def test_service_runtime_serves_health_without_secret_leakage(tmp_path: Path) ->
         handle.close()
 
 
+def test_service_runtime_readiness_checks_database(tmp_path: Path) -> None:
+    handle = prepare_service_runtime(
+        ServiceRuntimeConfig(sqlite_db_path=tmp_path / "vinctor.sqlite", port=0),
+        clock=lambda: NOW,
+    )
+    try:
+        with running_runtime(handle):
+            ready_status, ready_body, _ = request_json(handle, "GET", "/readyz")
+            handle.conn.close()
+            failed_status, failed_body, _ = request_json(handle, "GET", "/readyz")
+
+        assert ready_status == 200
+        assert ready_body["status"] == "ready"
+        assert failed_status == 503
+        assert failed_body["status"] == "unavailable"
+    finally:
+        handle.close()
+
+
 def test_full_service_runtime_rejects_partial_postgres_backend() -> None:
     config = ServiceRuntimeConfig(
         storage_backend="postgres",

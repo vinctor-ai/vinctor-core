@@ -16,6 +16,19 @@ services:
       - "127.0.0.1:8765:8765"
     volumes:
       - vinctor-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          response = urllib.request.urlopen('http://127.0.0.1:8765/readyz', timeout=5);
+          raise SystemExit(0 if json.load(response).get('status') == 'ready' else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
 
 volumes:
   vinctor-data:

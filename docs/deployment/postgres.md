@@ -56,6 +56,17 @@ assert storage.is_ready()
 Startup initializes the supported schema, runs a `SELECT 1` readiness probe,
 and closes the connection if either step fails. SQLite remains the default.
 
+The HTTP runtime also exposes separate liveness and readiness contracts:
+
+- `/healthz` reports whether the process is alive.
+- `/readyz` reports whether the active durable-store connection accepts
+  `SELECT 1`; it fails closed with `503` without exposing connection details.
+
+Load balancers should route traffic only to instances returning `200` from
+`/readyz`. The readiness callback accepts either backend, so it can be wired to
+the Postgres decision-storage handle when the remaining control-plane
+repositories are migrated.
+
 ## Deliberately not yet switched
 
 Local key storage, grant-request workflow state, subject tokens, and their HTTP
@@ -65,6 +76,9 @@ to select SQLite even though policy apply/version/rollback now works against a
 runtime requires those remaining repositories plus migration and backup
 runbooks. `vinctor service serve` rejects a Postgres selection explicitly until
 that control-plane migration is complete instead of starting a partial service.
+Consequently, this foundation does not yet claim a runnable multi-instance HTTP
+deployment even though the Postgres audit chain and repository contracts are
+serialized correctly across multiple service connections.
 
 ## Integration contract
 

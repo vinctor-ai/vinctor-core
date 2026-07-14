@@ -24,6 +24,15 @@ Response:
 The health response intentionally omits secrets, raw keys, grant refs, database
 paths, and internal configuration.
 
+`GET /readyz`
+
+Auth: none
+
+`/healthz` is a liveness check: it remains successful while the HTTP process is
+running. `/readyz` is a traffic-readiness check: it probes the durable store and
+returns `200` with `status: ready`, or `503` with `status: unavailable`. The
+failure response does not expose a DSN, path, or database error.
+
 ## Authentication Headers
 
 | Header | Used by | Meaning |

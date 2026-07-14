@@ -33,6 +33,10 @@ def run_smoke(config: SmokeConfig) -> dict[str, object]:
     if health_status != 200 or health.get("status") != "ok":
         raise SmokeError(f"health check failed status={health_status}")
 
+    readiness_status, readiness = _request_json(config, "GET", "/readyz")
+    if readiness_status != 200 or readiness.get("status") != "ready":
+        raise SmokeError(f"readiness check failed status={readiness_status}")
+
     permit_status, permit = _request_json(
         config,
         "POST",
