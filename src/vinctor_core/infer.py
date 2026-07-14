@@ -53,6 +53,7 @@ def propose_scopes(
     observations: Iterable[Observation],
     *,
     generalize: bool = False,
+    min_count: int = 1,
 ) -> tuple[ScopeProposal, ...]:
     """Deterministically propose the narrowest grant scopes covering observations.
 
@@ -62,6 +63,9 @@ def propose_scopes(
     widened (avoids top-level `category/*` footguns). Invalid actions/resources are
     dropped. Propose-only — this never applies policy.
     """
+    if min_count < 1:
+        raise ValueError("min_count must be positive")
+
     # Aggregate valid (action, resource) observations.
     agg: dict[tuple[str, str], tuple[int, str | None]] = {}
     for obs in observations:
@@ -72,6 +76,7 @@ def propose_scopes(
         key = (obs.action, obs.resource)
         count, last_seen = agg.get(key, (0, None))
         agg[key] = (count + obs.count, _latest(last_seen, obs.last_seen))
+    agg = {key: value for key, value in agg.items() if value[0] >= min_count}
 
     def _exact(action: str, resource: str, count: int, last_seen: str | None) -> ScopeProposal:
         scope = attempted_scope(action, resource)
