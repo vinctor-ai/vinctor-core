@@ -3,6 +3,8 @@ import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
 
+import pytest
+
 from vinctor_core.models import AuditEvent
 from vinctor_service.audit_chain import GENESIS_PREV_HASH, AnchorRecord, row_hash
 from vinctor_service.sqlite import (
@@ -343,4 +345,73 @@ def test_postgres_crosschecks_every_pg_only_materialized_column() -> None:
     )
     assert set(PostgresAuditWriter._PG_ONLY_CROSSCHECK_COLUMNS).isdisjoint(
         PostgresAuditWriter._CROSSCHECK_COLUMNS
+    )
+
+
+# --- B2: audit ordering / backfill integrity -----------------------------
+
+
+def test_backfill_is_one_time_and_does_not_reheal_post_migration_null(tmp_path) -> None:
+    """After the migration sentinel is recorded, a NULL row_hash is tampering,
+    not un-migrated data: re-running init must NOT silently re-chain it (which
+    would mask the tamper) — verify_chain fails closed instead.
+
+    Power: nulling the LAST row's hash is exactly what the old ungated backfill
+    would recompute back to the valid value, making verify_chain pass again.
+    """
+    conn, w = _writer(tmp_path)  # fresh DB: migration sentinel v14 recorded
+    for i in (1, 2, 3):
+        w.write(_event(f"evt_{i}"))
+
+    # Tamper: drop the chain hash of the head row (as a DB-write attacker might).
+    conn.execute("UPDATE audit_events SET row_hash = NULL WHERE seq = 3")
+    conn.commit()
+
+    init_sqlite_schema(conn)  # simulate a restart re-running migrations
+
+    healed = conn.execute(
+        "SELECT row_hash FROM audit_events WHERE seq = 3"
+    ).fetchone()[0]
+    assert healed is None, "post-migration NULL row_hash must not be re-chained"
+    assert SQLiteAuditWriter(conn).verify_chain().ok is False
+
+
+def test_seq_unique_index_rejects_duplicate_seq(tmp_path) -> None:
+    conn, w = _writer(tmp_path)
+    w.write(_event("evt_1"))
+    w.write(_event("evt_2"))
+
+    # A forked chain (two rows sharing a seq) is rejected by the unique index.
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE audit_events SET seq = 1 WHERE seq = 2")
+
+
+def test_legacy_backfill_runs_once_then_seals(tmp_path) -> None:
+    """A pre-hash-chain legacy DB still back-fills on first migration; once the
+    sentinel is recorded, a later NULL is not re-healed."""
+    conn = sqlite3.connect(tmp_path / "legacy.sqlite")
+    conn.executescript(
+        "CREATE TABLE audit_events (event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL,"
+        " decision TEXT NOT NULL, reason TEXT NOT NULL, workspace_id TEXT NOT NULL,"
+        " agent_id TEXT NOT NULL, grant_id TEXT NOT NULL, grant_ref TEXT NOT NULL,"
+        " action TEXT NOT NULL, resource TEXT NOT NULL, scope_attempted TEXT NOT NULL,"
+        " scope_matched TEXT, boundary_id TEXT, runtime TEXT, boundary_type TEXT,"
+        " created_at TEXT NOT NULL, event_json TEXT NOT NULL);"
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);"
+    )
+    _raw_event_row(conn, "evt_1", 1)
+    _raw_event_row(conn, "evt_2", 2)
+
+    init_sqlite_schema(conn)  # first migration: back-fill runs and seals (v14)
+
+    assert 14 in get_sqlite_schema_versions(conn)
+    assert SQLiteAuditWriter(conn).verify_chain().ok is True
+
+    # Now sealed: a subsequent NULL is not re-chained on the next startup.
+    conn.execute("UPDATE audit_events SET row_hash = NULL WHERE seq = 2")
+    conn.commit()
+    init_sqlite_schema(conn)
+    assert (
+        conn.execute("SELECT row_hash FROM audit_events WHERE seq = 2").fetchone()[0]
+        is None
     )

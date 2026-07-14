@@ -359,6 +359,13 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         """,
         (13, datetime.now(UTC).isoformat()),
     )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (_AUDIT_HASHCHAIN_BACKFILL_VERSION, datetime.now(UTC).isoformat()),
+    )
     conn.commit()
 
 
@@ -546,43 +553,68 @@ def _realign_agent_enforcement_require_boundary_set(conn: sqlite3.Connection) ->
         )
 
 
+# schema_migrations sentinel marking the audit hash-chain backfill complete.
+# While absent, the one-time backfill of pre-hash-chain rows may run; once
+# recorded, the backfill never runs again (a later NULL row_hash is treated as
+# tampering and left for verify_chain to fail closed on).
+_AUDIT_HASHCHAIN_BACKFILL_VERSION = 14
+
+
 def _ensure_audit_events_hashchain_columns(conn: sqlite3.Connection) -> None:
     cols = {
         row[1] for row in conn.execute("PRAGMA table_info(audit_events)").fetchall()
     }
-    added = False
     if "seq" not in cols:
         conn.execute("ALTER TABLE audit_events ADD COLUMN seq INTEGER")
-        added = True
     if "prev_hash" not in cols:
         conn.execute("ALTER TABLE audit_events ADD COLUMN prev_hash TEXT")
-        added = True
     if "row_hash" not in cols:
         conn.execute("ALTER TABLE audit_events ADD COLUMN row_hash TEXT")
-        added = True
-    # Back-fill any rows lacking chain metadata, in rowid (insertion) order.
-    unchained = conn.execute(
-        "SELECT rowid, event_json FROM audit_events WHERE row_hash IS NULL ORDER BY rowid"
-    ).fetchall()
-    if unchained:
-        start_seq_row = conn.execute(
-            "SELECT COALESCE(MAX(seq), 0), "
-            "(SELECT row_hash FROM audit_events WHERE seq = (SELECT MAX(seq) "
-            "FROM audit_events WHERE row_hash IS NOT NULL)) "
-            "FROM audit_events WHERE row_hash IS NOT NULL"
-        ).fetchone()
-        seq = start_seq_row[0] or 0
-        prev = start_seq_row[1] or GENESIS_PREV_HASH
-        for rowid, event_json in unchained:
-            seq += 1
-            rh = row_hash(seq, event_json, prev)
-            conn.execute(
-                "UPDATE audit_events SET seq = ?, prev_hash = ?, row_hash = ? WHERE rowid = ?",
-                (seq, prev, rh, rowid),
-            )
-            prev = rh
-    if added or unchained:
-        conn.commit()
+
+    # The backfill is a ONE-TIME migration of pre-hash-chain rows, gated on the
+    # sentinel below. Once it is recorded, a NULL row_hash is no longer
+    # un-migrated data — it is tampering or corruption — so we must NOT silently
+    # re-chain it into a valid-looking entry (that would mask the tamper).
+    # verify_chain fails closed on the NULL instead.
+    backfill_done = conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE version = ?",
+        (_AUDIT_HASHCHAIN_BACKFILL_VERSION,),
+    ).fetchone()
+    unchained: tuple = ()
+    if backfill_done is None:
+        # Resumable: always continues from the current chained head, so an
+        # interrupted run completes on a later startup (until the sentinel is
+        # recorded alongside the other versions in init_sqlite_schema).
+        unchained = conn.execute(
+            "SELECT rowid, event_json FROM audit_events "
+            "WHERE row_hash IS NULL ORDER BY rowid"
+        ).fetchall()
+        if unchained:
+            start_seq_row = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0), "
+                "(SELECT row_hash FROM audit_events WHERE seq = (SELECT MAX(seq) "
+                "FROM audit_events WHERE row_hash IS NOT NULL)) "
+                "FROM audit_events WHERE row_hash IS NOT NULL"
+            ).fetchone()
+            seq = start_seq_row[0] or 0
+            prev = start_seq_row[1] or GENESIS_PREV_HASH
+            for rowid, event_json in unchained:
+                seq += 1
+                rh = row_hash(seq, event_json, prev)
+                conn.execute(
+                    "UPDATE audit_events SET seq = ?, prev_hash = ?, row_hash = ? "
+                    "WHERE rowid = ?",
+                    (seq, prev, rh, rowid),
+                )
+                prev = rh
+
+    # Defense-in-depth against a forked chain: seq is the tamper-evident, hashed
+    # ordering key, so forbid duplicate seq values. SQLite unique indexes permit
+    # multiple NULLs, so this is safe before the backfill populates seq.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_events_seq ON audit_events(seq)"
+    )
+    conn.commit()
 
 
 def get_sqlite_schema_versions(conn: sqlite3.Connection) -> tuple[int, ...]:
@@ -1383,11 +1415,13 @@ class SQLiteAuditWriter:
         return _audit_event_from_json(row[0]) if row is not None else None
 
     def list_all(self) -> list[AuditEvent]:
+        # Order by the tamper-evident chain sequence (baked into row_hash), not
+        # the unprotected SQLite rowid.
         rows = self._conn.execute(
             """
             SELECT event_json
             FROM audit_events
-            ORDER BY rowid
+            ORDER BY seq
             """
         ).fetchall()
         return [_audit_event_from_json(row[0]) for row in rows]
@@ -1397,7 +1431,7 @@ class SQLiteAuditWriter:
             """
             SELECT event_json FROM audit_events
             WHERE workspace_id = '' AND event_type = 'auth_failed'
-            ORDER BY rowid DESC
+            ORDER BY seq DESC
             LIMIT ?
             """,
             (limit,),
@@ -1422,11 +1456,13 @@ class SQLiteAuditWriter:
 
         Mirrors the HTTP/operator Python-side filter EXACTLY (same WHERE
         semantics, same ordering) but lets SQLite do the work: a parameterized
-        ``WHERE workspace_id = ? [AND ...] ORDER BY rowid DESC [LIMIT ?]`` so the
+        ``WHERE workspace_id = ? [AND ...] ORDER BY seq DESC [LIMIT ?]`` so the
         whole table is never materialized into Python. The most-recent ``limit``
-        rows are selected via ``rowid DESC LIMIT`` and then returned oldest-first
+        rows are selected via ``seq DESC LIMIT`` and then returned oldest-first
         within that window, matching the legacy ``[-limit:]`` slice of
-        insertion-ordered events. ``limit=None`` returns every matching row.
+        insertion-ordered events. Ordering is by the tamper-evident chain
+        ``seq`` (hashed into row_hash), not the unprotected rowid.
+        ``limit=None`` returns every matching row.
 
         ``reason_code``/``enforcing_principal``/``identity_proven`` have no
         dedicated columns; they are filtered via ``json_extract`` over the
@@ -1472,7 +1508,7 @@ class SQLiteAuditWriter:
         sql = (
             "SELECT event_json FROM audit_events "
             f"WHERE {' AND '.join(clauses)} "
-            "ORDER BY rowid DESC"
+            "ORDER BY seq DESC"
         )
         if limit is not None:
             sql += " LIMIT ?"

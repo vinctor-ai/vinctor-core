@@ -31,7 +31,7 @@ def test_sqlite_default_false_and_round_trip(tmp_path) -> None:
 def test_sqlite_schema_records_latest_version(tmp_path) -> None:
     conn = sqlite3.connect(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
-    assert get_sqlite_schema_versions(conn) == tuple(range(1, 14))
+    assert get_sqlite_schema_versions(conn) == tuple(range(1, 15))
 
 
 def test_unrelated_agent_setting_does_not_override_workspace_boundary(tmp_path) -> None:
