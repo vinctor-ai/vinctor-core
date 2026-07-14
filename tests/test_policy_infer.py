@@ -21,13 +21,16 @@ def _event(
     decision: str,
     created_at: datetime,
     workspace_id: str = "ws",
+    event_type: str | None = None,
 ) -> AuditEvent:
-    event_type = "action_permitted" if decision == "permit" else "action_denied"
+    resolved_event_type = event_type or (
+        "action_permitted" if decision == "permit" else "action_denied"
+    )
     return AuditEvent(
         event_id=f"evt_{agent_id}_{action}_{resource}_{created_at.isoformat()}",
-        event_type=event_type,
+        event_type=resolved_event_type,
         decision=decision,
-        reason=event_type,
+        reason=resolved_event_type,
         workspace_id=workspace_id,
         agent_id=agent_id,
         grant_id="g",
@@ -60,6 +63,33 @@ def test_proposes_exact_scopes_from_permitted_events_for_the_agent():
     assert doc["proposed"]["agent_id"] == "a1"
     assert [s["scope"] for s in doc["proposed"]["scopes"]] == ["read:repo/feature/readme"]
     assert "candidates_from_denied" not in doc["proposed"]
+
+
+def test_proposes_exact_scopes_from_mapped_observations_only():
+    events = [
+        _event(
+            agent_id="a1",
+            action="read",
+            resource="repo/feature/readme",
+            decision="permit",
+            event_type="action_observed",
+            created_at=datetime(2026, 7, 1, tzinfo=UTC),
+        ),
+        _event(
+            agent_id="a1",
+            action="",
+            resource="",
+            decision="permit",
+            event_type="action_unmapped",
+            created_at=datetime(2026, 7, 1, tzinfo=UTC),
+        ),
+    ]
+
+    doc = infer_policy_document(events, agent_id="a1")
+
+    assert [s["scope"] for s in doc["proposed"]["scopes"]] == [
+        "read:repo/feature/readme"
+    ]
 
 
 def test_since_and_until_window_filters_events():

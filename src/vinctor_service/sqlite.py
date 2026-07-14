@@ -62,7 +62,10 @@ from vinctor_service.models import (
     V1DelegatedEnforceRequest,
     V1EnforceRequest,
     V1EnforceResponse,
+    V1ObserveRequest,
+    V1ObserveResponse,
 )
+from vinctor_service.observations import record_observation
 from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS
 from vinctor_service.subject_tokens import mint_subject_token
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
@@ -1759,6 +1762,14 @@ class SQLiteV1Service:
             audit_writer=self.audit_writer,
             boundary_registry=self.boundary_registry,
             agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
+        )
+
+    def observe(self, request: V1ObserveRequest, *, now: datetime) -> V1ObserveResponse:
+        return record_observation(
+            request,
+            audit_writer=self.audit_writer,
+            now=now,
+            boundary_registry=self.boundary_registry,
         )
 
     def delegated_enforce(

@@ -57,6 +57,8 @@ from vinctor_service.models import (
     V1DelegatedEnforceRequest,
     V1EnforceRequest,
     V1EnforceResponse,
+    V1ObserveRequest,
+    V1ObserveResponse,
 )
 from vinctor_service.repositories import (
     AgentEnforcementSettingsRepository,
@@ -97,9 +99,11 @@ from vinctor_service.v1_http import (
     AgentIdentity,
     PepIdentity,
     V1HttpResponse,
+    V1ObserveService,
     V1TokenService,
     handle_v1_delegated_enforce_http,
     handle_v1_enforce_http,
+    handle_v1_observe_http,
     handle_v1_tokens_http,
 )
 
@@ -156,6 +160,9 @@ __all__ = [
     "V1EnforceRequest",
     "V1EnforceResponse",
     "V1HttpResponse",
+    "V1ObserveRequest",
+    "V1ObserveResponse",
+    "V1ObserveService",
     "V1TokenService",
     "WORKSPACE_KEY_PREFIX",
     "WorkspaceIdentity",
@@ -174,6 +181,7 @@ __all__ = [
     "handle_v1_auto_approval_rules_http",
     "handle_v1_delegated_enforce_http",
     "handle_v1_enforce_http",
+    "handle_v1_observe_http",
     "handle_v1_grant_requests_http",
     "handle_v1_grants_http",
     "handle_v1_tokens_http",

@@ -66,8 +66,10 @@ def infer_policy_document(
 ) -> dict[str, object]:
     """Build a propose-only scope proposal document for one agent.
 
-    Proposes exact/generalized scopes from the agent's *permitted* actions in the
-    window. With ``include_denied``, denied attempts are proposed into a SEPARATE
+    Proposes exact/generalized scopes from the agent's permitted or explicitly
+    observed mapped actions in the window. Unmapped observations carry no
+    action/resource pair and are ignored by scope validation. With
+    ``include_denied``, denied attempts are proposed into a SEPARATE
     ``candidates_from_denied`` list — never merged into ``scopes``.
     """
     events = list(events)
