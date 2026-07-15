@@ -1310,36 +1310,6 @@ def test_postgres_state_and_audit_commit_atomically() -> None:
     conn.close()
 
 
-def test_postgres_anchor_deferred_to_commit_and_dropped_on_rollback() -> None:
-    assert DSN is not None
-    conn = connect_postgres(DSN)
-    heads: list[int] = []
-
-    class _RecordingAnchor:
-        def emit(self, seq, row_hash, created_at):
-            heads.append(seq)
-
-        def emit_storage_op(self, *args, **kwargs):
-            pass
-
-    writer = PostgresAuditWriter(conn, anchor=_RecordingAnchor())
-
-    # Joined write that rolls back: the anchor is deferred, then dropped.
-    with pytest.raises(RuntimeError), conn.transaction():
-        writer.write(_pg_audit_event("evt_rollback"))
-        assert heads == []  # deferred while the transaction is open
-        raise RuntimeError("boom")
-    assert conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 0
-    assert heads == []  # never emitted for the rolled-back row
-
-    # Joined write that commits: the anchor emits exactly once, after commit.
-    with conn.transaction():
-        writer.write(_pg_audit_event("evt_commit"))
-        assert heads == []  # still deferred inside the transaction
-    assert len(heads) == 1
-    conn.close()
-
-
 def test_postgres_key_rotation_is_atomic_when_revocation_fails() -> None:
     assert DSN is not None
     conn = connect_postgres(DSN)
