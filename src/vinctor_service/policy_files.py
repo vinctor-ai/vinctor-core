@@ -17,7 +17,7 @@ from vinctor_core.scope import is_valid_grant_scope
 from vinctor_service.auto_approval import upsert_auto_approval_rule
 from vinctor_service.grants import validate_issuable_scope_bounds
 from vinctor_service.models import AutoApprovalRule
-from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite import SQLiteV1Service, _conn_txn_lock
 
 
 @dataclass(frozen=True)
@@ -91,15 +91,19 @@ def _sqlite_apply_transaction(conn: sqlite3.Connection) -> Iterator[None]:
     interleaving, and neither ever sees a half-applied state. The SQLite
     repositories' write methods join this open transaction rather than
     committing it (see sqlite._write_scope); everything commits together here
-    or rolls back together on any failure.
+    or rolls back together on any failure. The per-connection lock serializes
+    this scope with every other transaction on the connection (apply, rollback,
+    and the service mutators) so concurrent same-connection callers cannot
+    collide on BEGIN IMMEDIATE.
     """
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        yield
-    except BaseException:
-        conn.rollback()
-        raise
-    conn.commit()
+    with _conn_txn_lock(conn):
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            conn.rollback()
+            raise
+        conn.commit()
 
 
 def _apply_policy_document(
@@ -266,18 +270,21 @@ def rollback_policy_version(
             applied_by=applied_by,
             now=now,
         )
-    row = service.conn.execute(
-        """
-        SELECT snapshot_json
-        FROM policy_versions
-        WHERE workspace_id = ? AND version = ?
-        """,
-        (workspace_id, version),
-    ).fetchone()
-    if row is None:
-        raise ValueError(f"unknown policy version: {version}")
-    snapshot = _validated_policy_snapshot(json.loads(row[0]))
-    with service.conn:
+    with _sqlite_apply_transaction(service.conn):
+        # Read the snapshot INSIDE the serialized transaction so a concurrent
+        # apply cannot change it between the lookup and the restore (the read
+        # used to happen before the write lock was held).
+        row = service.conn.execute(
+            """
+            SELECT snapshot_json
+            FROM policy_versions
+            WHERE workspace_id = ? AND version = ?
+            """,
+            (workspace_id, version),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown policy version: {version}")
+        snapshot = _validated_policy_snapshot(json.loads(row[0]))
         _restore_policy_snapshot(
             service=service,
             workspace_id=workspace_id,

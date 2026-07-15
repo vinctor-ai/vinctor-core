@@ -101,7 +101,9 @@ def rollback_postgres_policy_version(
     applied_by: str,
     now: datetime,
 ) -> PolicyRollbackResult:
-    with service.conn.transaction():
+    # Rollback shares the SAME workspace serialization boundary as apply, so an
+    # apply and a rollback (or two rollbacks) to one workspace cannot interleave.
+    with postgres_policy_apply_transaction(service=service, workspace_id=workspace_id):
         row = service.conn.execute(
             """
             SELECT snapshot_json FROM policy_versions

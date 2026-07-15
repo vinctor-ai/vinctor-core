@@ -51,6 +51,42 @@ def test_atomic_write_serializes_scopes_across_threads(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_policy_apply_transaction_serializes_across_threads(tmp_path: Path) -> None:
+    # Policy apply and rollback both run inside _sqlite_apply_transaction, which
+    # now takes the same per-connection lock, so an apply and a rollback (or two
+    # rollbacks) on one connection cannot interleave (Codex P1 policy).
+    from vinctor_service.policy_files import _sqlite_apply_transaction
+
+    conn = sqlite3.connect(str(tmp_path / "v.sqlite"), check_same_thread=False)
+    a_inside = threading.Event()
+    b_entered = threading.Event()
+    release_a = threading.Event()
+
+    def thread_a() -> None:
+        with _sqlite_apply_transaction(conn):
+            a_inside.set()
+            release_a.wait(timeout=2)
+
+    def thread_b() -> None:
+        a_inside.wait(timeout=2)
+        with _sqlite_apply_transaction(conn):
+            b_entered.set()
+
+    ta, tb = threading.Thread(target=thread_a), threading.Thread(target=thread_b)
+    ta.start()
+    tb.start()
+    try:
+        assert a_inside.wait(timeout=2)
+        assert not b_entered.wait(timeout=0.3)  # B blocked while A holds
+        release_a.set()
+        assert b_entered.wait(timeout=2)
+    finally:
+        release_a.set()
+        ta.join(timeout=2)
+        tb.join(timeout=2)
+        conn.close()
+
+
 def test_concurrent_rollback_does_not_erase_a_committed_call(tmp_path: Path) -> None:
     # End-to-end: a call that rolls back (its audit write fails) runs first and
     # holds the connection; a concurrent call, serialized behind it, then commits
