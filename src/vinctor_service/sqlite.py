@@ -684,7 +684,7 @@ class SQLiteGrantRepository:
         if grant.status == "revoked":
             return grant
 
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 UPDATE grants
@@ -719,16 +719,15 @@ def _write_scope(conn: sqlite3.Connection) -> Iterator[None]:
 
 
 @contextmanager
-def _decision_transaction(conn: sqlite3.Connection) -> Iterator[None]:
-    """One BEGIN IMMEDIATE transaction for a whole grant-request decision.
+def _atomic_write(conn: sqlite3.Connection) -> Iterator[None]:
+    """One BEGIN IMMEDIATE transaction wrapping a whole state-plus-audit change.
 
-    The pending check, the compare-and-set that claims the request, the grant
-    issuance, and every audit row commit together or not at all, and taking
-    the database write lock up front serializes concurrent deciders across
-    connections and processes (same unit-of-work pattern as policy apply).
-    The write methods underneath join this open transaction via
-    ``_write_scope``; joins an already-open transaction itself so nested
-    service calls stay safe.
+    Every state write and its audit row commit together or not at all — an
+    audit-writer failure rolls back the state change rather than leaving it
+    unrecorded — and taking the database write lock up front serializes writers
+    across connections and processes. The write methods underneath join this
+    open transaction via ``_write_scope``; this itself joins an already-open
+    transaction, so nested service calls stay safe.
     """
     if conn.in_transaction:
         yield
@@ -977,7 +976,7 @@ class SQLiteGrantRequestRepository:
     def insert_request(self, request: GrantRequest) -> None:
         if self.get_request(request.request_id) is not None:
             raise ValueError(f"duplicate grant request_id: {request.request_id}")
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO grant_requests (
@@ -1184,7 +1183,7 @@ class SQLiteSubjectTokenRepository:
     def insert(self, token: SubjectToken) -> None:
         if self.get_by_hash(token.token_hash) is not None:
             raise ValueError(f"duplicate subject token_hash: {token.token_hash}")
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO subject_tokens (
@@ -1733,13 +1732,14 @@ class SQLiteV1Service:
         *,
         now: datetime,
     ) -> GrantIssueResult:
-        return issue_grant(
-            request,
-            grant_repository=self.grant_repository,
-            scope_bounds_repository=self.scope_bounds_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _atomic_write(self.conn):
+            return issue_grant(
+                request,
+                grant_repository=self.grant_repository,
+                scope_bounds_repository=self.scope_bounds_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def lookup_grant(self, *, grant_ref: str, workspace_id: str) -> Grant | None:
         return lookup_grant(
@@ -1769,13 +1769,14 @@ class SQLiteV1Service:
         workspace_id: str,
         now: datetime,
     ) -> tuple[Grant, str] | None:
-        return revoke_grant(
-            grant_ref=grant_ref,
-            workspace_id=workspace_id,
-            grant_repository=self.grant_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _atomic_write(self.conn):
+            return revoke_grant(
+                grant_ref=grant_ref,
+                workspace_id=workspace_id,
+                grant_repository=self.grant_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def create_grant_request(
         self,
@@ -1783,25 +1784,27 @@ class SQLiteV1Service:
         *,
         now: datetime,
     ) -> GrantRequestCreateResult:
-        return create_grant_request(
-            request,
-            request_repository=self.grant_request_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _atomic_write(self.conn):
+            return create_grant_request(
+                request,
+                request_repository=self.grant_request_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def mint_subject_token(
         self, *, workspace_id, agent_id, grant_ref, audience, ttl_seconds, now,
         bound_action=None, bound_resource=None, pop=False,
     ):
-        return mint_subject_token(
-            grant_repository=self.grant_repository,
-            subject_token_repository=self.subject_token_repository,
-            audit_writer=self.audit_writer,
-            workspace_id=workspace_id, agent_id=agent_id, grant_ref=grant_ref,
-            audience=audience, ttl_seconds=ttl_seconds, now=now,
-            bound_action=bound_action, bound_resource=bound_resource, pop=pop,
-        )
+        with _atomic_write(self.conn):
+            return mint_subject_token(
+                grant_repository=self.grant_repository,
+                subject_token_repository=self.subject_token_repository,
+                audit_writer=self.audit_writer,
+                workspace_id=workspace_id, agent_id=agent_id, grant_ref=grant_ref,
+                audience=audience, ttl_seconds=ttl_seconds, now=now,
+                bound_action=bound_action, bound_resource=bound_resource, pop=pop,
+            )
 
     def lookup_grant_request(
         self,
@@ -1830,7 +1833,7 @@ class SQLiteV1Service:
         decision_reason: str | None,
         now: datetime,
     ) -> GrantRequestDecisionResult:
-        with _decision_transaction(self.conn):
+        with _atomic_write(self.conn):
             return approve_grant_request(
                 request_id=request_id,
                 workspace_id=workspace_id,
@@ -1852,7 +1855,7 @@ class SQLiteV1Service:
         decision_reason: str | None,
         now: datetime,
     ) -> GrantRequestDecisionResult:
-        with _decision_transaction(self.conn):
+        with _atomic_write(self.conn):
             return reject_grant_request(
                 request_id=request_id,
                 workspace_id=workspace_id,
@@ -1909,7 +1912,7 @@ class SQLiteV1Service:
         decided_by: str,
         now: datetime,
     ) -> GrantRequestDecisionResult:
-        with _decision_transaction(self.conn):
+        with _atomic_write(self.conn):
             return auto_approve_grant_request(
                 request_id=request_id,
                 workspace_id=workspace_id,

@@ -1268,6 +1268,31 @@ def test_postgres_service_operator_key_create_and_resolve() -> None:
     conn.close()
 
 
+def test_postgres_state_and_audit_commit_atomically() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("audit write failed")
+
+    service.audit_writer.write = _raise  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        service.create_grant_request(
+            GrantRequestCreateRequest(
+                workspace_id="ws_main", requester_agent_id="agent_a",
+                requested_scopes=("execute:ci/test",), requested_ttl_seconds=3600,
+                reason="run CI", request_id="grq_probe",
+            ),
+            now=NOW,
+        )
+
+    # The failed audit rolled the request insert back (state + audit are one unit).
+    assert service.grant_request_repository.list_requests_for_workspace("ws_main") == ()
+    conn.close()
+
+
 def test_postgres_key_rotation_is_atomic_when_revocation_fails() -> None:
     assert DSN is not None
     conn = connect_postgres(DSN)

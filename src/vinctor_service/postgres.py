@@ -1184,13 +1184,15 @@ class PostgresV1Service:
     def issue_grant(
         self, request: GrantIssueRequest, *, now: datetime,
     ) -> GrantIssueResult:
-        return issue_grant(
-            request,
-            grant_repository=self.grant_repository,
-            scope_bounds_repository=self.scope_bounds_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        # State change and its audit row commit together (or not at all).
+        with self.conn.transaction():
+            return issue_grant(
+                request,
+                grant_repository=self.grant_repository,
+                scope_bounds_repository=self.scope_bounds_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def lookup_grant(self, *, grant_ref: str, workspace_id: str) -> Grant | None:
         return lookup_grant(
@@ -1213,13 +1215,14 @@ class PostgresV1Service:
     def revoke_grant(
         self, *, grant_ref: str, workspace_id: str, now: datetime,
     ) -> tuple[Grant, str] | None:
-        return revoke_grant(
-            grant_ref=grant_ref,
-            workspace_id=workspace_id,
-            grant_repository=self.grant_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with self.conn.transaction():
+            return revoke_grant(
+                grant_ref=grant_ref,
+                workspace_id=workspace_id,
+                grant_repository=self.grant_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def set_agent_issuable_scope_bounds(
         self,
@@ -1241,12 +1244,13 @@ class PostgresV1Service:
     def create_grant_request(
         self, request: GrantRequestCreateRequest, *, now: datetime,
     ) -> GrantRequestCreateResult:
-        return create_grant_request(
-            request,
-            request_repository=self.grant_request_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with self.conn.transaction():
+            return create_grant_request(
+                request,
+                request_repository=self.grant_request_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def lookup_grant_request(
         self, *, request_id: str, workspace_id: str,
@@ -1299,20 +1303,21 @@ class PostgresV1Service:
         self, *, workspace_id, agent_id, grant_ref, audience, ttl_seconds, now,
         bound_action=None, bound_resource=None, pop=False,
     ):
-        return mint_subject_token(
-            grant_repository=self.grant_repository,
-            subject_token_repository=self.subject_token_repository,
-            audit_writer=self.audit_writer,
-            workspace_id=workspace_id,
-            agent_id=agent_id,
-            grant_ref=grant_ref,
-            audience=audience,
-            ttl_seconds=ttl_seconds,
-            now=now,
-            bound_action=bound_action,
-            bound_resource=bound_resource,
-            pop=pop,
-        )
+        with self.conn.transaction():
+            return mint_subject_token(
+                grant_repository=self.grant_repository,
+                subject_token_repository=self.subject_token_repository,
+                audit_writer=self.audit_writer,
+                workspace_id=workspace_id,
+                agent_id=agent_id,
+                grant_ref=grant_ref,
+                audience=audience,
+                ttl_seconds=ttl_seconds,
+                now=now,
+                bound_action=bound_action,
+                bound_resource=bound_resource,
+                pop=pop,
+            )
 
     def create_auto_approval_rule(self, rule: AutoApprovalRule) -> AutoApprovalRule:
         return create_auto_approval_rule(
