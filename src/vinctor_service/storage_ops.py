@@ -161,6 +161,17 @@ def _atomic_replace_sqlite(
         finally:
             os.close(flush_fd)
         os.replace(tmp_path, db_path)
+        # fsync the parent directory so the rename itself is durable across a
+        # crash immediately after replace (best-effort: not all platforms allow
+        # fsync on a directory handle).
+        try:
+            dir_fd = os.open(db_path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
         return versions
     except BaseException:
         tmp_path.unlink(missing_ok=True)
