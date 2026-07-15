@@ -95,6 +95,24 @@ def test_rotate_pep_key_only_revokes_same_pep(tmp_path: Path) -> None:
     assert repo.get_by_id(agent_key.record.key_id).status == "active"
 
 
+def test_rotate_rejects_running_inside_an_open_transaction(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "vinctor.sqlite")
+    old = repo.create_workspace_key(workspace_id="ws_demo", now=NOW)
+
+    # A caller that already holds a transaction must not be able to nest a
+    # rotation into it: nesting would return the plaintext before the caller's
+    # commit and drop the key on rollback. Rotation owns its transaction.
+    repo._conn.execute("BEGIN")
+    try:
+        with pytest.raises(RuntimeError, match="cannot run inside an open transaction"):
+            rotate_workspace_key(repo, workspace_id="ws_demo", now=NOW)
+    finally:
+        repo._conn.rollback()
+
+    # The predecessor is untouched and still the only active workspace key.
+    assert repo.get_by_id(old.record.key_id).status == "active"
+
+
 def test_rotate_is_atomic_when_revocation_fails(
     tmp_path: Path, monkeypatch
 ) -> None:

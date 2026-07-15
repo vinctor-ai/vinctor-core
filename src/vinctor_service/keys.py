@@ -70,11 +70,16 @@ class SQLiteLocalKeyRepository:
         BEGIN IMMEDIATE takes the write lock up front (serializing rotations
         across connections/processes); create/revoke join it via
         _key_write_scope, so a new key and the revocation of its predecessors
-        commit together or not at all. Joins an already-open transaction.
+        commit together or not at all. Rotation must OWN this transaction so the
+        plaintext key is returned only after a real commit; running it inside an
+        outer transaction is rejected rather than silently joined (which would
+        return the key before the caller's commit and drop it on rollback).
         """
         if self._conn.in_transaction:
-            yield
-            return
+            raise RuntimeError(
+                "key rotation cannot run inside an open transaction; it must own "
+                "its transaction so the plaintext is returned only after commit"
+            )
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             yield

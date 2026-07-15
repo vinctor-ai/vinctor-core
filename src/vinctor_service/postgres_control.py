@@ -40,8 +40,17 @@ class PostgresLocalKeyRepository:
         Opens a single outer transaction and takes a global rotation advisory
         lock up front; the per-method transaction() scopes underneath become
         savepoints, so a new key and the revocation of its predecessors commit
-        together or roll back together.
+        together or roll back together. Rotation must OWN this transaction so the
+        plaintext key is returned only after a real commit; running it inside an
+        outer transaction is rejected rather than joined as a savepoint (which
+        would return the key before the caller's commit and drop it on rollback).
         """
+        # PQTRANS_IDLE == 0; any other status means an outer transaction is open.
+        if int(self._conn.info.transaction_status) != 0:
+            raise RuntimeError(
+                "key rotation cannot run inside an open transaction; it must own "
+                "its transaction so the plaintext is returned only after commit"
+            )
         with self._conn.transaction():
             self._conn.execute(
                 "SELECT pg_advisory_xact_lock(%s::int4, %s::int4)",
