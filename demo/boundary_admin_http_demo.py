@@ -92,6 +92,8 @@ def main() -> None:
                     headers={"X-Workspace-Key": "workspace_key_other"},
                 )
                 assert other_status == 404
+                # Operator boundary-registry lookup (workspace key), not the agent
+                # enforce path — it keeps the precise reason.
                 assert other["error"] == "boundary_not_found"
 
                 disable_status, disabled = post_json(
@@ -117,7 +119,7 @@ def main() -> None:
                     },
                 )
                 assert disabled_enforce_status == 403
-                assert disabled_enforce["error"] == "boundary_inactive"
+                assert disabled_enforce["error"] == "boundary_unavailable"
 
                 enable_status, enabled = post_json(
                     server,
