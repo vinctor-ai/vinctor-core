@@ -86,6 +86,29 @@ from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1
 
 
 def init_sqlite_schema(conn: sqlite3.Connection) -> None:
+    """Create/upgrade the schema, serialized on the connection lock.
+
+    ``executescript`` (and the per-migration commits) implicitly commit any
+    pending transaction on the connection, so this MUST hold ``conn_txn_lock``
+    for the whole migration or it would commit a peer thread's open write on a
+    shared connection. The lock is taken FIRST, so a concurrent write on another
+    thread WAITS here instead of being mistaken for caller nesting; once held,
+    ``in_transaction`` reflects only this thread — a True value means this
+    thread's caller already owns a transaction, which schema init rejects (it
+    must own its transaction, since its commits would otherwise seal the
+    caller's partial write).
+    """
+    with conn_txn_lock(conn):
+        if conn.in_transaction:
+            raise RuntimeError(
+                "schema initialization cannot run inside an open transaction; it "
+                "must own its transaction so its commits do not seal a caller's "
+                "partial write"
+            )
+        _apply_sqlite_schema(conn)
+
+
+def _apply_sqlite_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (

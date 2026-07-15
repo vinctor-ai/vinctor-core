@@ -246,3 +246,47 @@ def test_token_revoke_serializes_with_atomic_write(tmp_path: Path) -> None:
         ta.join(timeout=2)
         tb.join(timeout=2)
         conn.close()
+
+
+def test_schema_init_serializes_with_atomic_write(tmp_path: Path) -> None:
+    # init_sqlite_schema's executescript (and its migration commits) implicitly
+    # commit any pending transaction, so it MUST hold the connection lock (Codex
+    # P1): otherwise a peer thread's open _atomic_write is sealed by init and its
+    # rollback can no longer remove the write.
+    conn = sqlite3.connect(str(tmp_path / "v.sqlite"), check_same_thread=False)
+    SQLiteV1Service(conn)  # schema initialized once; init is idempotent
+    conn.execute("CREATE TABLE _init_marker (n INTEGER)")
+    conn.commit()
+    a_inside = threading.Event()
+    b_done = threading.Event()
+    release_a = threading.Event()
+
+    def thread_a() -> None:
+        with contextlib.suppress(RuntimeError), sqlite_mod._atomic_write(conn):
+            conn.execute("INSERT INTO _init_marker (n) VALUES (1)")
+            a_inside.set()
+            release_a.wait(timeout=2)
+            raise RuntimeError("roll back A's marker")
+
+    def thread_b() -> None:
+        a_inside.wait(timeout=2)
+        sqlite_mod.init_sqlite_schema(conn)  # must block on the lock, not seal A
+        b_done.set()
+
+    ta, tb = threading.Thread(target=thread_a), threading.Thread(target=thread_b)
+    ta.start()
+    tb.start()
+    try:
+        assert a_inside.wait(timeout=2)
+        # Without the lock, init's executescript commits A's open transaction and
+        # returns at once; with it, init waits for A to roll back and release.
+        assert not b_done.wait(timeout=0.3)
+        release_a.set()
+        assert b_done.wait(timeout=2)
+    finally:
+        release_a.set()
+        ta.join(timeout=2)
+        tb.join(timeout=2)
+    # A rolled back, so its marker must be absent — init must not have sealed it.
+    assert conn.execute("SELECT COUNT(*) FROM _init_marker").fetchone()[0] == 0
+    conn.close()
