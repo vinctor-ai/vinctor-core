@@ -500,7 +500,7 @@ def test_local_http_service_creates_boundary_then_enforces_with_it() -> None:
     assert disable_status == 200
     assert disabled["status"] == "disabled"
     assert disabled_enforce_status == 403
-    assert disabled_enforce["error"] == "boundary_inactive"
+    assert disabled_enforce["error"] == "boundary_unavailable"
     assert enable_status == 200
     assert enabled["status"] == "active"
     assert enforce_status == 200

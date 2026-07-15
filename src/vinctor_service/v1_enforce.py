@@ -9,6 +9,7 @@ from vinctor_core.audit import (
     REASON_SUBJECT_TOKEN_INVALID,
     REASON_SUBJECT_TOKEN_REQUIRED,
     AuditEventInput,
+    agent_facing_reason,
     build_audit_event,
     build_rejection_audit_event,
 )
@@ -466,11 +467,12 @@ def _response_from_decision(
             audit_event_id=audit_event.event_id,
         )
 
+    agent_reason = agent_facing_reason(decision.reason)
     return V1EnforceResponse(
         status_code=403,
         decision="deny",
-        error=decision.reason,
-        reason=decision.reason,
+        error=agent_reason,
+        reason=agent_reason,
         audit_event_id=audit_event.event_id,
     )
 

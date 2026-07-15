@@ -383,7 +383,7 @@ def test_postgres_boundary_and_settings_drive_enforcement() -> None:
     event = service.get_audit_event(permit.audit_event_id or "")
     assert event is not None
     assert event.runtime == "claude-code"
-    assert disabled.error == "boundary_inactive"
+    assert disabled.error == "boundary_unavailable"
     conn.close()
 
 

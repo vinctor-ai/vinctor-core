@@ -1,8 +1,10 @@
 from datetime import UTC, datetime, timedelta
 
 from vinctor_core import (
+    BoundaryRegistrationInput,
     BoundaryRegistry,
     Grant,
+    register_boundary,
 )
 from vinctor_core.audit import (
     EVENT_ACCESS_REJECTED,
@@ -350,9 +352,53 @@ def test_v1_enforce_boundary_denial_writes_audit_event() -> None:
 
     assert response.status_code == 403
     assert response.decision == "deny"
-    assert response.error == "boundary_not_found"
+    assert response.error == "boundary_unavailable"
     assert response.audit_event_id == audit.events[0].event_id
+    assert audit.events[0].reason == "boundary_not_found"  # audit keeps precise
     assert audit.events[0].boundary_id == "bnd_missing"
+
+
+def test_v1_enforce_boundary_denials_do_not_reveal_existence() -> None:
+    # A boundary that is ABSENT and one that EXISTS in another workspace must
+    # return the SAME agent-facing reason, so an agent cannot enumerate which
+    # boundary ids exist across workspaces from the deny response. The operator
+    # audit still distinguishes the two cases precisely.
+    registry = BoundaryRegistry()
+    register_boundary(
+        registry,
+        BoundaryRegistrationInput(
+            workspace_id="ws_other",
+            name="langgraph-local",
+            runtime="langgraph",
+            boundary_type="middleware",
+        ),
+        now=NOW,
+        boundary_id="bnd_other_ws",
+    )
+
+    absent_audit = InMemoryAuditWriter()
+    absent = enforce_v1_contract(
+        request(boundary_id="bnd_absent"),
+        grant_repository=repository(grant()),  # grant is in ws_main
+        now=NOW,
+        audit_writer=absent_audit,
+        boundary_registry=registry,
+    )
+    cross_tenant_audit = InMemoryAuditWriter()
+    cross_tenant = enforce_v1_contract(
+        request(boundary_id="bnd_other_ws"),
+        grant_repository=repository(grant()),
+        now=NOW,
+        audit_writer=cross_tenant_audit,
+        boundary_registry=registry,
+    )
+
+    # Agent-facing responses are indistinguishable (oracle closed)...
+    assert absent.error == cross_tenant.error == "boundary_unavailable"
+    assert absent.reason == cross_tenant.reason == "boundary_unavailable"
+    # ...while the operator audit keeps the precise, distinct reasons.
+    assert absent_audit.events[0].reason == "boundary_not_found"
+    assert cross_tenant_audit.events[0].reason == "boundary_wrong_workspace"
 
 
 def test_in_memory_audit_writer_records_events_in_order() -> None:
