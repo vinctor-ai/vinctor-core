@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import threading
 from collections.abc import Iterator
@@ -17,7 +18,7 @@ from vinctor_core import (
 )
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput, Grant
 from vinctor_service.audit import AuthFailureAuditThrottle
-from vinctor_service.audit_anchor import AuditAnchor, NullAnchor
+from vinctor_service.audit_anchor import AuditAnchor, NullAnchor, anchor_from_env
 from vinctor_service.audit_chain import (
     GENESIS_PREV_HASH,
     AnchorRecord,
@@ -25,6 +26,11 @@ from vinctor_service.audit_chain import (
     ChainVerification,
     crosscheck_values_match,
     row_hash,
+)
+from vinctor_service.audit_export import (
+    ExportingAuditWriter,
+    NullExport,
+    audit_export_from_env,
 )
 from vinctor_service.auto_approval import (
     auto_approve_grant_request,
@@ -1153,7 +1159,15 @@ class PostgresV1Service:
         if initialize_schema:
             init_postgres_schema(conn)
         self.grant_repository = PostgresGrantRepository(conn)
-        self.audit_writer = PostgresAuditWriter(conn)
+        self.audit_writer = PostgresAuditWriter(
+            conn, anchor=anchor_from_env(dict(os.environ))
+        )
+        # Opt-in SIEM/OTel export (VINCTOR_AUDIT_EXPORT): mirror SQLite — when set,
+        # wrap the durable writer so each persisted event is ALSO streamed,
+        # fail-open, after the write. Off (NullExport) leaves the writer as-is.
+        export = audit_export_from_env(dict(os.environ))
+        if not isinstance(export, NullExport):
+            self.audit_writer = ExportingAuditWriter(self.audit_writer, export)
         self.boundary_registry = PostgresBoundaryRegistry(conn)
         self.scope_bounds_repository = PostgresAgentIssuableScopeBoundsRepository(conn)
         self.grant_request_repository = PostgresGrantRequestRepository(conn)

@@ -15,7 +15,9 @@ from vinctor_core import (
     register_boundary,
 )
 from vinctor_core.models import AuditEvent, Grant
+from vinctor_service.audit_anchor import NullAnchor
 from vinctor_service.audit_chain import GENESIS_PREV_HASH, AnchorRecord
+from vinctor_service.audit_export import ExportingAuditWriter
 from vinctor_service.key_ops import rotate_workspace_key
 from vinctor_service.models import (
     AgentIssuableBounds,
@@ -1265,6 +1267,21 @@ def test_postgres_service_operator_key_create_and_resolve() -> None:
     assert repository.resolve_auditor_identity(created.raw_key, now=NOW) is None
     # An unknown key resolves to neither.
     assert repository.resolve_service_operator("sok_nonexistent", now=NOW) is False
+    conn.close()
+
+
+def test_postgres_audit_writer_wires_anchor_and_export_from_env(monkeypatch) -> None:
+    assert DSN is not None
+    monkeypatch.setenv("VINCTOR_AUDIT_ANCHOR", "stdout")
+    monkeypatch.setenv("VINCTOR_AUDIT_EXPORT", "stdout")
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+
+    # Export configured -> the writer is wrapped so persisted events also stream.
+    assert isinstance(service.audit_writer, ExportingAuditWriter)
+    # Anchor configured -> the durable writer underneath got a real anchor
+    # (parity with SQLite, which wired both from the environment already).
+    assert not isinstance(service.audit_writer._wrapped._anchor, NullAnchor)
     conn.close()
 
 
