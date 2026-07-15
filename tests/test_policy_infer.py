@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
@@ -11,6 +10,7 @@ from vinctor_core.models import AuditEvent
 from vinctor_service.cli import run_vinctor
 from vinctor_service.policy_infer import infer_policy_document
 from vinctor_service.sqlite import SQLiteAuditWriter, init_sqlite_schema
+from vinctor_service.sqlite_txn import connect_sqlite
 
 
 def _event(
@@ -240,7 +240,7 @@ def test_include_denied_adds_separate_candidates_never_merged():
 
 
 def _seed(db_path: Path, events: list[AuditEvent]) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     init_sqlite_schema(conn)
     writer = SQLiteAuditWriter(conn)
     for event in events:

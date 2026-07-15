@@ -1,5 +1,4 @@
 import dataclasses
-import sqlite3
 from datetime import UTC, datetime, timedelta
 
 from vinctor_core import Grant
@@ -22,6 +21,7 @@ from vinctor_service.repositories import (
     InMemoryAgentEnforcementSettingsRepository,
     InMemorySubjectTokenRepository,
 )
+from vinctor_service.sqlite_txn import connect_sqlite
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
@@ -618,7 +618,7 @@ def test_require_pop_alone_denies_blank_token() -> None:
 def test_sqlite_require_pop_denies_presented_non_pop_token(tmp_path) -> None:
     # Pins the production (SQLite) wiring: the require_pop mandate is consulted on
     # the SQLite delegated path too, not only InMemory.
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     service = SQLiteV1Service(conn)
     service.insert_grant(grant())
     service.agent_enforcement_settings_repository.set_require_pop(

@@ -12,6 +12,7 @@ from vinctor_service.sqlite import (
     get_sqlite_schema_versions,
     init_sqlite_schema,
 )
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 7, 12, 12, 0, tzinfo=UTC)
 
@@ -42,7 +43,7 @@ def _raw_event_row(conn, event_id, seq_hint, workspace="ws_main"):
 
 
 def test_migration_adds_columns_and_registers_v11(tmp_path) -> None:
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(audit_events)").fetchall()}
     assert {"seq", "prev_hash", "row_hash"} <= cols
@@ -52,7 +53,7 @@ def test_migration_adds_columns_and_registers_v11(tmp_path) -> None:
 def test_backfill_chains_existing_rows_from_genesis(tmp_path) -> None:
     # Simulate a legacy DB: create the schema WITHOUT chain columns, insert rows,
     # then re-run init_sqlite_schema to migrate + back-fill.
-    conn = sqlite3.connect(tmp_path / "legacy.sqlite")
+    conn = connect_sqlite(tmp_path / "legacy.sqlite")
     conn.executescript(
         "CREATE TABLE audit_events (event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL,"
         " decision TEXT NOT NULL, reason TEXT NOT NULL, workspace_id TEXT NOT NULL,"
@@ -78,7 +79,7 @@ def test_backfill_chains_existing_rows_from_genesis(tmp_path) -> None:
 
 
 def _writer(tmp_path):
-    conn = sqlite3.connect(tmp_path / "w.sqlite")
+    conn = connect_sqlite(tmp_path / "w.sqlite")
     init_sqlite_schema(conn)
     return conn, SQLiteAuditWriter(conn)
 
@@ -232,7 +233,7 @@ def test_verify_against_anchor_ok_and_detects_rewrite(tmp_path) -> None:
 
 
 def test_write_emits_head_to_injected_anchor(tmp_path) -> None:
-    conn = sqlite3.connect(tmp_path / "a.sqlite")
+    conn = connect_sqlite(tmp_path / "a.sqlite")
     init_sqlite_schema(conn)
     emitted = []
 
@@ -246,7 +247,7 @@ def test_write_emits_head_to_injected_anchor(tmp_path) -> None:
 
 
 def test_write_is_fail_open_when_anchor_raises(tmp_path) -> None:
-    conn = sqlite3.connect(tmp_path / "b.sqlite")
+    conn = connect_sqlite(tmp_path / "b.sqlite")
     init_sqlite_schema(conn)
 
     class _BoomAnchor:
@@ -299,7 +300,7 @@ def test_chain_stays_valid_under_concurrent_enforce(tmp_path) -> None:
         thread.join(timeout=5)
         handle.close()
 
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     v = SQLiteAuditWriter(conn).verify_chain()
     # 401 = the 1 `grant_issued` event that prepare_local_service writes while
     # bootstrapping the local grant, plus the 400 concurrent enforce events. The
@@ -322,7 +323,7 @@ def test_crosscheck_covers_every_sqlite_materialized_event_json_column(tmp_path)
     # cross-check set, or a DB-write attacker could edit the materialized copy
     # without breaking verification. (Chain/bookkeeping columns and event_json
     # itself are covered by the row hash instead.)
-    conn = sqlite3.connect(tmp_path / "cols.sqlite")
+    conn = connect_sqlite(tmp_path / "cols.sqlite")
     init_sqlite_schema(conn)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(audit_events)").fetchall()}
     assert cols - {"event_json", "seq", "prev_hash", "row_hash"} == set(
@@ -389,7 +390,7 @@ def test_seq_unique_index_rejects_duplicate_seq(tmp_path) -> None:
 def test_legacy_backfill_runs_once_then_seals(tmp_path) -> None:
     """A pre-hash-chain legacy DB still back-fills on first migration; once the
     sentinel is recorded, a later NULL is not re-healed."""
-    conn = sqlite3.connect(tmp_path / "legacy.sqlite")
+    conn = connect_sqlite(tmp_path / "legacy.sqlite")
     conn.executescript(
         "CREATE TABLE audit_events (event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL,"
         " decision TEXT NOT NULL, reason TEXT NOT NULL, workspace_id TEXT NOT NULL,"
@@ -426,7 +427,7 @@ def test_anchor_emission_deferred_to_outer_commit_and_dropped_on_rollback(
     no longer exists)."""
     import vinctor_service.sqlite as sqlite_mod
 
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     heads: list[int] = []
 
@@ -464,7 +465,7 @@ def test_manual_transaction_rollback_does_not_leak_deferred_emission(
     transaction's audit write emits inline and never leaks into a later one."""
     import vinctor_service.sqlite as sqlite_mod
 
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     heads: list[int] = []
 
@@ -498,9 +499,9 @@ def test_deferral_is_per_connection_not_per_thread(tmp_path) -> None:
     row. Deferral is now per-connection, so B emits inline and survives."""
     import vinctor_service.sqlite as sqlite_mod
 
-    conn_a = sqlite3.connect(tmp_path / "a.sqlite")
+    conn_a = connect_sqlite(tmp_path / "a.sqlite")
     init_sqlite_schema(conn_a)
-    conn_b = sqlite3.connect(tmp_path / "b.sqlite")
+    conn_b = connect_sqlite(tmp_path / "b.sqlite")
     init_sqlite_schema(conn_b)
     heads_b: list[int] = []
 

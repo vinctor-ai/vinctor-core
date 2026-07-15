@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,12 +9,13 @@ from vinctor_service import (
     SQLiteV1Service,
     V1EnforceRequest,
 )
+from vinctor_service.sqlite_txn import connect_sqlite
 
 
 def main() -> None:
     now = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
     with tempfile.TemporaryDirectory() as temp_dir:
-        conn = sqlite3.connect(Path(temp_dir) / "vinctor.sqlite")
+        conn = connect_sqlite(Path(temp_dir) / "vinctor.sqlite")
         try:
             service = SQLiteV1Service(conn)
             service.set_agent_issuable_scope_bounds(

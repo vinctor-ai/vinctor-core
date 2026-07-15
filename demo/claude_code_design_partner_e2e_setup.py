@@ -13,6 +13,7 @@ from typing import Any, NamedTuple, TextIO
 from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.local_http import create_v1_http_server
 from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite_txn import connect_sqlite
 
 DEFAULT_SCOPES = ("write:repo/design-partner/feature/*", "execute:ci/test")
 
@@ -66,7 +67,7 @@ def prepare_design_partner_e2e(
     db_path = config.db_path.expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     hook_config_path = _write_hook_config(config, db_path=db_path)
-    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn = connect_sqlite(db_path, check_same_thread=False)
     try:
         service = SQLiteV1Service(conn)
         service.set_agent_issuable_scope_bounds(

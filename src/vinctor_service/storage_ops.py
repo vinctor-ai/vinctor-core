@@ -16,6 +16,7 @@ from vinctor_service.sqlite import (
     SQLiteV1Service,
     get_sqlite_schema_versions,
 )
+from vinctor_service.sqlite_txn import connect_sqlite
 
 
 @dataclass(frozen=True)
@@ -188,7 +189,7 @@ def reset_sqlite(db_path: Path, *, anchor: AuditAnchor | None = None) -> ResetRe
     _emit_storage_op_trace("reset", db_path, anchor)
 
     def _build(tmp_path: Path) -> tuple[int, ...]:
-        conn = sqlite3.connect(tmp_path)
+        conn = connect_sqlite(tmp_path)
         try:
             return SQLiteV1Service(conn).schema_versions()
         finally:
@@ -227,7 +228,7 @@ def restore_sqlite(
         # database: a readable schema and an intact audit hash-chain, so a
         # corrupt or tampered snapshot is rejected while the existing database
         # is still in place (the atomic swap only happens on success).
-        verify_conn = sqlite3.connect(tmp_path)
+        verify_conn = connect_sqlite(tmp_path)
         try:
             restored_versions = get_sqlite_schema_versions(verify_conn)
             chain = SQLiteAuditWriter(verify_conn).verify_chain()
@@ -255,7 +256,7 @@ def migrate_sqlite(db_path: Path, *, anchor: AuditAnchor | None = None) -> Migra
     """
     _emit_storage_op_trace("migrate", db_path, anchor)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         versions = SQLiteV1Service(conn).schema_versions()
     finally:

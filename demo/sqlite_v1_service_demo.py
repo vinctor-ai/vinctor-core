@@ -6,12 +6,13 @@ from tempfile import TemporaryDirectory
 
 from vinctor_core import BoundaryRegistrationInput, Grant
 from vinctor_service import SQLiteV1Service, V1EnforceRequest
+from vinctor_service.sqlite_txn import connect_sqlite
 
 
 def main() -> None:
     now = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
     with TemporaryDirectory() as temp_dir:
-        conn = sqlite3.connect(f"{temp_dir}/vinctor.sqlite")
+        conn = connect_sqlite(f"{temp_dir}/vinctor.sqlite")
         service = SQLiteV1Service(conn)
         service.insert_grant(
             Grant(

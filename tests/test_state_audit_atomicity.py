@@ -7,7 +7,6 @@ grant/request/token with no audit trail.
 """
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -18,12 +17,13 @@ from vinctor_service import (
     GrantRequestCreateRequest,
     SQLiteV1Service,
 )
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
 
 def _service() -> SQLiteV1Service:
-    return SQLiteV1Service(sqlite3.connect(":memory:"))
+    return SQLiteV1Service(connect_sqlite(":memory:"))
 
 
 def _break_audit(service: SQLiteV1Service) -> None:

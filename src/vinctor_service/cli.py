@@ -4,7 +4,6 @@ import argparse
 import importlib.metadata
 import json
 import os
-import sqlite3
 import sys
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -49,6 +48,7 @@ from vinctor_service.service_config import (
 )
 from vinctor_service.service_runtime import serve_service_runtime
 from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite_txn import connect_sqlite
 from vinctor_service.storage_ops import (
     backup_sqlite,
     migrate_sqlite,
@@ -2440,7 +2440,7 @@ def _raise_for_status(status: int, body: dict[str, object]) -> None:
 
 def _sqlite_service(db_path: Path | None) -> SQLiteV1Service:
     path = _required(db_path, "db")
-    conn = sqlite3.connect(path)
+    conn = connect_sqlite(path)
     return SQLiteV1Service(conn)
 
 

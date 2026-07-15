@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sqlite3
 import sys
 from datetime import UTC, datetime
 from http.client import HTTPConnection
@@ -12,6 +11,7 @@ from typing import TextIO
 from urllib.parse import urlsplit
 
 from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite_txn import connect_sqlite
 
 
 class LocalAdminError(Exception):
@@ -403,7 +403,7 @@ def _request_json(
 
 def _sqlite_service(db_path: Path | None) -> SQLiteV1Service:
     db = _require(db_path, "database path")
-    conn = sqlite3.connect(Path(db))
+    conn = connect_sqlite(str(Path(db)))
     return SQLiteV1Service(conn)
 
 

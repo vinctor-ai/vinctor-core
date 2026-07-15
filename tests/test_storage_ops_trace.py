@@ -9,7 +9,6 @@ op name, an ISO-8601 UTC timestamp, and the pre-op audit chain head.
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
@@ -23,6 +22,7 @@ from vinctor_service.audit_anchor import (
     StdoutAnchor,
 )
 from vinctor_service.sqlite import SQLiteAuditWriter, init_sqlite_schema
+from vinctor_service.sqlite_txn import connect_sqlite
 from vinctor_service.storage_ops import (
     backup_sqlite,
     migrate_sqlite,
@@ -98,7 +98,7 @@ def _event(event_id: str) -> AuditEvent:
 
 
 def _init_db(db_path: Path, events: int = 0) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         init_sqlite_schema(conn)
         writer = SQLiteAuditWriter(conn)
@@ -109,7 +109,7 @@ def _init_db(db_path: Path, events: int = 0) -> None:
 
 
 def _db_head(db_path: Path) -> tuple[int, str]:
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         row = conn.execute(
             "SELECT seq, row_hash FROM audit_events ORDER BY seq DESC LIMIT 1"
@@ -362,7 +362,7 @@ def test_cli_storage_reset_emits_trace_to_env_anchor(tmp_path, monkeypatch) -> N
 def test_cli_audit_verify_against_anchor_skips_storage_op_records(tmp_path) -> None:
     db = tmp_path / "vinctor.sqlite"
     _init_db(db, events=2)
-    conn = sqlite3.connect(db)
+    conn = connect_sqlite(db)
     try:
         rows = conn.execute(
             "SELECT seq, row_hash, created_at FROM audit_events ORDER BY seq"

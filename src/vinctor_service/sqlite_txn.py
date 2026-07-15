@@ -1,62 +1,32 @@
-"""Shared SQLite transaction primitives: a per-connection re-entrant lock that
-serializes every transaction scope on a connection, and a thread-local
-after-commit queue for audit anchor/export emissions.
+"""Shared SQLite transaction primitives.
 
-Lives in its own module so both ``sqlite`` and ``keys`` (which ``sqlite``
-imports) can acquire the SAME lock for one connection without a circular import.
+``SerializedSQLiteConnection`` wraps one sqlite3 connection so every transaction
+scope runs under a single per-connection re-entrant lock, and owns the
+per-thread after-commit audit-emission queue as instance state. It
+lives here (not in ``sqlite``) so both ``sqlite`` and ``keys`` — which
+``sqlite`` imports — can share the one lock for a connection without a circular
+import.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 import sys
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
-# sqlite3.Connection can hold neither an attribute nor a weakref, so the
-# per-connection re-entrant lock is keyed by id(). A connection is long-lived
-# (one per service), so the map stays tiny; if an id is reused after a
-# connection is collected, the reused lock is simply un-contended (the old
-# connection is gone), which is harmless.
-_CONN_TXN_LOCKS: dict[int, threading.RLock] = {}
-_CONN_TXN_LOCKS_GUARD = threading.Lock()
 
-
-def conn_txn_lock(conn: sqlite3.Connection) -> threading.RLock:
+def conn_txn_lock(conn: SerializedSQLiteConnection) -> threading.RLock:
     """Return the re-entrant lock that serializes transaction scopes on ``conn``.
 
-    EVERY write / transaction scope on a connection must run under this lock so
-    two threads sharing one connection cannot interleave — or one commit or
-    join another's open transaction through the shared ``in_transaction`` flag.
+    EVERY write / transaction scope on a connection runs under this lock so two
+    threads sharing one connection cannot interleave — or one commit or join
+    another's open transaction through the shared ``in_transaction`` flag. The
+    lock is owned by the connection wrapper, so this is a thin accessor kept for
+    the existing call sites.
     """
-    lock = _CONN_TXN_LOCKS.get(id(conn))
-    if lock is None:
-        with _CONN_TXN_LOCKS_GUARD:
-            lock = _CONN_TXN_LOCKS.get(id(conn))
-            if lock is None:
-                lock = threading.RLock()
-                _CONN_TXN_LOCKS[id(conn)] = lock
-    return lock
-
-
-# Deferred post-commit audit emissions (external anchor / export). Scoped to the
-# current thread's _atomic_write ON A SPECIFIC CONNECTION: an emission registered
-# while that connection's atomic write is active runs only after IT commits, and
-# is dropped if it rolls back or its commit fails. The scopes form a per-thread
-# LIFO stack of (connection-id, emissions); an emission is captured by the
-# innermost scope for ITS OWN connection, so a standalone write on connection B
-# inside connection A's atomic write is NOT captured by A (it emits inline, since
-# B's row is already committed and A's rollback must not drop it). No
-# process-global growth: connection ids live only for the duration of a scope.
-_local = threading.local()
-
-
-def _scope_stack() -> list[list]:
-    stack = getattr(_local, "scopes", None)
-    if stack is None:
-        stack = []
-        _local.scopes = stack
-    return stack
+    return conn.lock
 
 
 def _run_fail_open(emission: Callable[[], None]) -> None:
@@ -68,33 +38,196 @@ def _run_fail_open(emission: Callable[[], None]) -> None:
         sys.stderr.write(f"vinctor: audit post-commit emission raised: {exc}\n")
 
 
-@contextmanager
-def atomic_write_deferral(conn: sqlite3.Connection) -> Iterator[None]:
-    """Bracket an _atomic_write on ``conn`` so its deferred emissions flush on
-    commit and are dropped on rollback / a failing commit inside the scope.
-    Scoped to this connection: emissions on OTHER connections during this scope
-    belong to their own scope (or emit inline), so a peer connection's rollback
-    can never drop this connection's committed emission and vice versa."""
-    stack = _scope_stack()
-    scope: list = [id(conn), []]
-    stack.append(scope)
-    try:
-        yield
-    except BaseException:
-        stack.pop()  # LIFO: this scope is the top; discard its queued emissions
-        raise
-    stack.pop()
-    for emission in scope[1]:
+_OWN_ATTRS = frozenset({"_connection", "_lock", "_deferral"})
+
+# Unsynchronized write / statement channels on sqlite3.Connection that would
+# bypass the scope lock. Rejected outright — no internal caller uses any of them.
+# execute() stays delegated (reads + scope-serialized writes); backup / iterdump
+# / serialize are read-side and left delegated.
+_DENIED_ATTRS = frozenset({"cursor", "executemany", "blobopen", "deserialize"})
+# Attributes that change transaction semantics the write scopes depend on.
+_TXN_CONTROL_ATTRS = frozenset({"isolation_level", "autocommit"})
+
+
+def _is_autocommit(connection: sqlite3.Connection) -> bool:
+    # Legacy autocommit (all versions): isolation_level is None. Explicit
+    # autocommit (3.12+): the autocommit property is True. Either mode means a
+    # native `with conn:` cannot roll a failed write back.
+    if connection.isolation_level is None:
+        return True
+    return getattr(connection, "autocommit", False) is True
+
+
+class SerializedSQLiteConnection:
+    """Wrap one sqlite3 connection so every transaction SCOPE runs under one
+    per-connection re-entrant lock, and own the per-thread after-commit
+    audit-emission queue as instance state.
+
+    Mirrors ``SerializedPostgresConnection``. Because ``sqlite3.Connection`` can
+    hold neither an attribute nor a weakref, the lock and the queue live on THIS
+    wrapper rather than the underlying connection — so there is no id()-keyed
+    global registry. There must be exactly ONE wrapper per physical connection
+    (two wrappers = two locks = no mutual exclusion); construct it once at the
+    service/factory boundary and pass it everywhere (see ``require_serialized``).
+
+    Serialization follows the scope model: ``_write_scope`` / ``_atomic_write``
+    / key rotation / policy apply hold ``lock`` across their whole BEGIN
+    IMMEDIATE unit of work, so the individual statements inside them are
+    serialized by that scope. Reads outside a scope are lock-free (as before the
+    wrapper). The wrapper additionally locks the operations that END a
+    transaction — ``commit`` / ``rollback`` / ``executescript`` (which implicitly
+    commits) — so a direct call cannot commit or roll back a peer thread's open
+    transaction through the shared connection. The unsynchronized write channels
+    ``cursor`` / ``executemany`` / ``blobopen`` / ``deserialize`` are rejected,
+    setting ``isolation_level`` / ``autocommit`` is rejected, and an autocommit
+    connection is refused at construction — all would let a write escape the
+    scope lock. ``execute()`` stays delegated (reads and scope-serialized
+    writes); an embedder issuing raw write SQL through it is out of scope.
+    """
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        if _is_autocommit(connection):
+            raise ValueError(
+                "SerializedSQLiteConnection requires a connection in the default "
+                "deferred-transaction mode; an autocommit connection "
+                "(isolation_level=None / autocommit=True) cannot be rolled back "
+                "by the write scopes"
+            )
+        self._connection = connection
+        self._lock = threading.RLock()
+        self._deferral = threading.local()
+
+    @property
+    def lock(self) -> threading.RLock:
+        """The re-entrant lock serializing every scope on this connection.
+
+        ``_write_scope`` / ``_atomic_write`` / key rotation / policy apply
+        acquire it before opening their BEGIN IMMEDIATE unit of work; being
+        re-entrant, same-thread nesting does not deadlock.
+        """
+        return self._lock
+
+    def close(self) -> None:
+        with self._lock:
+            self._connection.close()
+
+    def commit(self) -> None:
+        with self._lock:
+            self._connection.commit()
+
+    def rollback(self) -> None:
+        with self._lock:
+            self._connection.rollback()
+
+    def executescript(self, *args: object, **kwargs: object):
+        with self._lock:
+            return self._connection.executescript(*args, **kwargs)
+
+    def __enter__(self) -> SerializedSQLiteConnection:
+        # sqlite3's native `with conn:` transaction CM, held under the lock so a
+        # bare write scope cannot interleave with a peer thread on this
+        # connection.
+        self._lock.acquire()
+        try:
+            self._connection.__enter__()
+        except BaseException:
+            self._lock.release()
+            raise
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        try:
+            return self._connection.__exit__(exc_type, exc, tb)
+        finally:
+            self._lock.release()
+
+    def __getattr__(self, name: str) -> object:
+        # execute() and read-only attributes (in_transaction, row_factory, …)
+        # delegate to the underlying connection; writes are serialized by the
+        # enclosing scope's lock. The unsynchronized write channels are refused.
+        if name == "_connection":  # not yet set in __init__: avoid recursion
+            raise AttributeError(name)
+        if name in _DENIED_ATTRS:
+            raise NotImplementedError(
+                f"SerializedSQLiteConnection does not expose {name}(): it is an "
+                "unsynchronized write/statement channel that would bypass the "
+                "connection's transaction serialization — use execute() or a scope"
+            )
+        return getattr(self._connection, name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        # Wrapper-owned fields stay on the wrapper; ordinary connection
+        # attributes (row_factory, text_factory, …) are set on the underlying
+        # connection so the wrapper is a drop-in. Transaction-control attributes
+        # are refused — changing them would break the scope model.
+        if name in _OWN_ATTRS:
+            object.__setattr__(self, name, value)
+        elif name in _TXN_CONTROL_ATTRS:
+            raise AttributeError(
+                f"cannot set {name} on a SerializedSQLiteConnection: it changes "
+                "the transaction semantics the write scopes depend on"
+            )
+        else:
+            setattr(self._connection, name, value)
+
+    def _scopes(self) -> list[list[Callable[[], None]]]:
+        stack = getattr(self._deferral, "scopes", None)
+        if stack is None:
+            stack = []
+            self._deferral.scopes = stack
+        return stack
+
+    @contextmanager
+    def atomic_write_deferral(self) -> Iterator[None]:
+        """Bracket an ``_atomic_write`` on THIS connection: deferred emissions
+        flush after the scope exits normally, and are dropped on rollback / a
+        failing commit inside it. Per-thread and per-connection, so a peer
+        connection's already-committed emission is never captured or dropped by
+        this scope."""
+        stack = self._scopes()
+        scope: list[Callable[[], None]] = []
+        stack.append(scope)
+        try:
+            yield
+        except BaseException:
+            stack.pop()  # LIFO: this scope is the top; discard its emissions
+            raise
+        stack.pop()
+        for emission in scope:
+            _run_fail_open(emission)
+
+    def emit_or_defer(self, emission: Callable[[], None]) -> None:
+        """Defer a post-commit emission to the innermost active ``_atomic_write``
+        scope on this connection+thread; if none is active, run it inline (the
+        row is already committed)."""
+        stack = self._scopes()
+        if stack:
+            stack[-1].append(emission)
+            return
         _run_fail_open(emission)
 
 
-def emit_or_defer(conn: sqlite3.Connection, emission: Callable[[], None]) -> None:
-    """Defer a post-commit audit emission to the innermost active _atomic_write
-    scope FOR ``conn`` on the current thread; if none is active, run it inline
-    (the row is already committed)."""
-    cid = id(conn)
-    for scope in reversed(_scope_stack()):
-        if scope[0] == cid:
-            scope[1].append(emission)
-            return
-    _run_fail_open(emission)
+def connect_sqlite(
+    database: str | os.PathLike[str], **kwargs: object
+) -> SerializedSQLiteConnection:
+    """Open a sqlite3 connection wrapped for thread-safe serialization."""
+    return SerializedSQLiteConnection(sqlite3.connect(database, **kwargs))
+
+
+def require_serialized(conn: object) -> SerializedSQLiteConnection:
+    """Return ``conn`` if it is a wrapper, else raise — the single-ownership guard.
+
+    The service, its repositories, and the module-level ``init_sqlite_schema`` /
+    ``insert_grant`` all require an already-serialized connection so they cannot
+    mint a second wrapper for a physical connection another already owns.
+    ``connect_sqlite`` is the ONLY place that opens and wraps a raw connection
+    (atomically), so there is exactly one wrapper — hence one lock — per
+    physical connection without any id()-keyed registry.
+    """
+    if isinstance(conn, SerializedSQLiteConnection):
+        return conn
+    raise TypeError(
+        "expected a SerializedSQLiteConnection (from connect_sqlite or a "
+        "service's .conn); a raw sqlite3.Connection would create a second, "
+        "un-coordinated lock for this connection"
+    )

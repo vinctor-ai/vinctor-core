@@ -6,7 +6,6 @@ the shared ``in_transaction`` flag and have a rollback wipe both.
 from __future__ import annotations
 
 import contextlib
-import sqlite3
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,12 +14,13 @@ import vinctor_service.sqlite as sqlite_mod
 from vinctor_service import GrantRequestCreateRequest, SQLiteV1Service
 from vinctor_service.key_ops import rotate_workspace_key
 from vinctor_service.keys import SQLiteLocalKeyRepository
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
 
 def test_atomic_write_serializes_scopes_across_threads(tmp_path: Path) -> None:
-    conn = sqlite3.connect(str(tmp_path / "v.sqlite"), check_same_thread=False)
+    conn = connect_sqlite(str(tmp_path / "v.sqlite"), check_same_thread=False)
     a_inside = threading.Event()
     b_entered = threading.Event()
     release_a = threading.Event()
@@ -59,7 +59,7 @@ def test_policy_apply_transaction_serializes_across_threads(tmp_path: Path) -> N
     # rollbacks) on one connection cannot interleave (Codex P1 policy).
     from vinctor_service.policy_files import _sqlite_apply_transaction
 
-    conn = sqlite3.connect(str(tmp_path / "v.sqlite"), check_same_thread=False)
+    conn = connect_sqlite(str(tmp_path / "v.sqlite"), check_same_thread=False)
     a_inside = threading.Event()
     b_entered = threading.Event()
     release_a = threading.Event()
@@ -93,7 +93,7 @@ def test_concurrent_rollback_does_not_erase_a_committed_call(tmp_path: Path) -> 
     # End-to-end: a call that rolls back (its audit write fails) runs first and
     # holds the connection; a concurrent call, serialized behind it, then commits
     # and its request must survive.
-    conn = sqlite3.connect(str(tmp_path / "v.sqlite"), check_same_thread=False)
+    conn = connect_sqlite(str(tmp_path / "v.sqlite"), check_same_thread=False)
     service = SQLiteV1Service(conn)
     real_write = service.audit_writer.write
 
@@ -133,7 +133,7 @@ def test_settings_write_serializes_with_atomic_write(tmp_path: Path) -> None:
     # A settings write (now routed through the shared connection lock) must not
     # commit another thread's open _atomic_write transaction (Codex P1: the
     # unlocked `with self._conn:` in set_require_pop committed a peer's txn).
-    conn = sqlite3.connect(str(tmp_path / "v.sqlite"), check_same_thread=False)
+    conn = connect_sqlite(str(tmp_path / "v.sqlite"), check_same_thread=False)
     service = SQLiteV1Service(conn)
     a_inside = threading.Event()
     b_done = threading.Event()
@@ -171,7 +171,7 @@ def test_rotation_waits_for_another_threads_transaction(tmp_path: Path) -> None:
     # A rotation must not be REJECTED because another thread holds a transaction;
     # it should wait for the connection to become idle, then run (Codex P2: the
     # nesting check ran before the lock, mistaking a peer's txn for caller nesting).
-    conn = sqlite3.connect(str(tmp_path / "v.sqlite"), check_same_thread=False)
+    conn = connect_sqlite(str(tmp_path / "v.sqlite"), check_same_thread=False)
     SQLiteV1Service(conn)  # initialize schema
     repo = SQLiteLocalKeyRepository(conn)
     old = repo.create_workspace_key(workspace_id="ws_main", now=NOW)
@@ -216,7 +216,7 @@ def test_token_revoke_serializes_with_atomic_write(tmp_path: Path) -> None:
     # subject-token revoke (now routed through the shared connection lock) must
     # not commit another thread's open _atomic_write transaction (Codex P1: it
     # was the one write path still on a raw `with self._conn:`).
-    conn = sqlite3.connect(str(tmp_path / "v.sqlite"), check_same_thread=False)
+    conn = connect_sqlite(str(tmp_path / "v.sqlite"), check_same_thread=False)
     service = SQLiteV1Service(conn)
     a_inside = threading.Event()
     b_done = threading.Event()
@@ -253,7 +253,7 @@ def test_schema_init_serializes_with_atomic_write(tmp_path: Path) -> None:
     # commit any pending transaction, so it MUST hold the connection lock (Codex
     # P1): otherwise a peer thread's open _atomic_write is sealed by init and its
     # rollback can no longer remove the write.
-    conn = sqlite3.connect(str(tmp_path / "v.sqlite"), check_same_thread=False)
+    conn = connect_sqlite(str(tmp_path / "v.sqlite"), check_same_thread=False)
     SQLiteV1Service(conn)  # schema initialized once; init is idempotent
     conn.execute("CREATE TABLE _init_marker (n INTEGER)")
     conn.commit()

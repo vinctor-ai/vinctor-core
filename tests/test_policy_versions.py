@@ -13,6 +13,7 @@ from vinctor_service.policy_files import (
     rollback_policy_version,
 )
 from vinctor_service.sqlite import SQLiteV1Service, get_sqlite_schema_versions
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 7, 14, 12, 0, tzinfo=UTC)
 
@@ -74,7 +75,7 @@ def _policy_state(service: SQLiteV1Service) -> tuple[object, object, object, obj
 
 
 def test_policy_apply_records_append_only_versions(tmp_path: Path) -> None:
-    service = SQLiteV1Service(sqlite3.connect(":memory:"))
+    service = SQLiteV1Service(connect_sqlite(":memory:"))
     policy = _write_policy(
         tmp_path / "policy.yaml",
         """
@@ -106,7 +107,7 @@ agent_bounds:
 def test_policy_rollback_exactly_restores_versioned_authorization_state(
     tmp_path: Path,
 ) -> None:
-    service = SQLiteV1Service(sqlite3.connect(":memory:"))
+    service = SQLiteV1Service(connect_sqlite(":memory:"))
     settings = service.agent_enforcement_settings_repository
     settings.set_require_boundary(
         workspace_id="ws_main",
@@ -209,7 +210,7 @@ require_boundary:
 
 
 def test_policy_rollback_rejects_unknown_version_without_mutation() -> None:
-    service = SQLiteV1Service(sqlite3.connect(":memory:"))
+    service = SQLiteV1Service(connect_sqlite(":memory:"))
     with pytest.raises(ValueError, match="unknown policy version"):
         rollback_policy_version(
             service=service,
@@ -224,7 +225,7 @@ def test_policy_rollback_rejects_unknown_version_without_mutation() -> None:
 def test_policy_apply_rolls_back_every_write_when_a_late_write_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = SQLiteV1Service(sqlite3.connect(":memory:"))
+    service = SQLiteV1Service(connect_sqlite(":memory:"))
     apply_policy_file(
         _write_policy(tmp_path / "first.yaml", FIRST_POLICY),
         service=service,
@@ -264,7 +265,7 @@ def test_policy_apply_rolls_back_every_write_when_a_late_write_fails(
 def test_policy_apply_rolls_back_when_the_version_record_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    service = SQLiteV1Service(sqlite3.connect(":memory:"))
+    service = SQLiteV1Service(connect_sqlite(":memory:"))
     apply_policy_file(
         _write_policy(tmp_path / "first.yaml", FIRST_POLICY),
         service=service,
@@ -295,14 +296,14 @@ def test_policy_apply_holds_one_write_transaction_for_the_whole_apply(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path = tmp_path / "vinctor.sqlite"
-    service = SQLiteV1Service(sqlite3.connect(str(db_path)))
+    service = SQLiteV1Service(connect_sqlite(str(db_path)))
     settings = service.agent_enforcement_settings_repository
     original = settings.set_require_boundary
     observed: dict[str, object] = {}
 
     def spy(**kwargs: object) -> None:
         observed["in_transaction"] = service.conn.in_transaction
-        rival = sqlite3.connect(str(db_path), timeout=0.1)
+        rival = connect_sqlite(str(db_path), timeout=0.1)
         try:
             # BEGIN IMMEDIATE up front means a second writer cannot even START
             # while an apply is in flight: applies serialize, never interleave.
@@ -337,7 +338,7 @@ def test_policy_apply_holds_one_write_transaction_for_the_whole_apply(
     assert observed["rival_sees_bounds"] == 0
     assert result.policy_version == 1
     # After commit the write lock is released and the apply is fully visible.
-    rival = sqlite3.connect(str(db_path), timeout=1.0)
+    rival = connect_sqlite(str(db_path), timeout=1.0)
     rival.execute("BEGIN IMMEDIATE")
     assert rival.execute(
         "SELECT COUNT(*) FROM agent_issuable_scope_bounds WHERE workspace_id = 'ws_main'"
@@ -347,7 +348,7 @@ def test_policy_apply_holds_one_write_transaction_for_the_whole_apply(
 
 
 def test_policy_apply_snapshot_matches_live_policy_state(tmp_path: Path) -> None:
-    service = SQLiteV1Service(sqlite3.connect(":memory:"))
+    service = SQLiteV1Service(connect_sqlite(":memory:"))
     result = apply_policy_file(
         _write_policy(tmp_path / "policy.yaml", FIRST_POLICY),
         service=service,
@@ -365,7 +366,7 @@ def test_policy_apply_snapshot_matches_live_policy_state(tmp_path: Path) -> None
 
 def test_concurrent_policy_applies_serialize_without_torn_state(tmp_path: Path) -> None:
     db_path = tmp_path / "vinctor.sqlite"
-    SQLiteV1Service(sqlite3.connect(str(db_path))).conn.close()
+    SQLiteV1Service(connect_sqlite(str(db_path))).conn.close()
 
     # Both policies target the SAME agent and the SAME rule_id with different
     # content, so any interleaving of the two applies would show up as a mix.
@@ -403,7 +404,7 @@ auto_approval_rules:
     )
 
     def apply_on_own_connection(path: Path, applied_by: str) -> None:
-        conn = sqlite3.connect(str(db_path))
+        conn = connect_sqlite(str(db_path))
         try:
             worker = SQLiteV1Service(conn, initialize_schema=False)
             apply_policy_file(
@@ -420,7 +421,7 @@ auto_approval_rules:
         for future in futures:
             future.result(timeout=30)
 
-    service = SQLiteV1Service(sqlite3.connect(str(db_path)), initialize_schema=False)
+    service = SQLiteV1Service(connect_sqlite(str(db_path)), initialize_schema=False)
     bounds = service.scope_bounds_repository.get_bounds(
         workspace_id="ws_main", agent_id="agent_shared"
     )
