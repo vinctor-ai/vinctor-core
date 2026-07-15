@@ -5,7 +5,7 @@ import json
 import os
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -118,6 +118,15 @@ def _grant_request_decision_transaction(conn: Any, request_id: str) -> Iterator[
         yield
 
 
+def _run_fail_open(emission: Callable[[], None]) -> None:
+    # A raising anchor/export sink must never surface into the enforce path or
+    # unwind the persisted audit row.
+    try:
+        emission()
+    except Exception as exc:  # noqa: BLE001 - deliberate fail-open
+        sys.stderr.write(f"vinctor: audit post-commit emission raised: {exc}\n")
+
+
 def connect_postgres(dsn: str):
     try:
         import psycopg
@@ -141,11 +150,33 @@ class SerializedPostgresConnection:
     def __init__(self, connection: Any) -> None:
         self._connection = connection
         self._lock = threading.RLock()
+        self._after_commit: list[Callable[[], None]] = []
+
+    def register_after_commit(self, emission: Callable[[], None]) -> None:
+        """Queue a post-commit side effect (audit anchor/export) to run after
+        the OUTERMOST transaction commits (or be dropped on rollback)."""
+        self._after_commit.append(emission)
 
     @contextmanager
     def transaction(self):
-        with self._lock, self._connection.transaction():
-            yield
+        emissions: list[Callable[[], None]] = []
+        with self._lock:
+            # PQTRANS_IDLE == 0: this is the outermost transaction, so deferred
+            # anchor/export emissions run only after it commits and are dropped
+            # if it rolls back — the sink never records a head a rollback removes.
+            outermost = int(self._connection.info.transaction_status) == 0
+            try:
+                with self._connection.transaction():
+                    yield
+            except BaseException:
+                if outermost:
+                    self._after_commit.clear()
+                raise
+            if outermost:
+                emissions = self._after_commit
+                self._after_commit = []
+        for emission in emissions:
+            _run_fail_open(emission)
 
     def execute(self, *args: Any, **kwargs: Any):
         with self._lock:
@@ -977,10 +1008,22 @@ class PostgresAuditWriter:
                     current_hash,
                 ),
             )
-        try:
-            self._anchor.emit(seq, current_hash, event.created_at.isoformat())
-        except Exception as exc:  # noqa: BLE001 - anchor is deliberately fail-open
-            sys.stderr.write(f"vinctor: audit anchor emit raised: {exc}\n")
+        # Emit the external anchor only after the row is DURABLY committed:
+        # inline for a standalone write, deferred to the outermost commit when
+        # this write joined an open transaction (so the anchor never records a
+        # chain head a rollback removes). Fail-open either way.
+        created = event.created_at.isoformat()
+        self.emit_or_defer(lambda: self._anchor.emit(seq, current_hash, created))
+
+    def emit_or_defer(self, emission: Callable[[], None]) -> None:
+        """Run a post-commit audit side effect (anchor/export) now if the row is
+        already committed, or defer it to the outermost commit if this write
+        joined an open transaction. Fail-open."""
+        # PQTRANS_IDLE == 0: not idle means this write joined an outer transaction.
+        if int(self._conn.info.transaction_status) != 0:
+            self._conn.register_after_commit(emission)
+        else:
+            _run_fail_open(emission)
 
     # Materialized columns cross-checked against event_json during verification.
     # MUST stay identical to SQLiteAuditWriter._CROSSCHECK_COLUMNS — a parity test

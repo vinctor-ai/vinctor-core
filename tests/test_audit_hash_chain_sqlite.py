@@ -415,3 +415,40 @@ def test_legacy_backfill_runs_once_then_seals(tmp_path) -> None:
         conn.execute("SELECT row_hash FROM audit_events WHERE seq = 2").fetchone()[0]
         is None
     )
+
+
+def test_anchor_emission_deferred_to_outer_commit_and_dropped_on_rollback(
+    tmp_path,
+) -> None:
+    """Codex P1: an audit write joined to an outer transaction must not emit its
+    external anchor until the outermost commit, and must not emit it at all if
+    that transaction rolls back (otherwise the anchor records a chain head that
+    no longer exists)."""
+    import vinctor_service.sqlite as sqlite_mod
+
+    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    init_sqlite_schema(conn)
+    heads: list[int] = []
+
+    class _RecordingAnchor:
+        def emit(self, seq, row_hash, created_at):
+            heads.append(seq)
+
+        def emit_storage_op(self, *args, **kwargs):
+            pass
+
+    writer = SQLiteAuditWriter(conn, anchor=_RecordingAnchor())
+
+    # Joined write that rolls back: the anchor is deferred, then discarded.
+    with pytest.raises(RuntimeError), sqlite_mod._atomic_write(conn):
+        writer.write(_event("evt_rollback"))
+        assert heads == []  # deferred while the transaction is open
+        raise RuntimeError("boom")
+    assert conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 0
+    assert heads == []  # never emitted for the rolled-back row
+
+    # Joined write that commits: the anchor emits exactly once, after commit.
+    with sqlite_mod._atomic_write(conn):
+        writer.write(_event("evt_commit"))
+        assert heads == []  # still deferred inside the transaction
+    assert heads == [1]

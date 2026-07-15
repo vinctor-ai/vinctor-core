@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -719,6 +720,36 @@ def _conn_txn_lock(conn: sqlite3.Connection) -> threading.RLock:
     return lock
 
 
+# Post-commit audit emissions (external anchor / export) queued while an audit
+# write is JOINED to an outer transaction — flushed by the outermost _atomic_write
+# after it commits, discarded on rollback. This keeps an external sink from ever
+# recording a chain head that a later rollback removes. Keyed by id() for the
+# same reason as the lock (a connection is long-lived; a reused id is harmless).
+_CONN_AFTER_COMMIT: dict[int, list[Callable[[], None]]] = {}
+
+
+def _run_fail_open(emission: Callable[[], None]) -> None:
+    # A raising anchor/export sink must never surface into the enforce path or
+    # unwind the persisted audit row.
+    try:
+        emission()
+    except Exception as exc:  # noqa: BLE001 - deliberate fail-open
+        sys.stderr.write(f"vinctor: audit post-commit emission raised: {exc}\n")
+
+
+def _register_after_commit(conn: sqlite3.Connection, emission: Callable[[], None]) -> None:
+    _CONN_AFTER_COMMIT.setdefault(id(conn), []).append(emission)
+
+
+def _flush_after_commit(conn: sqlite3.Connection) -> None:
+    for emission in _CONN_AFTER_COMMIT.pop(id(conn), ()):
+        _run_fail_open(emission)
+
+
+def _discard_after_commit(conn: sqlite3.Connection) -> None:
+    _CONN_AFTER_COMMIT.pop(id(conn), None)
+
+
 @contextmanager
 def _write_scope(conn: sqlite3.Connection) -> Iterator[None]:
     """Commit scope for a single repository write.
@@ -765,8 +796,12 @@ def _atomic_write(conn: sqlite3.Connection) -> Iterator[None]:
             yield
         except BaseException:
             conn.rollback()
+            _discard_after_commit(conn)
             raise
         conn.commit()
+        # Only now that the rows are durably committed do the deferred anchor /
+        # export emissions run — never for a transaction that rolled back.
+        _flush_after_commit(conn)
 
 
 class SQLiteAgentIssuableScopeBoundsRepository:
@@ -1420,15 +1455,21 @@ class SQLiteAuditWriter:
                     rh,
                 ),
             )
-        # Post-write head emission (post-commit for standalone writes; a
-        # joined outer transaction commits just after) — fail-open: a raising
-        # anchor must never surface into the enforce path or unwind the
-        # persisted audit row.
-        try:
-            self._anchor.emit(seq, rh, event.created_at.isoformat())
-        except Exception as exc:  # noqa: BLE001 - deliberate fail-open
-            import sys
-            sys.stderr.write(f"vinctor: audit anchor emit raised: {exc}\n")
+        # Emit the external anchor only after the row is DURABLY committed:
+        # inline for a standalone write, deferred to the outermost commit when
+        # this write joined an open transaction — so the anchor never records a
+        # chain head a later rollback removes. Fail-open either way.
+        created = event.created_at.isoformat()
+        self.emit_or_defer(lambda: self._anchor.emit(seq, rh, created))
+
+    def emit_or_defer(self, emission: Callable[[], None]) -> None:
+        """Run a post-commit audit side effect (anchor/export) now if the row is
+        already committed, or defer it to the outermost commit if this write
+        joined an open transaction. Fail-open."""
+        if self._conn.in_transaction:
+            _register_after_commit(self._conn, emission)
+        else:
+            _run_fail_open(emission)
 
     def get(self, event_id: str) -> AuditEvent | None:
         row = self._conn.execute(
