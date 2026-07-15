@@ -48,25 +48,19 @@ class V1HttpResponse:
 class V1EnforceService(Protocol):
     def enforce(self, request: V1EnforceRequest, *, now: datetime) -> V1EnforceResponse: ...
 
-    def record_auth_failure(
-        self, *, surface: str, boundary_id: str | None, now: datetime
-    ) -> None: ...
+    def record_auth_failure(self, *, surface: str, now: datetime) -> None: ...
 
 
 class V1ObserveService(Protocol):
     def observe(self, request: V1ObserveRequest, *, now: datetime) -> V1ObserveResponse: ...
 
-    def record_auth_failure(
-        self, *, surface: str, boundary_id: str | None, now: datetime
-    ) -> None: ...
+    def record_auth_failure(self, *, surface: str, now: datetime) -> None: ...
 
 
 class V1SimulateService(Protocol):
     def simulate(self, request: V1SimulateRequest, *, now: datetime) -> V1SimulateResponse: ...
 
-    def record_auth_failure(
-        self, *, surface: str, boundary_id: str | None, now: datetime
-    ) -> None: ...
+    def record_auth_failure(self, *, surface: str, now: datetime) -> None: ...
 
 
 class V1DelegatedEnforceService(Protocol):
@@ -79,9 +73,7 @@ class V1DelegatedEnforceService(Protocol):
         pop_skew_seconds: int = 30,
     ) -> V1EnforceResponse: ...
 
-    def record_auth_failure(
-        self, *, surface: str, boundary_id: str | None, now: datetime
-    ) -> None: ...
+    def record_auth_failure(self, *, surface: str, now: datetime) -> None: ...
 
 
 class V1TokenService(Protocol):
@@ -99,9 +91,7 @@ class V1TokenService(Protocol):
         pop: bool = False,
     ) -> Any: ...
 
-    def record_auth_failure(
-        self, *, surface: str, boundary_id: str | None, now: datetime
-    ) -> None: ...
+    def record_auth_failure(self, *, surface: str, now: datetime) -> None: ...
 
 
 AgentIdentityResolver = Callable[[str, datetime], AgentIdentity | None]
