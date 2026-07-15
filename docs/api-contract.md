@@ -73,6 +73,13 @@ Responses:
 - `400` for malformed body
 - `401` for missing or invalid agent key
 
+Enforce, delegated enforce, and simulate responses are no-disclosure surfaces:
+the body carries only the decision (or `would_decision`), coarse
+low-cardinality `error`/`reason` codes (e.g. `action_denied`,
+`grant_revoked`), and the `audit_event_id`. Grant/agent identifiers, the
+classified action/resource, and the grant's scopes are recorded in the
+operator-only audit event, never returned to the caller.
+
 ## Delegated Enforce
 
 `POST /v1/enforce/delegated`

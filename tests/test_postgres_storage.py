@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -14,13 +15,18 @@ from vinctor_core import (
     register_boundary,
 )
 from vinctor_core.models import AuditEvent, Grant
+from vinctor_service.audit_anchor import NullAnchor
 from vinctor_service.audit_chain import GENESIS_PREV_HASH, AnchorRecord
+from vinctor_service.audit_export import ExportingAuditWriter
+from vinctor_service.key_ops import rotate_workspace_key
 from vinctor_service.models import (
+    AgentIssuableBounds,
     GrantRequest,
     GrantRequestCreateRequest,
     SubjectToken,
     V1EnforceRequest,
     V1ObserveRequest,
+    V1SimulateRequest,
 )
 from vinctor_service.policy_files import (
     apply_policy_file,
@@ -30,6 +36,7 @@ from vinctor_service.policy_files import (
 from vinctor_service.policy_infer import infer_policy_document
 from vinctor_service.postgres import (
     PostgresAgentEnforcementSettingsRepository,
+    PostgresAgentIssuableScopeBoundsRepository,
     PostgresAuditWriter,
     PostgresBoundaryRegistry,
     PostgresGrantRepository,
@@ -90,6 +97,40 @@ def test_postgres_grant_repository_lifecycle() -> None:
     revoked = repository.revoke(grant_ref="grt_main", workspace_id="ws_main")
     assert revoked is not None
     assert revoked.status == "revoked"
+    conn.close()
+
+
+def test_postgres_scope_bounds_combined_read_matches_written_row() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    repository = PostgresAgentIssuableScopeBoundsRepository(conn)
+
+    repository.set_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        scopes=("write:repo/feature/*",),
+        max_ttl_seconds=900,
+        now=NOW,
+    )
+    repository.set_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_no_ttl",
+        scopes=("read:docs/*",),
+        now=NOW,
+    )
+
+    assert repository.get_bounds_with_max_ttl(
+        workspace_id="ws_main", agent_id="agent_release"
+    ) == AgentIssuableBounds(scopes=("write:repo/feature/*",), max_ttl_seconds=900)
+    assert repository.get_bounds_with_max_ttl(
+        workspace_id="ws_main", agent_id="agent_no_ttl"
+    ) == AgentIssuableBounds(scopes=("read:docs/*",), max_ttl_seconds=None)
+    assert (
+        repository.get_bounds_with_max_ttl(
+            workspace_id="ws_main", agent_id="agent_absent"
+        )
+        is None
+    )
     conn.close()
 
 
@@ -176,6 +217,42 @@ def test_postgres_replay_store_rejects_cross_instance_duplicate() -> None:
     )
     first_conn.close()
     second_conn.close()
+
+
+def test_postgres_replay_flood_cannot_evict_fresh_nonce() -> None:
+    # SECURITY (ADR 0007): never evict a still-fresh nonce to make room. An
+    # attacker who captured a valid proof must not be able to flood the same
+    # token's per-token cap with fresh nonces to push the captured nonce out
+    # and replay it inside the freshness window.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    cap = 3
+    store = PostgresReplayStore(conn, max_entries=100, max_per_token=cap)
+    # The captured proof's nonce: oldest ts in the window (still fresh).
+    assert store.check_and_record(
+        token_id="vtk_main", nonce="n1", ts=99, now_unix=100, skew=30
+    )
+    # Attacker pushes `cap` more distinct fresh nonces for the SAME token.
+    for i in range(cap):
+        store.check_and_record(
+            token_id="vtk_main", nonce=f"flood{i}", ts=100, now_unix=100, skew=30
+        )
+    # Re-presenting the captured nonce within the window MUST still be a
+    # replay: n1 was never evicted to make room for the flood.
+    assert not store.check_and_record(
+        token_id="vtk_main", nonce="n1", ts=99, now_unix=100, skew=30
+    )
+    # Cap full of still-fresh nonces -> a brand-new nonce is rejected
+    # (fail closed), never evicting a live entry.
+    assert not store.check_and_record(
+        token_id="vtk_main", nonce="brand_new", ts=100, now_unix=100, skew=30
+    )
+    # Expired entries are still purged: the next window frees capacity, so the
+    # store stays bounded and the token is not locked out forever.
+    assert store.check_and_record(
+        token_id="vtk_main", nonce="next_window", ts=200, now_unix=200, skew=30
+    )
+    conn.close()
 
 
 def test_postgres_full_runtime_shares_control_plane_across_instances() -> None:
@@ -306,7 +383,7 @@ def test_postgres_boundary_and_settings_drive_enforcement() -> None:
     event = service.get_audit_event(permit.audit_event_id or "")
     assert event is not None
     assert event.runtime == "claude-code"
-    assert disabled.error == "boundary_inactive"
+    assert disabled.error == "boundary_unavailable"
     conn.close()
 
 
@@ -350,6 +427,111 @@ def test_postgres_unrelated_setting_does_not_override_workspace_boundary() -> No
     )
 
     assert repo.is_boundary_required(workspace_id="ws_main", agent_id="agent_subject")
+    conn.close()
+
+
+def test_postgres_unrelated_setting_does_not_drop_workspace_token_and_pop_mandates() -> None:
+    # SECURITY: an unrelated agent-level setting must NOT silently disable a
+    # workspace-wide require_subject_token / require_pop mandate. The shared
+    # settings row means "a row exists" was misread as "the agent explicitly
+    # set the mandate = its default false". Presence-bit gated.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    repo = PostgresAgentEnforcementSettingsRepository(conn)
+    repo.set_require_subject_token(
+        workspace_id="ws_main", agent_id="", require_subject_token=True, now=NOW
+    )
+    repo.set_require_pop(workspace_id="ws_main", agent_id="", require_pop=True, now=NOW)
+    repo.set_require_boundary(
+        workspace_id="ws_main", agent_id="agent_bound", require_boundary=False, now=NOW
+    )
+
+    assert repo.is_subject_token_required(
+        workspace_id="ws_main", agent_id="agent_bound"
+    ) is True
+    assert repo.is_pop_required(workspace_id="ws_main", agent_id="agent_bound") is True
+    conn.close()
+
+
+def test_postgres_explicit_subject_token_false_still_exempts() -> None:
+    # The presence bit must still let an operator EXPLICITLY exempt an agent.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    repo = PostgresAgentEnforcementSettingsRepository(conn)
+    repo.set_require_subject_token(
+        workspace_id="ws_main", agent_id="", require_subject_token=True, now=NOW
+    )
+    repo.set_require_subject_token(
+        workspace_id="ws_main",
+        agent_id="agent_exempt",
+        require_subject_token=False,
+        now=NOW,
+    )
+
+    assert repo.is_subject_token_required(
+        workspace_id="ws_main", agent_id="agent_exempt"
+    ) is False
+    conn.close()
+
+
+def test_postgres_enforcement_presence_migration_fail_closed() -> None:
+    # Upgrade path: recreate agent_enforcement_settings at the old schema
+    # (no *_set presence columns), seed rows, clear the version-5 gate, and
+    # re-run init_postgres_schema. Migrated rows must be fail-closed: a value
+    # counts as explicitly set only where it is already TRUE.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    with conn.transaction():
+        conn.execute("DROP TABLE agent_enforcement_settings")
+        conn.execute(
+            """
+            CREATE TABLE agent_enforcement_settings (
+                workspace_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                require_boundary BOOLEAN NOT NULL DEFAULT FALSE,
+                require_subject_token BOOLEAN NOT NULL DEFAULT FALSE,
+                require_pop BOOLEAN NOT NULL DEFAULT FALSE,
+                updated_at TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY (workspace_id, agent_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO agent_enforcement_settings
+                (workspace_id, agent_id, require_boundary, require_subject_token,
+                 require_pop, updated_at)
+            VALUES ('ws_main', '', TRUE, TRUE, TRUE, %s),
+                   ('ws_main', 'agent_subject', FALSE, TRUE, FALSE, %s),
+                   ('ws_main', 'agent_boundary', TRUE, FALSE, FALSE, %s)
+            """,
+            (NOW, NOW, NOW),
+        )
+        conn.execute("DELETE FROM schema_migrations WHERE version = 5")
+
+    init_postgres_schema(conn)
+    repo = PostgresAgentEnforcementSettingsRepository(conn)
+
+    # (a) A row that had require_subject_token=TRUE still reads as required.
+    assert repo.is_subject_token_required(
+        workspace_id="ws_main", agent_id="agent_subject"
+    ) is True
+    # (b) A row that only ever had an unrelated mandate must not drop the
+    # workspace require_subject_token / require_pop mandates.
+    assert repo.is_subject_token_required(
+        workspace_id="ws_main", agent_id="agent_boundary"
+    ) is True
+    assert repo.is_pop_required(
+        workspace_id="ws_main", agent_id="agent_boundary"
+    ) is True
+    assert repo.is_boundary_required(
+        workspace_id="ws_main", agent_id="agent_boundary"
+    ) is True
+    # (c) The require_boundary_set realignment stops a subject-token-only row
+    # from overriding the workspace boundary mandate.
+    assert repo.is_boundary_required(
+        workspace_id="ws_main", agent_id="agent_subject"
+    ) is True
     conn.close()
 
 
@@ -440,6 +622,249 @@ require_boundary:
     assert [item.action for item in list_policy_versions(
         service=service, workspace_id="ws_main"
     )] == ["apply", "apply", "rollback"]
+    conn.close()
+
+
+def test_postgres_policy_apply_is_all_or_nothing_and_workspace_locked(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vinctor_service.postgres_policy import (
+        POLICY_APPLY_LOCK_CLASSID,
+        _snapshot_state,
+        _workspace_apply_lock_key,
+    )
+
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    first_path = tmp_path / "first.yaml"
+    first_path.write_text(
+        """
+version: 1
+workspace_id: ws_main
+agent_bounds:
+  - agent_id: agent_a
+    scopes: [read:repo/a]
+auto_approval_rules:
+  - rule_id: apr_old
+    name: old
+    target_agent_id: agent_a
+    allowed_scopes: [read:repo/a]
+    max_ttl: 5m
+require_boundary:
+  workspace: true
+""".strip(),
+        encoding="utf-8",
+    )
+    first = apply_policy_file(
+        first_path,
+        service=service,
+        workspace_id="ws_main",
+        applied_by="operator:a",
+        now=NOW,
+    )
+    # Snapshot consistency: the recorded snapshot equals the live policy state.
+    row = conn.execute(
+        "SELECT snapshot_json FROM policy_versions WHERE workspace_id = %s AND version = %s",
+        ("ws_main", first.policy_version),
+    ).fetchone()
+    stored = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+    assert stored == _snapshot_state(service=service, workspace_id="ws_main")
+
+    before = (
+        service.scope_bounds_repository.list_bounds_for_workspace("ws_main"),
+        service.list_auto_approval_rules("ws_main"),
+        service.agent_enforcement_settings_repository.list_require_boundary("ws_main"),
+        list_policy_versions(service=service, workspace_id="ws_main"),
+    )
+
+    second_path = tmp_path / "second.yaml"
+    second_path.write_text(
+        """
+version: 1
+workspace_id: ws_main
+agent_bounds:
+  - agent_id: agent_a
+    scopes: [write:repo/a/elevated]
+  - agent_id: agent_b
+    scopes: [write:repo/b]
+auto_approval_rules:
+  - rule_id: apr_old
+    name: old
+    target_agent_id: agent_a
+    allowed_scopes: [write:repo/a/elevated]
+    max_ttl: 9m
+  - rule_id: apr_new
+    name: new
+    target_agent_id: agent_b
+    allowed_scopes: [write:repo/b]
+    max_ttl: 10m
+require_boundary:
+  workspace: false
+""".strip(),
+        encoding="utf-8",
+    )
+
+    observed: dict[str, object] = {}
+
+    # The boundary write is the LAST write step before the version record; by
+    # the time it runs, the bounds and rule writes have already happened
+    # inside the apply transaction.
+    def boom(**_kwargs: object) -> None:
+        rival = connect_postgres(DSN)
+        try:
+            observed["advisory_lock"] = rival.execute(
+                """
+                SELECT granted FROM pg_locks
+                WHERE locktype = 'advisory' AND classid::int8 = %s AND objid::int8 = %s
+                """,
+                (POLICY_APPLY_LOCK_CLASSID, _workspace_apply_lock_key("ws_main")),
+            ).fetchone()
+            observed["rival_sees_agent_b"] = rival.execute(
+                """
+                SELECT COUNT(*) FROM agent_issuable_scope_bounds
+                WHERE workspace_id = %s AND agent_id = %s
+                """,
+                ("ws_main", "agent_b"),
+            ).fetchone()[0]
+        finally:
+            rival.close()
+        raise RuntimeError("boundary write failed")
+
+    monkeypatch.setattr(
+        service.agent_enforcement_settings_repository, "set_require_boundary", boom
+    )
+    with pytest.raises(RuntimeError, match="boundary write failed"):
+        apply_policy_file(
+            second_path,
+            service=service,
+            workspace_id="ws_main",
+            applied_by="operator:b",
+            now=NOW,
+        )
+
+    # The whole apply ran under the workspace advisory lock, and no other
+    # connection ever observed the half-applied writes.
+    assert observed["advisory_lock"] == (True,)
+    assert observed["rival_sees_agent_b"] == 0
+    # All-or-nothing: every earlier write plus the version record unwound.
+    after = (
+        service.scope_bounds_repository.list_bounds_for_workspace("ws_main"),
+        service.list_auto_approval_rules("ws_main"),
+        service.agent_enforcement_settings_repository.list_require_boundary("ws_main"),
+        list_policy_versions(service=service, workspace_id="ws_main"),
+    )
+    assert after == before
+    conn.close()
+
+
+def test_postgres_grant_request_approval_locks_and_issues_a_single_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import vinctor_service.grant_requests as grant_requests_module
+    from vinctor_service.postgres import (
+        GRANT_REQUEST_DECISION_LOCK_CLASSID,
+        _grant_request_decision_lock_key,
+    )
+
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        scopes=("write:repo/feature/*",),
+        now=NOW,
+    )
+    service.create_grant_request(
+        GrantRequestCreateRequest(
+            workspace_id="ws_main",
+            requester_agent_id="agent_release",
+            requested_scopes=("write:repo/feature/*",),
+            requested_ttl_seconds=300,
+            reason="release",
+            request_id="grq_race",
+        ),
+        now=NOW,
+    )
+
+    real_issue_grant = grant_requests_module.issue_grant
+    observed: dict[str, object] = {}
+    rival_outcome: dict[str, object] = {}
+
+    def rival_approve() -> None:
+        rival_conn = connect_postgres(DSN)
+        try:
+            rival_service = PostgresV1Service(rival_conn, initialize_schema=False)
+            rival_outcome["result"] = rival_service.approve_grant_request(
+                request_id="grq_race",
+                workspace_id="ws_main",
+                decided_by="operator:b",
+                decision_reason=None,
+                now=NOW + timedelta(seconds=1),
+            )
+        finally:
+            rival_conn.close()
+
+    rival_thread = threading.Thread(target=rival_approve)
+
+    def observing_issue_grant(request, **kwargs):  # type: ignore[no-untyped-def]
+        # Mid-approval (after the pending check, before issuance): the
+        # decision advisory lock must be held, and no half-decided state may
+        # be visible to other connections. Then start a concurrent approve on
+        # a second connection; it must queue on the lock and lose cleanly.
+        watcher = connect_postgres(DSN)
+        try:
+            observed["advisory_lock"] = watcher.execute(
+                """
+                SELECT granted FROM pg_locks
+                WHERE locktype = 'advisory' AND classid::int8 = %s AND objid::int8 = %s
+                """,
+                (
+                    GRANT_REQUEST_DECISION_LOCK_CLASSID,
+                    _grant_request_decision_lock_key("grq_race"),
+                ),
+            ).fetchone()
+            observed["rival_sees_status"] = watcher.execute(
+                "SELECT status FROM grant_requests WHERE request_id = %s",
+                ("grq_race",),
+            ).fetchone()[0]
+        finally:
+            watcher.close()
+        rival_thread.start()
+        return real_issue_grant(request, **kwargs)
+
+    monkeypatch.setattr(grant_requests_module, "issue_grant", observing_issue_grant)
+    first = service.approve_grant_request(
+        request_id="grq_race",
+        workspace_id="ws_main",
+        decided_by="operator:a",
+        decision_reason=None,
+        now=NOW,
+    )
+    rival_thread.join(timeout=30)
+    assert not rival_thread.is_alive()
+
+    assert first.status == "approved"
+    assert first.grant is not None
+    # The whole approval ran under the request-scoped advisory lock, and the
+    # in-flight claim was invisible outside the transaction.
+    assert observed["advisory_lock"] == (True,)
+    assert observed["rival_sees_status"] == "pending"
+    # The concurrent approve saw the request already decided and issued nothing.
+    second = rival_outcome["result"]
+    assert second.status == "failed"
+    assert second.reason == "grant_request_not_pending"
+    assert second.grant is None
+    active = service.list_grants(
+        workspace_id="ws_main", agent_id="agent_release", status="active"
+    )
+    assert len(active) == 1
+    assert active[0].grant_ref == first.grant.grant_ref
+    request = service.lookup_grant_request(request_id="grq_race", workspace_id="ws_main")
+    assert request is not None
+    assert request.status == "approved"
+    assert request.issued_grant_ref == first.grant.grant_ref
     conn.close()
 
 
@@ -666,4 +1091,249 @@ def test_postgres_audit_verify_against_anchor_ok_and_detects_missing() -> None:
         and result.divergence_seq == 3
         and result.divergence_kind == "missing"
     )
+    conn.close()
+
+
+def _pg_full_audit_event(event_id: str) -> AuditEvent:
+    # Every optional/ADR-0007/ADR-0008 field populated, so all Postgres-only
+    # materialized columns are non-NULL and the crosscheck normalization paths
+    # (TIMESTAMPTZ round-trip, BOOLEAN, INTEGER, nullable TEXT) are exercised.
+    return replace(
+        _pg_audit_event(event_id),
+        enforcing_principal="usr_owner",
+        reason_code="unmapped_action",
+        occurrence_count=4,
+        first_seen_at=NOW - timedelta(minutes=30),
+        last_seen_at=NOW - timedelta(minutes=1),
+        identity_proven=True,
+        token_id="stk_1",
+    )
+
+
+def _seed_pg_chain_with_full_event(conn) -> PostgresAuditWriter:
+    writer = PostgresAuditWriter(conn)
+    writer.write(_pg_audit_event("evt_1"))
+    writer.write(_pg_full_audit_event("evt_2"))
+    writer.write(_pg_audit_event("evt_3"))
+    return writer
+
+
+def test_postgres_audit_verify_ok_with_all_optional_columns_populated() -> None:
+    # Positive normalization guard: a healthy chain whose row has every
+    # materialized column populated (datetimes come back as tz-aware datetimes,
+    # identity_proven as BOOLEAN, occurrence_count as INTEGER) must still verify.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    writer = _seed_pg_chain_with_full_event(conn)
+    v = writer.verify_chain()
+    assert v.ok is True and v.count == 3 and v.head_seq == 3
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    ("column", "tampered_value"),
+    [
+        ("created_at", NOW + timedelta(hours=6)),
+        ("enforcing_principal", "usr_forged"),
+        ("reason_code", "forged_code"),
+        ("occurrence_count", 999),
+        ("first_seen_at", NOW - timedelta(days=2)),
+        ("last_seen_at", NOW + timedelta(days=2)),
+        ("identity_proven", False),
+        ("token_id", "stk_forged"),
+    ],
+)
+def test_postgres_audit_verify_detects_materialized_column_tamper(
+    column: str, tampered_value: object
+) -> None:
+    # list_filtered reads these materialized columns directly, so an attacker who
+    # edits ONLY the column (event_json and row_hash intact) could hide or
+    # re-classify an event. verify_chain must cross-check every one of them.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    writer = _seed_pg_chain_with_full_event(conn)
+    with conn.transaction():
+        conn.execute(
+            f"UPDATE audit_events SET {column} = %s WHERE seq = 2",
+            (tampered_value,),
+        )
+    v = writer.verify_chain()
+    assert v.ok is False and v.break_kind == "column_mismatch" and v.break_seq == 2
+    conn.close()
+
+
+# --- D1: Postgres service/repository parity with SQLite -------------------
+
+
+def test_postgres_service_simulate_mirrors_enforce_decision() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    service.insert_grant(grant())
+
+    would_permit = service.simulate(
+        V1SimulateRequest(
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            grant_ref="grt_main",
+            action="write",
+            resource="repo/feature/readme",
+        ),
+        now=NOW,
+    )
+    would_deny = service.simulate(
+        V1SimulateRequest(
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            grant_ref="grt_main",
+            action="write",
+            resource="repo/other/readme",
+        ),
+        now=NOW,
+    )
+
+    assert would_permit.status_code == 200
+    assert would_permit.would_decision == "permit"
+    assert would_deny.status_code == 200
+    assert would_deny.would_decision == "deny"
+    # Simulate is non-consuming: the grant is untouched and usable by enforce.
+    assert service.grant_repository.get_by_ref("grt_main") is not None
+    conn.close()
+
+
+def test_postgres_list_auth_failures_returns_recorded_failures() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    writer = PostgresAuditWriter(conn)
+    for i in range(3):
+        writer.write(
+            replace(
+                _pg_audit_event(f"evt_af_{i}"),
+                event_type="auth_failed",
+                decision="deny",
+                reason="auth_failed",
+                workspace_id="",
+            )
+        )
+    # A normal workspace event must never appear among auth failures.
+    writer.write(_pg_audit_event("evt_ok"))
+
+    from_writer = writer.list_auth_failures(limit=10)
+    from_service = PostgresV1Service(conn, initialize_schema=False).list_auth_failures(
+        limit=10
+    )
+
+    assert [e.event_id for e in from_writer] == ["evt_af_0", "evt_af_1", "evt_af_2"]
+    assert [e.event_id for e in from_service] == ["evt_af_0", "evt_af_1", "evt_af_2"]
+    # LIMIT keeps the most recent, returned oldest-first.
+    assert [e.event_id for e in writer.list_auth_failures(limit=2)] == [
+        "evt_af_1",
+        "evt_af_2",
+    ]
+    conn.close()
+
+
+def test_postgres_auditor_key_create_and_resolve() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    init_postgres_schema(conn)
+    repository = PostgresLocalKeyRepository(conn)
+
+    created = repository.create_auditor_key(workspace_id="ws_main", now=NOW)
+
+    assert created.record.key_type == "auditor"
+    identity = repository.resolve_auditor_identity(created.raw_key, now=NOW)
+    assert identity is not None and identity.workspace_id == "ws_main"
+    # An auditor key is not a service-operator key.
+    assert repository.resolve_service_operator(created.raw_key, now=NOW) is False
+    # A workspace key does not resolve as an auditor.
+    other = repository.create_workspace_key(workspace_id="ws_main", now=NOW)
+    assert repository.resolve_auditor_identity(other.raw_key, now=NOW) is None
+    conn.close()
+
+
+def test_postgres_service_operator_key_create_and_resolve() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    init_postgres_schema(conn)
+    repository = PostgresLocalKeyRepository(conn)
+
+    created = repository.create_service_operator_key(now=NOW)
+
+    assert created.record.key_type == "service_operator"
+    assert created.record.workspace_id == "*"
+    assert repository.resolve_service_operator(created.raw_key, now=NOW) is True
+    # A service-operator key does not resolve as an auditor identity.
+    assert repository.resolve_auditor_identity(created.raw_key, now=NOW) is None
+    # An unknown key resolves to neither.
+    assert repository.resolve_service_operator("sok_nonexistent", now=NOW) is False
+    conn.close()
+
+
+def test_postgres_audit_writer_wires_anchor_and_export_from_env(monkeypatch) -> None:
+    assert DSN is not None
+    monkeypatch.setenv("VINCTOR_AUDIT_ANCHOR", "stdout")
+    monkeypatch.setenv("VINCTOR_AUDIT_EXPORT", "stdout")
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+
+    # Export configured -> the writer is wrapped so persisted events also stream.
+    assert isinstance(service.audit_writer, ExportingAuditWriter)
+    # Anchor configured -> the durable writer underneath got a real anchor
+    # (parity with SQLite, which wired both from the environment already).
+    assert not isinstance(service.audit_writer._wrapped._anchor, NullAnchor)
+    conn.close()
+
+
+def test_postgres_state_and_audit_commit_atomically() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("audit write failed")
+
+    service.audit_writer.write = _raise  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        service.create_grant_request(
+            GrantRequestCreateRequest(
+                workspace_id="ws_main", requester_agent_id="agent_a",
+                requested_scopes=("execute:ci/test",), requested_ttl_seconds=3600,
+                reason="run CI", request_id="grq_probe",
+            ),
+            now=NOW,
+        )
+
+    # The failed audit rolled the request insert back (state + audit are one unit).
+    assert service.grant_request_repository.list_requests_for_workspace("ws_main") == ()
+    conn.close()
+
+
+def test_postgres_key_rotation_is_atomic_when_revocation_fails() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    init_postgres_schema(conn)
+    repository = PostgresLocalKeyRepository(conn)
+    old = repository.create_workspace_key(workspace_id="ws_main", now=NOW)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("revoke failed mid-rotation")
+
+    original_revoke = repository.revoke_key
+    repository.revoke_key = _boom  # type: ignore[method-assign]
+    try:
+        with pytest.raises(RuntimeError, match="revoke failed"):
+            rotate_workspace_key(repository, workspace_id="ws_main", now=NOW)
+    finally:
+        repository.revoke_key = original_revoke  # type: ignore[method-assign]
+
+    # The advisory-locked transaction rolls back the freshly minted key, leaving
+    # the predecessor as the only active workspace key (no half-finished rotation).
+    active_workspace = [
+        record
+        for record in repository.list_for_workspace("ws_main")
+        if record.status == "active" and record.key_type == "workspace"
+    ]
+    assert [record.key_id for record in active_workspace] == [old.record.key_id]
     conn.close()

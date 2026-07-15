@@ -264,6 +264,17 @@ class ExportingAuditWriter:
 
     def write(self, event: AuditEvent) -> None:
         self._wrapped.write(event)
+        # Stream the copy only after the durable write is committed. Backend
+        # writers expose emit_or_defer so an export that joined an outer
+        # transaction is held until the outermost commit and dropped on
+        # rollback; writers without it (e.g. in-memory) emit inline.
+        emit_or_defer = getattr(self._wrapped, "emit_or_defer", None)
+        if emit_or_defer is not None:
+            emit_or_defer(lambda: self._emit(event))
+        else:
+            self._emit(event)
+
+    def _emit(self, event: AuditEvent) -> None:
         try:
             self._export.emit(event)
         except Exception as exc:  # fail-open, belt-and-braces over the sink contract

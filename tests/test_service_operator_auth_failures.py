@@ -25,7 +25,7 @@ def test_service_operator_key_is_global_and_not_a_workspace_identity() -> None:
 
 def test_service_operator_view_returns_only_unscoped_auth_failures() -> None:
     service = SQLiteV1Service(sqlite3.connect(":memory:"))
-    service.record_auth_failure(surface="enforce", boundary_id=None, now=NOW)
+    service.record_auth_failure(surface="enforce", now=NOW)
 
     response = handle_v1_service_auth_failures_http(
         method="GET",
@@ -46,7 +46,7 @@ def test_service_operator_view_returns_only_unscoped_auth_failures() -> None:
 
 def test_workspace_key_cannot_read_global_auth_failures() -> None:
     service = SQLiteV1Service(sqlite3.connect(":memory:"))
-    service.record_auth_failure(surface="enforce", boundary_id=None, now=NOW)
+    service.record_auth_failure(surface="enforce", now=NOW)
 
     response = handle_v1_service_auth_failures_http(
         method="GET",

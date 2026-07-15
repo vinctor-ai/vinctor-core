@@ -77,7 +77,7 @@ def _both_services(tmp_path: Path) -> list[object]:
 def test_schema_versions_include_audit_index_migration_10(tmp_path: Path) -> None:
     conn = sqlite3.connect(tmp_path / "vinctor.sqlite")
     init_sqlite_schema(conn)
-    assert get_sqlite_schema_versions(conn) == tuple(range(1, 13))
+    assert get_sqlite_schema_versions(conn) == tuple(range(1, 15))
 
 
 def test_audit_events_workspace_index_exists(tmp_path: Path) -> None:
@@ -306,7 +306,7 @@ def test_sqlite_list_filtered_does_not_load_whole_table(tmp_path: Path) -> None:
     sql, _params = select_calls[-1]
     # The SQL itself does the limiting (no full-table scan into Python).
     assert "LIMIT" in sql.upper()
-    assert "ORDER BY rowid DESC" in sql
+    assert "ORDER BY seq DESC" in sql
     assert "WHERE" in sql.upper() and "workspace_id = ?" in sql
     assert len(result) == 3
 

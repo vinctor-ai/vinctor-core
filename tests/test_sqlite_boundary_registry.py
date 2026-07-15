@@ -220,10 +220,10 @@ def test_sqlite_disabled_boundary_fails_closed_and_writes_audit(
 
     assert response.status_code == 403
     assert response.decision == "deny"
-    assert response.error == "boundary_inactive"
+    assert response.error == "boundary_unavailable"  # coarse for the agent
     row = audit_row(conn, response.audit_event_id or "")
     assert row["decision"] == "deny"
-    assert row["reason"] == "boundary_inactive"
+    assert row["reason"] == "boundary_inactive"  # operator audit keeps precise
     assert row["boundary_id"] == "bnd_main"
     assert row["runtime"] == "claude-code"
     assert row["boundary_type"] == "pretooluse"
@@ -247,8 +247,9 @@ def test_sqlite_missing_boundary_fails_closed_with_attempted_id_only(
 
     assert response.status_code == 403
     assert response.decision == "deny"
-    assert response.error == "boundary_not_found"
+    assert response.error == "boundary_unavailable"
     row = audit_row(conn, response.audit_event_id or "")
+    assert row["reason"] == "boundary_not_found"  # operator audit keeps precise
     assert row["boundary_id"] == "bnd_missing"
     assert row["runtime"] is None
     assert row["boundary_type"] is None

@@ -163,7 +163,7 @@ def test_pyjwt_verifier_requires_configured_issuer_audience_and_algorithm(
 
 def test_oidc_roles_are_enforced_by_http_surface() -> None:
     service = SQLiteV1Service(sqlite3.connect(":memory:", check_same_thread=False))
-    service.record_auth_failure(surface="enforce", boundary_id=None, now=NOW)
+    service.record_auth_failure(surface="enforce", now=NOW)
     verifier = _Verifier(
         {
             "operator-token": OidcPrincipal(

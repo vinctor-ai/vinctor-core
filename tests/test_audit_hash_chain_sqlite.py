@@ -1,6 +1,9 @@
 import json
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta, timezone
+
+import pytest
 
 from vinctor_core.models import AuditEvent
 from vinctor_service.audit_chain import GENESIS_PREV_HASH, AnchorRecord, row_hash
@@ -148,6 +151,51 @@ def test_verify_detects_column_mismatch(tmp_path) -> None:
     assert v.ok is False and v.break_kind == "column_mismatch" and v.break_seq == 2
 
 
+def test_verify_detects_created_at_column_tamper(tmp_path) -> None:
+    conn, w = _seed_three(tmp_path)
+    # Backdate only the materialized timestamp column; event_json and row_hash stay intact.
+    tampered = (NOW + timedelta(hours=6)).isoformat()
+    conn.execute("UPDATE audit_events SET created_at = ? WHERE seq = 2", (tampered,))
+    conn.commit()
+    v = w.verify_chain()
+    assert v.ok is False and v.break_kind == "column_mismatch" and v.break_seq == 2
+
+
+def test_verify_ok_when_created_at_spelled_as_equivalent_instant(tmp_path) -> None:
+    conn, w = _seed_three(tmp_path)
+    # Same instant, different ISO-8601 offset spelling. The cross-check must compare
+    # instants, not raw strings — Postgres returns TIMESTAMPTZ in the session
+    # timezone, so string-identity would false-positive on healthy chains.
+    same_instant = NOW.astimezone(timezone(timedelta(hours=9))).isoformat()
+    conn.execute("UPDATE audit_events SET created_at = ? WHERE seq = 2", (same_instant,))
+    conn.commit()
+    assert w.verify_chain().ok is True
+
+
+def _full_event(event_id: str) -> AuditEvent:
+    # Every optional/ADR-0007/ADR-0008 field populated: exercises the crosscheck
+    # normalization paths (datetime, bool, int, nullable text) on a healthy chain.
+    return replace(
+        _event(event_id),
+        enforcing_principal="usr_owner",
+        reason_code="unmapped_action",
+        occurrence_count=4,
+        first_seen_at=NOW - timedelta(minutes=30),
+        last_seen_at=NOW - timedelta(minutes=1),
+        identity_proven=True,
+        token_id="stk_1",
+    )
+
+
+def test_verify_ok_with_all_optional_fields_populated(tmp_path) -> None:
+    conn, w = _writer(tmp_path)
+    w.write(_event("evt_1"))
+    w.write(_full_event("evt_2"))
+    w.write(_event("evt_3"))
+    v = w.verify_chain()
+    assert v.ok is True and v.count == 3 and v.head_seq == 3
+
+
 def test_chain_head_reports_tip_and_genesis_when_empty(tmp_path) -> None:
     conn, w = _writer(tmp_path)
     assert w.chain_head() == (0, GENESIS_PREV_HASH)
@@ -267,3 +315,211 @@ def test_postgres_crosscheck_columns_match_sqlite() -> None:
     from vinctor_service.postgres import PostgresAuditWriter
 
     assert PostgresAuditWriter._CROSSCHECK_COLUMNS == SQLiteAuditWriter._CROSSCHECK_COLUMNS
+
+
+def test_crosscheck_covers_every_sqlite_materialized_event_json_column(tmp_path) -> None:
+    # Every audit_events column that mirrors an event_json field must be in the
+    # cross-check set, or a DB-write attacker could edit the materialized copy
+    # without breaking verification. (Chain/bookkeeping columns and event_json
+    # itself are covered by the row hash instead.)
+    conn = sqlite3.connect(tmp_path / "cols.sqlite")
+    init_sqlite_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(audit_events)").fetchall()}
+    assert cols - {"event_json", "seq", "prev_hash", "row_hash"} == set(
+        SQLiteAuditWriter._CROSSCHECK_COLUMNS
+    )
+
+
+def test_postgres_crosschecks_every_pg_only_materialized_column() -> None:
+    # Postgres additionally materializes these event_json fields as dedicated
+    # columns that list_filtered reads directly (SQLite filters them via
+    # json_extract over the hash-protected event_json and has no such columns
+    # to tamper with). Each one must be cross-checked during verify_chain, or an
+    # attacker could hide/re-classify events for Postgres readers — e.g. flip
+    # reason_code or identity_proven — while verification still passes.
+    from vinctor_service.postgres import PostgresAuditWriter
+
+    assert PostgresAuditWriter._PG_ONLY_CROSSCHECK_COLUMNS == (
+        "enforcing_principal", "reason_code", "occurrence_count",
+        "first_seen_at", "last_seen_at", "identity_proven", "token_id",
+    )
+    assert set(PostgresAuditWriter._PG_ONLY_CROSSCHECK_COLUMNS).isdisjoint(
+        PostgresAuditWriter._CROSSCHECK_COLUMNS
+    )
+
+
+# --- B2: audit ordering / backfill integrity -----------------------------
+
+
+def test_backfill_is_one_time_and_does_not_reheal_post_migration_null(tmp_path) -> None:
+    """After the migration sentinel is recorded, a NULL row_hash is tampering,
+    not un-migrated data: re-running init must NOT silently re-chain it (which
+    would mask the tamper) — verify_chain fails closed instead.
+
+    Power: nulling the LAST row's hash is exactly what the old ungated backfill
+    would recompute back to the valid value, making verify_chain pass again.
+    """
+    conn, w = _writer(tmp_path)  # fresh DB: migration sentinel v14 recorded
+    for i in (1, 2, 3):
+        w.write(_event(f"evt_{i}"))
+
+    # Tamper: drop the chain hash of the head row (as a DB-write attacker might).
+    conn.execute("UPDATE audit_events SET row_hash = NULL WHERE seq = 3")
+    conn.commit()
+
+    init_sqlite_schema(conn)  # simulate a restart re-running migrations
+
+    healed = conn.execute(
+        "SELECT row_hash FROM audit_events WHERE seq = 3"
+    ).fetchone()[0]
+    assert healed is None, "post-migration NULL row_hash must not be re-chained"
+    assert SQLiteAuditWriter(conn).verify_chain().ok is False
+
+
+def test_seq_unique_index_rejects_duplicate_seq(tmp_path) -> None:
+    conn, w = _writer(tmp_path)
+    w.write(_event("evt_1"))
+    w.write(_event("evt_2"))
+
+    # A forked chain (two rows sharing a seq) is rejected by the unique index.
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute("UPDATE audit_events SET seq = 1 WHERE seq = 2")
+
+
+def test_legacy_backfill_runs_once_then_seals(tmp_path) -> None:
+    """A pre-hash-chain legacy DB still back-fills on first migration; once the
+    sentinel is recorded, a later NULL is not re-healed."""
+    conn = sqlite3.connect(tmp_path / "legacy.sqlite")
+    conn.executescript(
+        "CREATE TABLE audit_events (event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL,"
+        " decision TEXT NOT NULL, reason TEXT NOT NULL, workspace_id TEXT NOT NULL,"
+        " agent_id TEXT NOT NULL, grant_id TEXT NOT NULL, grant_ref TEXT NOT NULL,"
+        " action TEXT NOT NULL, resource TEXT NOT NULL, scope_attempted TEXT NOT NULL,"
+        " scope_matched TEXT, boundary_id TEXT, runtime TEXT, boundary_type TEXT,"
+        " created_at TEXT NOT NULL, event_json TEXT NOT NULL);"
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);"
+    )
+    _raw_event_row(conn, "evt_1", 1)
+    _raw_event_row(conn, "evt_2", 2)
+
+    init_sqlite_schema(conn)  # first migration: back-fill runs and seals (v14)
+
+    assert 14 in get_sqlite_schema_versions(conn)
+    assert SQLiteAuditWriter(conn).verify_chain().ok is True
+
+    # Now sealed: a subsequent NULL is not re-chained on the next startup.
+    conn.execute("UPDATE audit_events SET row_hash = NULL WHERE seq = 2")
+    conn.commit()
+    init_sqlite_schema(conn)
+    assert (
+        conn.execute("SELECT row_hash FROM audit_events WHERE seq = 2").fetchone()[0]
+        is None
+    )
+
+
+def test_anchor_emission_deferred_to_outer_commit_and_dropped_on_rollback(
+    tmp_path,
+) -> None:
+    """Codex P1: an audit write joined to an outer transaction must not emit its
+    external anchor until the outermost commit, and must not emit it at all if
+    that transaction rolls back (otherwise the anchor records a chain head that
+    no longer exists)."""
+    import vinctor_service.sqlite as sqlite_mod
+
+    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    init_sqlite_schema(conn)
+    heads: list[int] = []
+
+    class _RecordingAnchor:
+        def emit(self, seq, row_hash, created_at):
+            heads.append(seq)
+
+        def emit_storage_op(self, *args, **kwargs):
+            pass
+
+    writer = SQLiteAuditWriter(conn, anchor=_RecordingAnchor())
+
+    # Joined write that rolls back: the anchor is deferred, then discarded.
+    with pytest.raises(RuntimeError), sqlite_mod._atomic_write(conn):
+        writer.write(_event("evt_rollback"))
+        assert heads == []  # deferred while the transaction is open
+        raise RuntimeError("boom")
+    assert conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 0
+    assert heads == []  # never emitted for the rolled-back row
+
+    # Joined write that commits: the anchor emits exactly once, after commit.
+    with sqlite_mod._atomic_write(conn):
+        writer.write(_event("evt_commit"))
+        assert heads == []  # still deferred inside the transaction
+    assert heads == [1]
+
+
+def test_manual_transaction_rollback_does_not_leak_deferred_emission(
+    tmp_path,
+) -> None:
+    """Codex P1: emit_or_defer used to defer for ANY open transaction but only
+    _atomic_write discarded on rollback, so an audit write in a caller-managed
+    transaction that rolled back left a stale callback that flushed on the next
+    _atomic_write. Deferral is now scoped to _atomic_write only: a manual
+    transaction's audit write emits inline and never leaks into a later one."""
+    import vinctor_service.sqlite as sqlite_mod
+
+    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    init_sqlite_schema(conn)
+    heads: list[int] = []
+
+    class _RecordingAnchor:
+        def emit(self, seq, row_hash, created_at):
+            heads.append(seq)
+
+        def emit_storage_op(self, *args, **kwargs):
+            pass
+
+    writer = SQLiteAuditWriter(conn, anchor=_RecordingAnchor())
+
+    # Caller-managed transaction, rolled back. The audit write is NOT inside an
+    # _atomic_write, so it emits inline and queues no deferred callback.
+    conn.execute("BEGIN")
+    writer.write(_event("evt_manual"))
+    conn.rollback()
+
+    before = len(heads)
+    # A later valid _atomic_write emits exactly ONE anchor (its own) — no stale
+    # callback from the rolled-back manual transaction leaks in.
+    with sqlite_mod._atomic_write(conn):
+        writer.write(_event("evt_ok"))
+    assert len(heads) - before == 1
+
+
+def test_deferral_is_per_connection_not_per_thread(tmp_path) -> None:
+    """Codex P1: the deferral was thread-scoped, so a standalone audit write on
+    connection B made inside connection A's _atomic_write was queued in A's scope
+    and DROPPED when A rolled back — losing the external anchor for B's committed
+    row. Deferral is now per-connection, so B emits inline and survives."""
+    import vinctor_service.sqlite as sqlite_mod
+
+    conn_a = sqlite3.connect(tmp_path / "a.sqlite")
+    init_sqlite_schema(conn_a)
+    conn_b = sqlite3.connect(tmp_path / "b.sqlite")
+    init_sqlite_schema(conn_b)
+    heads_b: list[int] = []
+
+    class _RecordingAnchor:
+        def emit(self, seq, row_hash, created_at):
+            heads_b.append(seq)
+
+        def emit_storage_op(self, *args, **kwargs):
+            pass
+
+    writer_b = SQLiteAuditWriter(conn_b, anchor=_RecordingAnchor())
+
+    # Inside connection A's _atomic_write (which rolls back), a STANDALONE audit
+    # write on connection B commits independently on the same thread.
+    with pytest.raises(RuntimeError), sqlite_mod._atomic_write(conn_a):
+        writer_b.write(_event("evt_b"))
+        raise RuntimeError("connection A rolls back")
+
+    # B's row is committed and its anchor emitted exactly once — A's rollback did
+    # NOT drop B's emission (it was never captured by A's scope).
+    assert conn_b.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 1
+    assert heads_b == [1]

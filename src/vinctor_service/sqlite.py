@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -20,6 +22,7 @@ from vinctor_service.audit_chain import (
     AnchorRecord,
     AnchorVerification,
     ChainVerification,
+    crosscheck_values_match,
     row_hash,
 )
 from vinctor_service.audit_export import (
@@ -50,6 +53,7 @@ from vinctor_service.grants import (
     validate_issuable_scope_bounds,
 )
 from vinctor_service.models import (
+    AgentIssuableBounds,
     AutoApprovalEvaluationResult,
     AutoApprovalRule,
     GrantIssueRequest,
@@ -70,11 +74,41 @@ from vinctor_service.models import (
 from vinctor_service.observations import record_observation
 from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS
 from vinctor_service.simulations import simulate_v1_contract
+from vinctor_service.sqlite_txn import (
+    atomic_write_deferral,
+    conn_txn_lock,
+)
+from vinctor_service.sqlite_txn import (
+    emit_or_defer as _emit_or_defer,
+)
 from vinctor_service.subject_tokens import mint_subject_token
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 
 
 def init_sqlite_schema(conn: sqlite3.Connection) -> None:
+    """Create/upgrade the schema, serialized on the connection lock.
+
+    ``executescript`` (and the per-migration commits) implicitly commit any
+    pending transaction on the connection, so this MUST hold ``conn_txn_lock``
+    for the whole migration or it would commit a peer thread's open write on a
+    shared connection. The lock is taken FIRST, so a concurrent write on another
+    thread WAITS here instead of being mistaken for caller nesting; once held,
+    ``in_transaction`` reflects only this thread — a True value means this
+    thread's caller already owns a transaction, which schema init rejects (it
+    must own its transaction, since its commits would otherwise seal the
+    caller's partial write).
+    """
+    with conn_txn_lock(conn):
+        if conn.in_transaction:
+            raise RuntimeError(
+                "schema initialization cannot run inside an open transaction; it "
+                "must own its transaction so its commits do not seal a caller's "
+                "partial write"
+            )
+        _apply_sqlite_schema(conn)
+
+
+def _apply_sqlite_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -220,7 +254,9 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
             require_boundary INTEGER NOT NULL DEFAULT 0,
             require_boundary_set INTEGER NOT NULL DEFAULT 0,
             require_subject_token INTEGER NOT NULL DEFAULT 0,
+            require_subject_token_set INTEGER NOT NULL DEFAULT 0,
             require_pop INTEGER NOT NULL DEFAULT 0,
+            require_pop_set INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (workspace_id, agent_id)
         );
@@ -258,7 +294,10 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
     _ensure_agent_enforcement_require_subject_token_column(conn)
     _ensure_agent_enforcement_require_pop_column(conn)
     _ensure_agent_enforcement_require_boundary_set_column(conn)
+    _ensure_agent_enforcement_require_subject_token_set_column(conn)
+    _ensure_agent_enforcement_require_pop_set_column(conn)
     _ensure_audit_events_hashchain_columns(conn)
+    _realign_agent_enforcement_require_boundary_set(conn)
     conn.execute(
         """
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
@@ -343,6 +382,20 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
         """,
         (12, datetime.now(UTC).isoformat()),
     )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (13, datetime.now(UTC).isoformat()),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (_AUDIT_HASHCHAIN_BACKFILL_VERSION, datetime.now(UTC).isoformat()),
+    )
     conn.commit()
 
 
@@ -354,7 +407,7 @@ def insert_grant(conn: sqlite3.Connection, grant: Grant) -> None:
     if existing is not None:
         raise ValueError(f"duplicate grant_ref: {grant.grant_ref}")
 
-    with conn:
+    with _write_scope(conn):
         conn.execute(
             """
             INSERT INTO grants (
@@ -463,49 +516,135 @@ def _ensure_agent_enforcement_require_boundary_set_column(
         # Existing rows previously always acted as explicit boundary overrides.
         # Defaulting migrated rows to 1 preserves that behavior; freshly created
         # schemas default to 0 so unrelated settings do not create an override.
+        # _realign_agent_enforcement_require_boundary_set then corrects the
+        # preserve-all default to the fail-closed value-derived presence.
         conn.execute(
             "ALTER TABLE agent_enforcement_settings "
             "ADD COLUMN require_boundary_set INTEGER NOT NULL DEFAULT 1"
         )
 
 
+def _ensure_agent_enforcement_require_subject_token_set_column(
+    conn: sqlite3.Connection,
+) -> None:
+    existing_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(agent_enforcement_settings)").fetchall()
+    }
+    if "require_subject_token_set" not in existing_columns:
+        # Fail closed: a migrated row counts as an explicit setting only where
+        # its value is already TRUE. A FALSE value becomes "unset" and falls
+        # through to the workspace mandate instead of silently exempting the
+        # agent. Runs once, when the column is first added.
+        conn.execute(
+            "ALTER TABLE agent_enforcement_settings "
+            "ADD COLUMN require_subject_token_set INTEGER NOT NULL DEFAULT 0"
+        )
+        conn.execute(
+            "UPDATE agent_enforcement_settings "
+            "SET require_subject_token_set = require_subject_token"
+        )
+
+
+def _ensure_agent_enforcement_require_pop_set_column(
+    conn: sqlite3.Connection,
+) -> None:
+    existing_columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(agent_enforcement_settings)").fetchall()
+    }
+    if "require_pop_set" not in existing_columns:
+        # Fail closed, mirroring require_subject_token_set above.
+        conn.execute(
+            "ALTER TABLE agent_enforcement_settings "
+            "ADD COLUMN require_pop_set INTEGER NOT NULL DEFAULT 0"
+        )
+        conn.execute(
+            "UPDATE agent_enforcement_settings SET require_pop_set = require_pop"
+        )
+
+
+def _realign_agent_enforcement_require_boundary_set(conn: sqlite3.Connection) -> None:
+    # One-time, version-gated realignment (schema version 13). The original
+    # require_boundary_set migration defaulted migrated rows to 1, so a row
+    # that only ever carried require_subject_token / require_pop read as an
+    # explicit require_boundary=false override, silently exempting the agent
+    # from a workspace-wide boundary mandate. Fail closed: mark boundary "set"
+    # only where require_boundary is already TRUE. Gated on the version record
+    # (this UPDATE is not idempotent by itself) so an explicit exemption
+    # written after the upgrade is never clobbered by a later init.
+    already_applied = conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE version = ?",
+        (13,),
+    ).fetchone()
+    if already_applied is None:
+        conn.execute(
+            "UPDATE agent_enforcement_settings SET require_boundary_set = require_boundary"
+        )
+
+
+# schema_migrations sentinel marking the audit hash-chain backfill complete.
+# While absent, the one-time backfill of pre-hash-chain rows may run; once
+# recorded, the backfill never runs again (a later NULL row_hash is treated as
+# tampering and left for verify_chain to fail closed on).
+_AUDIT_HASHCHAIN_BACKFILL_VERSION = 14
+
+
 def _ensure_audit_events_hashchain_columns(conn: sqlite3.Connection) -> None:
     cols = {
         row[1] for row in conn.execute("PRAGMA table_info(audit_events)").fetchall()
     }
-    added = False
     if "seq" not in cols:
         conn.execute("ALTER TABLE audit_events ADD COLUMN seq INTEGER")
-        added = True
     if "prev_hash" not in cols:
         conn.execute("ALTER TABLE audit_events ADD COLUMN prev_hash TEXT")
-        added = True
     if "row_hash" not in cols:
         conn.execute("ALTER TABLE audit_events ADD COLUMN row_hash TEXT")
-        added = True
-    # Back-fill any rows lacking chain metadata, in rowid (insertion) order.
-    unchained = conn.execute(
-        "SELECT rowid, event_json FROM audit_events WHERE row_hash IS NULL ORDER BY rowid"
-    ).fetchall()
-    if unchained:
-        start_seq_row = conn.execute(
-            "SELECT COALESCE(MAX(seq), 0), "
-            "(SELECT row_hash FROM audit_events WHERE seq = (SELECT MAX(seq) "
-            "FROM audit_events WHERE row_hash IS NOT NULL)) "
-            "FROM audit_events WHERE row_hash IS NOT NULL"
-        ).fetchone()
-        seq = start_seq_row[0] or 0
-        prev = start_seq_row[1] or GENESIS_PREV_HASH
-        for rowid, event_json in unchained:
-            seq += 1
-            rh = row_hash(seq, event_json, prev)
-            conn.execute(
-                "UPDATE audit_events SET seq = ?, prev_hash = ?, row_hash = ? WHERE rowid = ?",
-                (seq, prev, rh, rowid),
-            )
-            prev = rh
-    if added or unchained:
-        conn.commit()
+
+    # The backfill is a ONE-TIME migration of pre-hash-chain rows, gated on the
+    # sentinel below. Once it is recorded, a NULL row_hash is no longer
+    # un-migrated data — it is tampering or corruption — so we must NOT silently
+    # re-chain it into a valid-looking entry (that would mask the tamper).
+    # verify_chain fails closed on the NULL instead.
+    backfill_done = conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE version = ?",
+        (_AUDIT_HASHCHAIN_BACKFILL_VERSION,),
+    ).fetchone()
+    unchained: tuple = ()
+    if backfill_done is None:
+        # Resumable: always continues from the current chained head, so an
+        # interrupted run completes on a later startup (until the sentinel is
+        # recorded alongside the other versions in init_sqlite_schema).
+        unchained = conn.execute(
+            "SELECT rowid, event_json FROM audit_events "
+            "WHERE row_hash IS NULL ORDER BY rowid"
+        ).fetchall()
+        if unchained:
+            start_seq_row = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0), "
+                "(SELECT row_hash FROM audit_events WHERE seq = (SELECT MAX(seq) "
+                "FROM audit_events WHERE row_hash IS NOT NULL)) "
+                "FROM audit_events WHERE row_hash IS NOT NULL"
+            ).fetchone()
+            seq = start_seq_row[0] or 0
+            prev = start_seq_row[1] or GENESIS_PREV_HASH
+            for rowid, event_json in unchained:
+                seq += 1
+                rh = row_hash(seq, event_json, prev)
+                conn.execute(
+                    "UPDATE audit_events SET seq = ?, prev_hash = ?, row_hash = ? "
+                    "WHERE rowid = ?",
+                    (seq, prev, rh, rowid),
+                )
+                prev = rh
+
+    # Defense-in-depth against a forked chain: seq is the tamper-evident, hashed
+    # ordering key, so forbid duplicate seq values. SQLite unique indexes permit
+    # multiple NULLs, so this is safe before the backfill populates seq.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_events_seq ON audit_events(seq)"
+    )
+    conn.commit()
 
 
 def get_sqlite_schema_versions(conn: sqlite3.Connection) -> tuple[int, ...]:
@@ -575,7 +714,7 @@ class SQLiteGrantRepository:
         if grant.status == "revoked":
             return grant
 
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 UPDATE grants
@@ -588,6 +727,59 @@ class SQLiteGrantRepository:
         if revoked is None:
             raise RuntimeError(f"grant disappeared during revocation: {grant_ref}")
         return revoked
+
+
+@contextmanager
+def _write_scope(conn: sqlite3.Connection) -> Iterator[None]:
+    """Commit scope for a single repository write.
+
+    Standalone calls keep today's behavior: ``with conn:`` opens the write and
+    commits (or rolls back) it on exit. When the caller already holds an
+    explicit transaction (an all-or-nothing BEGIN IMMEDIATE unit of work),
+    sqlite3's connection context manager must NOT be entered — its exit would
+    commit the caller's WHOLE transaction mid-way — so the write joins the open
+    transaction instead and the outer owner commits or rolls back everything.
+
+    The whole scope runs under the shared per-connection re-entrant lock so two
+    threads sharing one connection cannot interleave (or one commit/join the
+    other's transaction through the connection-global ``in_transaction`` flag);
+    same-thread nesting re-enters the lock freely. EVERY write path on the
+    connection must use this (or _atomic_write) for the serialization to hold.
+    """
+    with conn_txn_lock(conn):
+        if conn.in_transaction:
+            yield
+            return
+        with conn:
+            yield
+
+
+@contextmanager
+def _atomic_write(conn: sqlite3.Connection) -> Iterator[None]:
+    """One BEGIN IMMEDIATE transaction wrapping a whole state-plus-audit change.
+
+    Every state write and its audit row commit together or not at all — an
+    audit-writer failure OR a failing commit rolls the state change back rather
+    than leaving it unrecorded. The shared per-connection re-entrant lock
+    serializes the whole scope so two threads sharing one connection cannot be
+    folded into one transaction; BEGIN IMMEDIATE additionally serializes writers
+    across connections/processes. Same-thread service nesting re-enters the lock
+    and joins the open transaction. Deferred audit anchor/export emissions are
+    bracketed by atomic_write_deferral: they flush only after this commit and are
+    dropped on rollback or a failing commit.
+    """
+    with conn_txn_lock(conn):
+        if conn.in_transaction:
+            yield
+            return
+        with atomic_write_deferral(conn):
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
 
 
 class SQLiteAgentIssuableScopeBoundsRepository:
@@ -620,6 +812,26 @@ class SQLiteAgentIssuableScopeBoundsRepository:
             return None
         return row[0]
 
+    def get_bounds_with_max_ttl(
+        self, *, workspace_id: str, agent_id: str
+    ) -> AgentIssuableBounds | None:
+        # Single-row read: scopes and max TTL come from one consistent snapshot
+        # of the bounds row (no torn read across a concurrent set_bounds).
+        row = self._conn.execute(
+            """
+            SELECT scopes_json, max_ttl_seconds
+            FROM agent_issuable_scope_bounds
+            WHERE workspace_id = ? AND agent_id = ?
+            """,
+            (workspace_id, agent_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return AgentIssuableBounds(
+            scopes=tuple(json.loads(row[0])),
+            max_ttl_seconds=row[1],
+        )
+
     def list_bounds_for_workspace(self, workspace_id: str) -> ScopeBoundsListing:
         rows = self._conn.execute(
             """
@@ -642,7 +854,7 @@ class SQLiteAgentIssuableScopeBoundsRepository:
         now: datetime,
     ) -> None:
         validate_issuable_scope_bounds(scopes, max_ttl_seconds=max_ttl_seconds)
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO agent_issuable_scope_bounds (
@@ -708,12 +920,13 @@ class SQLiteAgentEnforcementSettingsRepository:
     def set_require_boundary(
         self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime
     ) -> None:
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
-                    workspace_id, agent_id, require_boundary, require_boundary_set, updated_at
-                ) VALUES (?, ?, ?, 1, ?)
+                    workspace_id, agent_id, require_boundary, require_boundary_set,
+                    require_subject_token_set, require_pop_set, updated_at
+                ) VALUES (?, ?, ?, 1, 0, 0, ?)
                 ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
                     require_boundary = excluded.require_boundary,
                     require_boundary_set = 1,
@@ -728,7 +941,7 @@ class SQLiteAgentEnforcementSettingsRepository:
         row = self._conn.execute(
             """
             SELECT require_subject_token FROM agent_enforcement_settings
-            WHERE workspace_id = ? AND agent_id = ?
+            WHERE workspace_id = ? AND agent_id = ? AND require_subject_token_set = 1
             """,
             (workspace_id, agent_id),
         ).fetchone()
@@ -746,14 +959,16 @@ class SQLiteAgentEnforcementSettingsRepository:
     def set_require_subject_token(
         self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime
     ) -> None:
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
-                    workspace_id, agent_id, require_subject_token, require_boundary_set, updated_at
-                ) VALUES (?, ?, ?, 0, ?)
+                    workspace_id, agent_id, require_subject_token, require_subject_token_set,
+                    require_boundary_set, require_pop_set, updated_at
+                ) VALUES (?, ?, ?, 1, 0, 0, ?)
                 ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
                     require_subject_token = excluded.require_subject_token,
+                    require_subject_token_set = 1,
                     updated_at = excluded.updated_at
                 """,
                 (workspace_id, agent_id, 1 if require_subject_token else 0, now.isoformat()),
@@ -763,7 +978,7 @@ class SQLiteAgentEnforcementSettingsRepository:
         row = self._conn.execute(
             """
             SELECT require_pop FROM agent_enforcement_settings
-            WHERE workspace_id = ? AND agent_id = ?
+            WHERE workspace_id = ? AND agent_id = ? AND require_pop_set = 1
             """,
             (workspace_id, agent_id),
         ).fetchone()
@@ -779,14 +994,16 @@ class SQLiteAgentEnforcementSettingsRepository:
     def set_require_pop(
         self, *, workspace_id: str, agent_id: str, require_pop: bool, now: datetime
     ) -> None:
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
-                    workspace_id, agent_id, require_pop, require_boundary_set, updated_at
-                ) VALUES (?, ?, ?, 0, ?)
+                    workspace_id, agent_id, require_pop, require_pop_set,
+                    require_boundary_set, require_subject_token_set, updated_at
+                ) VALUES (?, ?, ?, 1, 0, 0, ?)
                 ON CONFLICT(workspace_id, agent_id) DO UPDATE SET
                     require_pop = excluded.require_pop,
+                    require_pop_set = 1,
                     updated_at = excluded.updated_at
                 """,
                 (workspace_id, agent_id, 1 if require_pop else 0, now.isoformat()),
@@ -800,7 +1017,7 @@ class SQLiteGrantRequestRepository:
     def insert_request(self, request: GrantRequest) -> None:
         if self.get_request(request.request_id) is not None:
             raise ValueError(f"duplicate grant request_id: {request.request_id}")
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO grant_requests (
@@ -852,7 +1069,7 @@ class SQLiteGrantRequestRepository:
     def update_request(self, request: GrantRequest) -> None:
         if self.get_request(request.request_id) is None:
             raise ValueError(f"unknown grant request_id: {request.request_id}")
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 UPDATE grant_requests
@@ -899,6 +1116,29 @@ class SQLiteGrantRequestRepository:
                 ),
             )
 
+    def decide_request(self, request: GrantRequest) -> bool:
+        with _write_scope(self._conn):
+            cursor = self._conn.execute(
+                """
+                UPDATE grant_requests
+                SET status = ?,
+                    decided_at = ?,
+                    decided_by = ?,
+                    decision_reason = ?,
+                    issued_grant_ref = ?
+                WHERE request_id = ? AND status = 'pending'
+                """,
+                (
+                    request.status,
+                    _datetime_to_storage(request.decided_at),
+                    request.decided_by,
+                    request.decision_reason,
+                    request.issued_grant_ref,
+                    request.request_id,
+                ),
+            )
+            return cursor.rowcount == 1
+
 
 class SQLiteReplayStore:
     """Durable, cross-process anti-replay for PoP nonces (ADR 0007 arc J).
@@ -925,8 +1165,8 @@ class SQLiteReplayStore:
         # could mint distinct fresh nonces up to ``max_entries`` and lock out
         # every OTHER token's fresh proof. Bounding each token_id's live footprint
         # to ``max_per_token`` keeps that flood self-contained — a token at its own
-        # cap evicts its OWN oldest within-window nonce, never another token's row
-        # — so the global cap stays a generous backstop, not a cross-tenant lever.
+        # cap has its NEW proofs rejected (fail closed), never evicting any row —
+        # so the global cap stays a generous backstop, not a cross-tenant lever.
         self._max_per_token = max_per_token
         # The live SQLite service shares ONE connection (check_same_thread=False)
         # across ThreadingHTTPServer threads; serialize the multi-statement
@@ -938,7 +1178,7 @@ class SQLiteReplayStore:
         self, *, token_id: str, nonce: str, ts: int, now_unix: int, skew: int
     ) -> bool:
         cutoff = now_unix - skew
-        with self._lock, self._conn:
+        with self._lock, _write_scope(self._conn):
             self._conn.execute(
                 "DELETE FROM pop_replay_nonces WHERE ts < ?", (cutoff,)
             )
@@ -953,25 +1193,18 @@ class SQLiteReplayStore:
                 (token_id,),
             ).fetchone()[0]
             if per_token >= self._max_per_token:
-                # This token is at its own cap: make room by evicting THIS token's
-                # oldest within-window nonce (min ts; rowid tie-break for stable
-                # FIFO). Net-zero on the global count, and it never touches another
-                # token's rows — so the flood can never lock out other tenants.
-                self._conn.execute(
-                    "DELETE FROM pop_replay_nonces WHERE rowid = ("
-                    "  SELECT rowid FROM pop_replay_nonces WHERE token_id = ?"
-                    "  ORDER BY ts ASC, rowid ASC LIMIT 1"
-                    ")",
-                    (token_id,),
-                )
-            else:
-                # Below the per-token cap: a new row would GROW the global count,
-                # so honor the global backstop (fail closed when saturated).
-                count = self._conn.execute(
-                    "SELECT COUNT(*) FROM pop_replay_nonces"
-                ).fetchone()[0]
-                if count >= self._max:
-                    return False  # full of fresh entries -> fail closed
+                # Expired rows were purged above, so this token's cap is full of
+                # still-fresh nonces. NEVER evict a live nonce to make room
+                # (ADR 0007): a dropped fresh nonce would let its captured proof
+                # replay within the window. Fail closed (reject the new proof);
+                # operators can raise the cap. The flood stays self-contained, so
+                # it still cannot lock out other tenants.
+                return False
+            count = self._conn.execute(
+                "SELECT COUNT(*) FROM pop_replay_nonces"
+            ).fetchone()[0]
+            if count >= self._max:
+                return False  # full of fresh entries -> fail closed
             try:
                 self._conn.execute(
                     "INSERT INTO pop_replay_nonces (token_id, nonce, ts) "
@@ -991,7 +1224,7 @@ class SQLiteSubjectTokenRepository:
     def insert(self, token: SubjectToken) -> None:
         if self.get_by_hash(token.token_hash) is not None:
             raise ValueError(f"duplicate subject token_hash: {token.token_hash}")
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO subject_tokens (
@@ -1044,7 +1277,7 @@ class SQLiteSubjectTokenRepository:
         return _subject_token_from_row(row)
 
     def revoke(self, token_id: str, *, now: datetime) -> bool:
-        with self._conn:
+        with _write_scope(self._conn):
             cursor = self._conn.execute(
                 "UPDATE subject_tokens SET revoked_at = ? WHERE token_id = ?",
                 (_datetime_to_storage(now), token_id),
@@ -1073,7 +1306,7 @@ class SQLiteAutoApprovalRuleRepository:
     def add_rule(self, rule: AutoApprovalRule) -> None:
         if self.get_rule(rule.rule_id) is not None:
             raise ValueError(f"duplicate auto-approval rule_id: {rule.rule_id}")
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO auto_approval_rules (
@@ -1119,7 +1352,7 @@ class SQLiteAutoApprovalRuleRepository:
     def update_rule(self, rule: AutoApprovalRule) -> None:
         if self.get_rule(rule.rule_id) is None:
             raise ValueError(f"unknown auto-approval rule_id: {rule.rule_id}")
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 UPDATE auto_approval_rules
@@ -1159,7 +1392,7 @@ class SQLiteAuditWriter:
     def write(self, event: AuditEvent) -> None:
         event_data = event.to_dict()
         event_json = json.dumps(event_data, sort_keys=True)
-        with self._conn:
+        with _write_scope(self._conn):
             head = self._conn.execute(
                 "SELECT seq, row_hash FROM audit_events ORDER BY seq DESC LIMIT 1"
             ).fetchone()
@@ -1200,13 +1433,18 @@ class SQLiteAuditWriter:
                     rh,
                 ),
             )
-        # Post-commit head emission — fail-open: a raising anchor must never
-        # surface into the enforce path or unwind the committed audit row.
-        try:
-            self._anchor.emit(seq, rh, event.created_at.isoformat())
-        except Exception as exc:  # noqa: BLE001 - deliberate fail-open
-            import sys
-            sys.stderr.write(f"vinctor: audit anchor emit raised: {exc}\n")
+        # Emit the external anchor only after the row is DURABLY committed:
+        # inline for a standalone write, deferred to the outermost commit when
+        # this write joined an open transaction — so the anchor never records a
+        # chain head a later rollback removes. Fail-open either way.
+        created = event.created_at.isoformat()
+        self.emit_or_defer(lambda: self._anchor.emit(seq, rh, created))
+
+    def emit_or_defer(self, emission: Callable[[], None]) -> None:
+        """Run a post-commit audit side effect (anchor/export) now, or defer it
+        to this connection's active _atomic_write commit if one is active on this
+        thread (dropped on rollback/commit-failure). Fail-open."""
+        _emit_or_defer(self._conn, emission)
 
     def get(self, event_id: str) -> AuditEvent | None:
         row = self._conn.execute(
@@ -1220,11 +1458,13 @@ class SQLiteAuditWriter:
         return _audit_event_from_json(row[0]) if row is not None else None
 
     def list_all(self) -> list[AuditEvent]:
+        # Order by the tamper-evident chain sequence (baked into row_hash), not
+        # the unprotected SQLite rowid.
         rows = self._conn.execute(
             """
             SELECT event_json
             FROM audit_events
-            ORDER BY rowid
+            ORDER BY seq
             """
         ).fetchall()
         return [_audit_event_from_json(row[0]) for row in rows]
@@ -1234,7 +1474,7 @@ class SQLiteAuditWriter:
             """
             SELECT event_json FROM audit_events
             WHERE workspace_id = '' AND event_type = 'auth_failed'
-            ORDER BY rowid DESC
+            ORDER BY seq DESC
             LIMIT ?
             """,
             (limit,),
@@ -1259,11 +1499,13 @@ class SQLiteAuditWriter:
 
         Mirrors the HTTP/operator Python-side filter EXACTLY (same WHERE
         semantics, same ordering) but lets SQLite do the work: a parameterized
-        ``WHERE workspace_id = ? [AND ...] ORDER BY rowid DESC [LIMIT ?]`` so the
+        ``WHERE workspace_id = ? [AND ...] ORDER BY seq DESC [LIMIT ?]`` so the
         whole table is never materialized into Python. The most-recent ``limit``
-        rows are selected via ``rowid DESC LIMIT`` and then returned oldest-first
+        rows are selected via ``seq DESC LIMIT`` and then returned oldest-first
         within that window, matching the legacy ``[-limit:]`` slice of
-        insertion-ordered events. ``limit=None`` returns every matching row.
+        insertion-ordered events. Ordering is by the tamper-evident chain
+        ``seq`` (hashed into row_hash), not the unprotected rowid.
+        ``limit=None`` returns every matching row.
 
         ``reason_code``/``enforcing_principal``/``identity_proven`` have no
         dedicated columns; they are filtered via ``json_extract`` over the
@@ -1309,7 +1551,7 @@ class SQLiteAuditWriter:
         sql = (
             "SELECT event_json FROM audit_events "
             f"WHERE {' AND '.join(clauses)} "
-            "ORDER BY rowid DESC"
+            "ORDER BY seq DESC"
         )
         if limit is not None:
             sql += " LIMIT ?"
@@ -1320,10 +1562,15 @@ class SQLiteAuditWriter:
         # match the legacy insertion-ordered `[-limit:]` output.
         return tuple(_audit_event_from_json(row[0]) for row in reversed(rows))
 
+    # EVERY materialized audit_events column that mirrors an event_json field —
+    # cross-checked against the canonical JSON during verify_chain so a DB-write
+    # attacker cannot skew what filters/readers see without breaking verification.
+    # MUST stay identical to PostgresAuditWriter._CROSSCHECK_COLUMNS — a parity
+    # test (tests/test_audit_hash_chain_sqlite.py) guards against drift.
     _CROSSCHECK_COLUMNS = (
         "event_id", "event_type", "decision", "reason", "workspace_id", "agent_id",
         "grant_id", "grant_ref", "action", "resource", "scope_attempted",
-        "scope_matched", "boundary_id", "runtime", "boundary_type",
+        "scope_matched", "boundary_id", "runtime", "boundary_type", "created_at",
     )
 
     def verify_chain(self) -> ChainVerification:
@@ -1356,7 +1603,7 @@ class SQLiteAuditWriter:
                 )
             data = json.loads(event_json)
             for name, value in zip(self._CROSSCHECK_COLUMNS, cols, strict=False):
-                if data.get(name) != value:
+                if not crosscheck_values_match(name, data.get(name), value):
                     return ChainVerification(
                         False, len(rows), head_seq, head_hash,
                         break_seq=seq, break_event_id=event_id,
@@ -1398,7 +1645,7 @@ class SQLiteBoundaryRegistry:
         self._conn = conn
 
     def add(self, boundary: Boundary) -> Boundary:
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO boundaries (
@@ -1529,13 +1776,14 @@ class SQLiteV1Service:
         *,
         now: datetime,
     ) -> GrantIssueResult:
-        return issue_grant(
-            request,
-            grant_repository=self.grant_repository,
-            scope_bounds_repository=self.scope_bounds_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _atomic_write(self.conn):
+            return issue_grant(
+                request,
+                grant_repository=self.grant_repository,
+                scope_bounds_repository=self.scope_bounds_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def lookup_grant(self, *, grant_ref: str, workspace_id: str) -> Grant | None:
         return lookup_grant(
@@ -1565,13 +1813,14 @@ class SQLiteV1Service:
         workspace_id: str,
         now: datetime,
     ) -> tuple[Grant, str] | None:
-        return revoke_grant(
-            grant_ref=grant_ref,
-            workspace_id=workspace_id,
-            grant_repository=self.grant_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _atomic_write(self.conn):
+            return revoke_grant(
+                grant_ref=grant_ref,
+                workspace_id=workspace_id,
+                grant_repository=self.grant_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def create_grant_request(
         self,
@@ -1579,25 +1828,27 @@ class SQLiteV1Service:
         *,
         now: datetime,
     ) -> GrantRequestCreateResult:
-        return create_grant_request(
-            request,
-            request_repository=self.grant_request_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _atomic_write(self.conn):
+            return create_grant_request(
+                request,
+                request_repository=self.grant_request_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def mint_subject_token(
         self, *, workspace_id, agent_id, grant_ref, audience, ttl_seconds, now,
         bound_action=None, bound_resource=None, pop=False,
     ):
-        return mint_subject_token(
-            grant_repository=self.grant_repository,
-            subject_token_repository=self.subject_token_repository,
-            audit_writer=self.audit_writer,
-            workspace_id=workspace_id, agent_id=agent_id, grant_ref=grant_ref,
-            audience=audience, ttl_seconds=ttl_seconds, now=now,
-            bound_action=bound_action, bound_resource=bound_resource, pop=pop,
-        )
+        with _atomic_write(self.conn):
+            return mint_subject_token(
+                grant_repository=self.grant_repository,
+                subject_token_repository=self.subject_token_repository,
+                audit_writer=self.audit_writer,
+                workspace_id=workspace_id, agent_id=agent_id, grant_ref=grant_ref,
+                audience=audience, ttl_seconds=ttl_seconds, now=now,
+                bound_action=bound_action, bound_resource=bound_resource, pop=pop,
+            )
 
     def lookup_grant_request(
         self,
@@ -1626,17 +1877,18 @@ class SQLiteV1Service:
         decision_reason: str | None,
         now: datetime,
     ) -> GrantRequestDecisionResult:
-        return approve_grant_request(
-            request_id=request_id,
-            workspace_id=workspace_id,
-            decided_by=decided_by,
-            decision_reason=decision_reason,
-            request_repository=self.grant_request_repository,
-            grant_repository=self.grant_repository,
-            scope_bounds_repository=self.scope_bounds_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _atomic_write(self.conn):
+            return approve_grant_request(
+                request_id=request_id,
+                workspace_id=workspace_id,
+                decided_by=decided_by,
+                decision_reason=decision_reason,
+                request_repository=self.grant_request_repository,
+                grant_repository=self.grant_repository,
+                scope_bounds_repository=self.scope_bounds_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def reject_grant_request(
         self,
@@ -1647,15 +1899,16 @@ class SQLiteV1Service:
         decision_reason: str | None,
         now: datetime,
     ) -> GrantRequestDecisionResult:
-        return reject_grant_request(
-            request_id=request_id,
-            workspace_id=workspace_id,
-            decided_by=decided_by,
-            decision_reason=decision_reason,
-            request_repository=self.grant_request_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _atomic_write(self.conn):
+            return reject_grant_request(
+                request_id=request_id,
+                workspace_id=workspace_id,
+                decided_by=decided_by,
+                decision_reason=decision_reason,
+                request_repository=self.grant_request_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def create_auto_approval_rule(self, rule: AutoApprovalRule) -> AutoApprovalRule:
         return create_auto_approval_rule(
@@ -1703,17 +1956,18 @@ class SQLiteV1Service:
         decided_by: str,
         now: datetime,
     ) -> GrantRequestDecisionResult:
-        return auto_approve_grant_request(
-            request_id=request_id,
-            workspace_id=workspace_id,
-            decided_by=decided_by,
-            request_repository=self.grant_request_repository,
-            rule_repository=self.auto_approval_rule_repository,
-            grant_repository=self.grant_repository,
-            scope_bounds_repository=self.scope_bounds_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _atomic_write(self.conn):
+            return auto_approve_grant_request(
+                request_id=request_id,
+                workspace_id=workspace_id,
+                decided_by=decided_by,
+                request_repository=self.grant_request_repository,
+                rule_repository=self.auto_approval_rule_repository,
+                grant_repository=self.grant_repository,
+                scope_bounds_repository=self.scope_bounds_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     @property
     def audit_events(self) -> tuple[AuditEvent, ...]:
@@ -1804,12 +2058,8 @@ class SQLiteV1Service:
             workspace_id,
         )
 
-    def record_auth_failure(
-        self, *, surface: str, boundary_id: str | None, now: datetime
-    ) -> None:
-        self._auth_failures.record(
-            self.audit_writer, surface=surface, boundary_id=boundary_id, now=now
-        )
+    def record_auth_failure(self, *, surface: str, now: datetime) -> None:
+        self._auth_failures.record(self.audit_writer, surface=surface, now=now)
 
     def enforce(self, request: V1EnforceRequest, *, now: datetime) -> V1EnforceResponse:
         return enforce_v1_contract(
@@ -1844,14 +2094,19 @@ class SQLiteV1Service:
         request: V1DelegatedEnforceRequest,
         *,
         now: datetime,
+        pep_workspace_id: str | None = None,
         pop_skew_seconds: int = DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS,
     ) -> V1EnforceResponse:
+        # ``pep_workspace_id`` is the TRUSTED workspace derived from the
+        # authenticated PEP key (see handle_v1_delegated_enforce_http). Without
+        # it the contract fails closed.
         return delegated_enforce_v1_contract(
             request,
             grant_repository=self.grant_repository,
             now=now,
             audit_writer=self.audit_writer,
             boundary_registry=self.boundary_registry,
+            pep_workspace_id=pep_workspace_id,
             subject_token_repository=self.subject_token_repository,
             agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
             pop_replay_cache=self._pop_replay,

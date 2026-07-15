@@ -16,6 +16,29 @@ The MCP path is operator inspection only:
 MCP client -> vinctor-mcp-server -> vinctor-service
 ```
 
+## Trust boundary
+
+The MCP server authenticates to `vinctor-service` with a **workspace key** — it
+is an **operator-plane** tool, and it discloses authorization detail (grants,
+decisions, and, in `diagnostic` mode, scopes and denial reasons) to the
+connected model **by design**, because its purpose is operator visibility.
+
+Vinctor's no-disclosure property — an *enforced agent* must not learn why it was
+denied, so `enforce()` returns only a coarse reason code — applies to the
+enforcement path, **not** to this operator plane. Keep the two separate:
+
+- The enforced agent holds an **agent key** and reaches Vinctor only through
+  `enforce()`. It has no workspace key and never reaches the MCP server.
+- The operator — and the operator's assistant driving this MCP server — holds a
+  **workspace key**.
+
+Do **not** wire this MCP server into an enforced agent's context, and never give
+an enforced agent a workspace key. Either would let the agent read, through the
+operator plane, the decision detail that `enforce()` deliberately withholds —
+defeating no-disclosure. In a correctly separated deployment the operator and
+the enforced agent are different principals, so this leak path does not exist;
+this boundary is a deployment invariant, not something the server enforces.
+
 ## MVP Scope
 
 The MVP is stdio-only and exposes these tools:

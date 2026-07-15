@@ -3,13 +3,19 @@ from __future__ import annotations
 import os
 import sqlite3
 import sys
+import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from vinctor_service.audit_anchor import AuditAnchor, anchor_from_env, storage_op_line
 from vinctor_service.audit_chain import GENESIS_PREV_HASH
-from vinctor_service.sqlite import SQLiteV1Service, get_sqlite_schema_versions
+from vinctor_service.sqlite import (
+    SQLiteAuditWriter,
+    SQLiteV1Service,
+    get_sqlite_schema_versions,
+)
 
 
 @dataclass(frozen=True)
@@ -130,19 +136,65 @@ def backup_sqlite(
     )
 
 
-def reset_sqlite(db_path: Path, *, anchor: AuditAnchor | None = None) -> ResetResult:
-    """Remove the SQLite database and recreate an empty initialized schema."""
-    _emit_storage_op_trace("reset", db_path, anchor)
-    if db_path.exists():
-        db_path.unlink()
+def _atomic_replace_sqlite(
+    db_path: Path, build: Callable[[Path], tuple[int, ...]]
+) -> tuple[int, ...]:
+    """Populate a fresh database in a sibling temp file and atomically swap it in.
+
+    ``build`` writes the new database to the temp path and returns its schema
+    versions; only after it succeeds and the file is flushed to disk does
+    ``os.replace`` move it over ``db_path`` (an atomic rename on the same
+    filesystem). A crash, a failing build, or a verification failure therefore
+    leaves the existing database untouched rather than destroyed or half-written.
+    """
     db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    conn = sqlite3.connect(db_path)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=db_path.parent, prefix="." + db_path.name + ".", suffix=".tmp"
+    )
+    os.close(fd)
+    tmp_path = Path(tmp_name)
     try:
-        versions = SQLiteV1Service(conn).schema_versions()
-    finally:
-        conn.close()
+        versions = build(tmp_path)
+        flush_fd = os.open(tmp_path, os.O_RDONLY)
+        try:
+            os.fsync(flush_fd)
+        finally:
+            os.close(flush_fd)
+        os.replace(tmp_path, db_path)
+        # fsync the parent directory so the rename itself is durable across a
+        # crash immediately after replace (best-effort: not all platforms allow
+        # fsync on a directory handle).
+        try:
+            dir_fd = os.open(db_path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+        return versions
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
+
+def reset_sqlite(db_path: Path, *, anchor: AuditAnchor | None = None) -> ResetResult:
+    """Recreate an empty initialized schema, swapping it in atomically.
+
+    The empty database is built in a temp file and ``os.replace``d over the
+    target, so an interrupted reset leaves the old database in place rather than
+    no database at all.
+    """
+    _emit_storage_op_trace("reset", db_path, anchor)
+
+    def _build(tmp_path: Path) -> tuple[int, ...]:
+        conn = sqlite3.connect(tmp_path)
+        try:
+            return SQLiteV1Service(conn).schema_versions()
+        finally:
+            conn.close()
+
+    versions = _atomic_replace_sqlite(db_path, _build)
     return ResetResult(db_path=db_path, schema_versions=versions)
 
 
@@ -161,21 +213,38 @@ def restore_sqlite(
     if versions is None:
         raise ValueError(f"input is not a valid Vinctor SQLite snapshot: {input_path}")
 
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    if db_path.exists():
-        db_path.unlink()
-
-    source = sqlite3.connect(input_path)
-    try:
-        dest = sqlite3.connect(db_path)
+    def _build(tmp_path: Path) -> tuple[int, ...]:
+        source = sqlite3.connect(input_path)
         try:
-            source.backup(dest)
+            dest = sqlite3.connect(tmp_path)
+            try:
+                source.backup(dest)
+            finally:
+                dest.close()
         finally:
-            dest.close()
-    finally:
-        source.close()
+            source.close()
+        # Verify the restored copy BEFORE it is allowed to replace the live
+        # database: a readable schema and an intact audit hash-chain, so a
+        # corrupt or tampered snapshot is rejected while the existing database
+        # is still in place (the atomic swap only happens on success).
+        verify_conn = sqlite3.connect(tmp_path)
+        try:
+            restored_versions = get_sqlite_schema_versions(verify_conn)
+            chain = SQLiteAuditWriter(verify_conn).verify_chain()
+        finally:
+            verify_conn.close()
+        if not restored_versions:
+            raise ValueError("restored snapshot has no schema metadata")
+        if not chain.ok:
+            raise ValueError(
+                f"restored snapshot has a broken audit chain at seq {chain.break_seq}"
+            )
+        return restored_versions
 
-    return RestoreResult(db_path=db_path, input_path=input_path, schema_versions=versions)
+    swapped_versions = _atomic_replace_sqlite(db_path, _build)
+    return RestoreResult(
+        db_path=db_path, input_path=input_path, schema_versions=swapped_versions
+    )
 
 
 def migrate_sqlite(db_path: Path, *, anchor: AuditAnchor | None = None) -> MigrateResult:

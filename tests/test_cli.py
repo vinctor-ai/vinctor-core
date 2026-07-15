@@ -131,6 +131,79 @@ def test_vinctor_cli_agent_enforce_json_deny_emits_single_object(tmp_path: Path)
         _stop_service(handle)
 
 
+def test_vinctor_cli_agent_enforce_output_is_no_disclosure(tmp_path: Path) -> None:
+    # Agent-facing no-disclosure: `agent enforce` output (JSON and text) may
+    # carry only the decision, a coarse reason code, and the audit_event_id --
+    # never the grant_id/agent_id or a detailed reason naming the classified
+    # scope or the grant. (The text summary echoing the caller's own --action/
+    # --resource arguments is local input echo, not server disclosure.)
+    from vinctor_service.cli import EXIT_DENIED
+
+    handle = _start_service(tmp_path, scopes=("execute:ci/test",))
+    try:
+        deny_args = [
+            "agent",
+            "enforce",
+            "--grant-ref",
+            handle.grant_ref,
+            "--action",
+            "write",
+            "--resource",
+            "repo/PROBE_TARGET",
+        ]
+
+        json_out, json_err = StringIO(), StringIO()
+        status = run_vinctor(
+            [*_common_args(handle, json_output=True), *deny_args],
+            stdout=json_out,
+            stderr=json_err,
+        )
+        assert status == EXIT_DENIED
+        decision = json.loads(json_out.getvalue())
+        assert set(decision) == {"decision", "error", "reason", "audit_event_id"}
+        assert decision["decision"] == "deny"
+        assert decision["reason"] == "action_denied"
+        for leak in ("grnt_", "PROBE_TARGET"):
+            assert leak not in json_out.getvalue()
+            assert leak not in json_err.getvalue()
+
+        text_out, text_err = StringIO(), StringIO()
+        status = run_vinctor(
+            [*_common_args(handle, json_output=False), *deny_args],
+            stdout=text_out,
+            stderr=text_err,
+        )
+        assert status == EXIT_DENIED
+        assert "error: action_denied" in text_err.getvalue()
+        for stream in (text_out.getvalue(), text_err.getvalue()):
+            assert "grnt_" not in stream
+            assert "ci/test" not in stream  # the grant's scope stays undisclosed
+
+        permit_out, permit_err = StringIO(), StringIO()
+        status = run_vinctor(
+            [
+                *_common_args(handle, json_output=True),
+                "agent",
+                "enforce",
+                "--grant-ref",
+                handle.grant_ref,
+                "--action",
+                "execute",
+                "--resource",
+                "ci/test",
+            ],
+            stdout=permit_out,
+            stderr=permit_err,
+        )
+        assert status == 0
+        permitted = json.loads(permit_out.getvalue())
+        assert set(permitted) == {"decision", "audit_event_id"}
+        assert permitted["decision"] == "permit"
+        assert "grnt_" not in permit_out.getvalue()
+    finally:
+        _stop_service(handle)
+
+
 def test_vinctor_cli_agent_token_mint(tmp_path: Path) -> None:
     handle = _start_service(tmp_path, scopes=("write:repo/feature/*",))
     try:
@@ -461,7 +534,7 @@ def test_vinctor_cli_auth_failures_requires_service_operator_key(tmp_path: Path)
     SQLiteLocalKeyRepository(conn).create_service_operator_key(
         raw_key="sok_demo", now=NOW
     )
-    service.record_auth_failure(surface="enforce", boundary_id=None, now=NOW)
+    service.record_auth_failure(surface="enforce", now=NOW)
     conn.close()
 
     result = _run(
@@ -612,8 +685,8 @@ auto_approval_rules:
         "rules_updated": 0,
         "workspace_id": "ws_demo",
     }
-    assert service_info["schema_versions"] == list(range(1, 13))
-    assert service_info["schema_version"] == 12
+    assert service_info["schema_versions"] == list(range(1, 15))
+    assert service_info["schema_version"] == 14
     assert exported["agent_bounds"] == 1
     assert exported["auto_approval_rules"] == 1
     assert bounds == ("execute:ci/test", "write:repo/vinctor-core/*")
@@ -778,11 +851,11 @@ def test_vinctor_cli_storage_backup_and_reset(tmp_path: Path) -> None:
 
     assert backup["output_path"] == str(backup_path)
     assert backup["bytes"] > 0
-    assert backup["schema_versions"] == list(range(1, 13))
+    assert backup["schema_versions"] == list(range(1, 15))
     assert reset == {
         "db_path": str(db_path),
         "reset": True,
-        "schema_versions": list(range(1, 13)),
+        "schema_versions": list(range(1, 15)),
     }
 
     backup_conn = sqlite3.connect(backup_path)
@@ -854,8 +927,8 @@ def test_vinctor_cli_service_info_reports_schema(tmp_path: Path) -> None:
 
     assert info["mode"] == "local"
     assert info["db_path"] == str(db_path)
-    assert info["schema_version"] == 12
-    assert info["schema_versions"] == list(range(1, 13))
+    assert info["schema_version"] == 14
+    assert info["schema_versions"] == list(range(1, 15))
     assert info["key_storage_mode"] == "sqlite_hashes"
     assert "host" in info
     assert "port" in info
@@ -891,7 +964,7 @@ def test_vinctor_cli_storage_restore_roundtrip(tmp_path: Path) -> None:
         "db_path": str(db_path),
         "input_path": str(backup_path),
         "restored": True,
-        "schema_versions": list(range(1, 13)),
+        "schema_versions": list(range(1, 15)),
     }
     conn = sqlite3.connect(db_path)
     try:
@@ -971,7 +1044,7 @@ def test_vinctor_cli_storage_migrate_reports_versions(tmp_path: Path) -> None:
 
     assert migrate == {
         "db_path": str(db_path),
-        "schema_versions": list(range(1, 13)),
+        "schema_versions": list(range(1, 15)),
     }
     conn = sqlite3.connect(db_path)
     try:
@@ -1383,7 +1456,10 @@ def test_vinctor_cli_operator_grants_revoke_then_enforce_denies(tmp_path: Path) 
         assert status != 0
         decision = json.loads(stdout.getvalue())
         assert decision["decision"] == "deny"
-        assert "is revoked" in decision["reason"]
+        # No-disclosure: the deny reason is the coarse code only; it never names
+        # the grant.
+        assert decision["reason"] == "grant_revoked"
+        assert "grnt_" not in stdout.getvalue()
     finally:
         _stop_service(handle)
 
@@ -1482,10 +1558,10 @@ def _delegated_enforce(db_path: Path, raw: str):
                 grant_ref="grt_seed",
                 action="execute",
                 resource="ci/test",
-                pep_workspace_id="ws_demo",
                 subject_token=raw,
             ),
             now=NOW,
+            pep_workspace_id="ws_demo",
         )
     finally:
         conn.close()

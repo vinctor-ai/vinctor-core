@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sys
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -15,13 +18,19 @@ from vinctor_core import (
 )
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput, Grant
 from vinctor_service.audit import AuthFailureAuditThrottle
-from vinctor_service.audit_anchor import AuditAnchor, NullAnchor
+from vinctor_service.audit_anchor import AuditAnchor, NullAnchor, anchor_from_env
 from vinctor_service.audit_chain import (
     GENESIS_PREV_HASH,
     AnchorRecord,
     AnchorVerification,
     ChainVerification,
+    crosscheck_values_match,
     row_hash,
+)
+from vinctor_service.audit_export import (
+    ExportingAuditWriter,
+    NullExport,
+    audit_export_from_env,
 )
 from vinctor_service.auto_approval import (
     auto_approve_grant_request,
@@ -46,6 +55,7 @@ from vinctor_service.grants import (
     validate_issuable_scope_bounds,
 )
 from vinctor_service.models import (
+    AgentIssuableBounds,
     AutoApprovalEvaluationResult,
     AutoApprovalRule,
     GrantIssueRequest,
@@ -59,6 +69,8 @@ from vinctor_service.models import (
     V1EnforceResponse,
     V1ObserveRequest,
     V1ObserveResponse,
+    V1SimulateRequest,
+    V1SimulateResponse,
 )
 from vinctor_service.observations import record_observation
 from vinctor_service.postgres_control import (
@@ -67,10 +79,43 @@ from vinctor_service.postgres_control import (
     PostgresSubjectTokenRepository,
 )
 from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS
+from vinctor_service.simulations import simulate_v1_contract
 from vinctor_service.subject_tokens import mint_subject_token
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 
 AUDIT_CHAIN_LOCK_ID = 0x56494E43
+# Two-key advisory-lock class for serializing grant-request decisions per
+# request (pg_advisory_xact_lock(classid, key)). Same pattern as the policy
+# apply lock in postgres_policy, in a distinct classid keyspace.
+GRANT_REQUEST_DECISION_LOCK_CLASSID = 0x56475244
+
+
+def _grant_request_decision_lock_key(request_id: str) -> int:
+    """Stable non-negative int4 advisory-lock key derived from the request."""
+    digest = hashlib.sha256(request_id.encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "big") & 0x7FFFFFFF
+
+
+@contextmanager
+def _grant_request_decision_transaction(conn: Any, request_id: str) -> Iterator[None]:
+    """One transaction for a whole grant-request decision, serialized per request.
+
+    Takes a request-scoped ``pg_advisory_xact_lock`` up front so concurrent
+    deciders of the same request queue instead of interleaving; the pending
+    check, the compare-and-set claim, the grant issuance, and the audit rows
+    then commit together or roll back together (the repositories' nested
+    ``transaction()`` scopes become savepoints under this outer transaction).
+    The lock is transaction-scoped and releases at commit/rollback.
+    """
+    with conn.transaction():
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(%s::int4, %s::int4)",
+            (
+                GRANT_REQUEST_DECISION_LOCK_CLASSID,
+                _grant_request_decision_lock_key(request_id),
+            ),
+        )
+        yield
 
 
 def connect_postgres(dsn: str):
@@ -112,6 +157,18 @@ class SerializedPostgresConnection:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._connection, name)
+
+
+def _postgres_column_exists(conn: Any, table_name: str, column_name: str) -> bool:
+    row = conn.execute(
+        """
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = %s AND column_name = %s
+        """,
+        (table_name, column_name),
+    ).fetchone()
+    return row is not None
 
 
 def init_postgres_schema(conn: Any) -> None:
@@ -201,7 +258,9 @@ def init_postgres_schema(conn: Any) -> None:
             require_boundary BOOLEAN NOT NULL DEFAULT FALSE,
             require_boundary_set BOOLEAN NOT NULL DEFAULT FALSE,
             require_subject_token BOOLEAN NOT NULL DEFAULT FALSE,
+            require_subject_token_set BOOLEAN NOT NULL DEFAULT FALSE,
             require_pop BOOLEAN NOT NULL DEFAULT FALSE,
+            require_pop_set BOOLEAN NOT NULL DEFAULT FALSE,
             updated_at TIMESTAMPTZ NOT NULL,
             PRIMARY KEY (workspace_id, agent_id)
         )
@@ -209,6 +268,14 @@ def init_postgres_schema(conn: Any) -> None:
         """
         ALTER TABLE agent_enforcement_settings
         ADD COLUMN IF NOT EXISTS require_boundary_set BOOLEAN NOT NULL DEFAULT TRUE
+        """,
+        """
+        ALTER TABLE agent_enforcement_settings
+        ADD COLUMN IF NOT EXISTS require_subject_token_set BOOLEAN NOT NULL DEFAULT FALSE
+        """,
+        """
+        ALTER TABLE agent_enforcement_settings
+        ADD COLUMN IF NOT EXISTS require_pop_set BOOLEAN NOT NULL DEFAULT FALSE
         """,
         """
         CREATE TABLE IF NOT EXISTS agent_issuable_scope_bounds (
@@ -331,9 +398,51 @@ def init_postgres_schema(conn: Any) -> None:
         """,
     )
     with conn.transaction():
+        subject_token_set_missing = not _postgres_column_exists(
+            conn, "agent_enforcement_settings", "require_subject_token_set"
+        )
+        pop_set_missing = not _postgres_column_exists(
+            conn, "agent_enforcement_settings", "require_pop_set"
+        )
         for statement in statements:
             conn.execute(statement)
-        for version in (1, 2, 3, 4):
+        # Fail closed: a migrated row counts as an explicit setting only where
+        # its value is already TRUE; a FALSE value becomes "unset" and falls
+        # through to the workspace mandate instead of silently exempting the
+        # agent. Runs once, when the column is first added (a fresh database
+        # has no rows yet, so this is a no-op there).
+        if subject_token_set_missing:
+            conn.execute(
+                """
+                UPDATE agent_enforcement_settings
+                SET require_subject_token_set = require_subject_token
+                """
+            )
+        if pop_set_missing:
+            conn.execute(
+                "UPDATE agent_enforcement_settings SET require_pop_set = require_pop"
+            )
+        # One-time, version-gated realignment (schema version 5). The original
+        # require_boundary_set migration defaulted migrated rows to TRUE, so a
+        # row that only ever carried require_subject_token / require_pop read
+        # as an explicit require_boundary=false override, silently exempting
+        # the agent from a workspace-wide boundary mandate. Fail closed: mark
+        # boundary "set" only where require_boundary is already TRUE. Gated on
+        # the version record (this UPDATE is not idempotent by itself) so an
+        # explicit exemption written after the upgrade is never clobbered by a
+        # later init.
+        realignment_applied = conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = %s",
+            (5,),
+        ).fetchone()
+        if realignment_applied is None:
+            conn.execute(
+                """
+                UPDATE agent_enforcement_settings
+                SET require_boundary_set = require_boundary
+                """
+            )
+        for version in (1, 2, 3, 4, 5):
             conn.execute(
                 """
                 INSERT INTO schema_migrations (version, applied_at)
@@ -452,6 +561,24 @@ class PostgresAgentIssuableScopeBoundsRepository:
                 (workspace_id, agent_id),
             ).fetchone()
         return row[0] if row is not None else None
+
+    def get_bounds_with_max_ttl(
+        self, *, workspace_id: str, agent_id: str
+    ) -> AgentIssuableBounds | None:
+        # Single-row read: scopes and max TTL come from one consistent snapshot
+        # of the bounds row (no torn read across a concurrent set_bounds).
+        with self._conn.transaction():
+            row = self._conn.execute(
+                """
+                SELECT scopes_json, max_ttl_seconds FROM agent_issuable_scope_bounds
+                WHERE workspace_id = %s AND agent_id = %s
+                """,
+                (workspace_id, agent_id),
+            ).fetchone()
+        if row is None:
+            return None
+        scopes = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+        return AgentIssuableBounds(scopes=tuple(scopes), max_ttl_seconds=row[1])
 
     def list_bounds_for_workspace(self, workspace_id: str) -> ScopeBoundsListing:
         with self._conn.transaction():
@@ -639,7 +766,16 @@ class PostgresBoundaryRegistry:
 
 
 class PostgresAgentEnforcementSettingsRepository:
-    _COLUMNS = {"require_boundary", "require_subject_token", "require_pop"}
+    # Maps each enforcement setting column to the presence bit that records
+    # whether the setting was explicitly written for the row. Rows are shared
+    # between the three settings, so "a row exists" must never be read as "the
+    # agent explicitly set this mandate".
+    _PRESENCE = {
+        "require_boundary": "require_boundary_set",
+        "require_subject_token": "require_subject_token_set",
+        "require_pop": "require_pop_set",
+    }
+    _COLUMNS = frozenset(_PRESENCE)
 
     def __init__(self, conn: Any) -> None:
         self._conn = conn
@@ -647,12 +783,12 @@ class PostgresAgentEnforcementSettingsRepository:
     def _get(self, column: str, *, workspace_id: str, agent_id: str) -> bool | None:
         if column not in self._COLUMNS:
             raise ValueError("unknown enforcement setting")
-        presence = " AND require_boundary_set" if column == "require_boundary" else ""
+        presence = self._PRESENCE[column]
         with self._conn.transaction():
             row = self._conn.execute(
                 f"""
                 SELECT {column} FROM agent_enforcement_settings
-                WHERE workspace_id = %s AND agent_id = %s{presence}
+                WHERE workspace_id = %s AND agent_id = %s AND {presence}
                 """,
                 (workspace_id, agent_id),
             ).fetchone()
@@ -676,30 +812,25 @@ class PostgresAgentEnforcementSettingsRepository:
     ) -> None:
         if column not in self._COLUMNS:
             raise ValueError("unknown enforcement setting")
-        if column == "require_boundary":
-            with self._conn.transaction():
-                self._conn.execute(
-                    """
-                    INSERT INTO agent_enforcement_settings (
-                        workspace_id, agent_id, require_boundary,
-                        require_boundary_set, updated_at
-                    ) VALUES (%s, %s, %s, TRUE, %s)
-                    ON CONFLICT (workspace_id, agent_id) DO UPDATE SET
-                        require_boundary = EXCLUDED.require_boundary,
-                        require_boundary_set = TRUE,
-                        updated_at = EXCLUDED.updated_at
-                    """,
-                    (workspace_id, agent_id, value, now),
-                )
-            return
+        presence = self._PRESENCE[column]
+        # On INSERT every presence bit is written explicitly (its own = TRUE,
+        # the other two = FALSE): an ALTER-time column default is baked into
+        # each migrated database, so relying on defaults for the un-set bits
+        # is unsafe. On conflict only this setting's value and presence bit
+        # are touched, preserving the other two.
+        other_bits = ", ".join(
+            bit for name, bit in self._PRESENCE.items() if name != column
+        )
         with self._conn.transaction():
             self._conn.execute(
                 f"""
                 INSERT INTO agent_enforcement_settings (
-                    workspace_id, agent_id, {column}, updated_at
-                ) VALUES (%s, %s, %s, %s)
+                    workspace_id, agent_id, {column},
+                    {presence}, {other_bits}, updated_at
+                ) VALUES (%s, %s, %s, TRUE, FALSE, FALSE, %s)
                 ON CONFLICT (workspace_id, agent_id) DO UPDATE SET
                     {column} = EXCLUDED.{column},
+                    {presence} = TRUE,
                     updated_at = EXCLUDED.updated_at
                 """,
                 (workspace_id, agent_id, value, now),
@@ -853,12 +984,23 @@ class PostgresAuditWriter:
 
     # Materialized columns cross-checked against event_json during verification.
     # MUST stay identical to SQLiteAuditWriter._CROSSCHECK_COLUMNS — a parity test
-    # (tests/test_postgres_storage.py) guards against drift so both backends detect
-    # the same tampering.
+    # (tests/test_audit_hash_chain_sqlite.py) guards against drift so both backends
+    # detect the same tampering.
     _CROSSCHECK_COLUMNS = (
         "event_id", "event_type", "decision", "reason", "workspace_id", "agent_id",
         "grant_id", "grant_ref", "action", "resource", "scope_attempted",
-        "scope_matched", "boundary_id", "runtime", "boundary_type",
+        "scope_matched", "boundary_id", "runtime", "boundary_type", "created_at",
+    )
+
+    # Postgres additionally materializes these event_json fields as dedicated
+    # columns that list_filtered reads directly (SQLite keeps them JSON-only and
+    # filters via json_extract, so it has no such columns to tamper with). Every
+    # one of them is cross-checked too: an attacker who edits e.g. reason_code or
+    # identity_proven without touching the hashed event_json must not pass
+    # verification. Guarded by tests/test_audit_hash_chain_sqlite.py.
+    _PG_ONLY_CROSSCHECK_COLUMNS = (
+        "enforcing_principal", "reason_code", "occurrence_count",
+        "first_seen_at", "last_seen_at", "identity_proven", "token_id",
     )
 
     def verify_chain(self) -> ChainVerification:
@@ -867,10 +1009,11 @@ class PostgresAuditWriter:
         # stored TEXT, so it hashes identically), and event_json vs materialized
         # columns. A write-access forger who recomputes the chain still passes
         # (plain SHA-256) — that gap is tracked separately (audit HMAC design).
+        crosscheck_columns = self._CROSSCHECK_COLUMNS + self._PG_ONLY_CROSSCHECK_COLUMNS
         with self._conn.transaction():
             rows = self._conn.execute(
                 "SELECT seq, prev_hash, row_hash, event_json, "
-                + ", ".join(self._CROSSCHECK_COLUMNS)
+                + ", ".join(crosscheck_columns)
                 + " FROM audit_events ORDER BY seq"
             ).fetchall()
         prev = GENESIS_PREV_HASH
@@ -896,8 +1039,8 @@ class PostgresAuditWriter:
                     break_seq=seq, break_event_id=event_id, break_kind="modified",
                 )
             data = json.loads(event_json)
-            for name, value in zip(self._CROSSCHECK_COLUMNS, cols, strict=False):
-                if data.get(name) != value:
+            for name, value in zip(crosscheck_columns, cols, strict=False):
+                if not crosscheck_values_match(name, data.get(name), value):
                     return ChainVerification(
                         False, len(rows), head_seq, head_hash,
                         break_seq=seq, break_event_id=event_id,
@@ -947,6 +1090,22 @@ class PostgresAuditWriter:
                 "SELECT event_json FROM audit_events ORDER BY seq"
             ).fetchall()
         return [_audit_event_from_json(row[0]) for row in rows]
+
+    def list_auth_failures(self, *, limit: int) -> tuple[AuditEvent, ...]:
+        # Pre-auth auth failures are recorded under the empty workspace; order
+        # by the monotonic chain seq (Postgres has no rowid) and return oldest
+        # first, mirroring the SQLite reader.
+        with self._conn.transaction():
+            rows = self._conn.execute(
+                """
+                SELECT event_json FROM audit_events
+                WHERE workspace_id = '' AND event_type = 'auth_failed'
+                ORDER BY seq DESC
+                LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+        return tuple(_audit_event_from_json(row[0]) for row in reversed(rows))
 
     def list_filtered(
         self,
@@ -1000,7 +1159,15 @@ class PostgresV1Service:
         if initialize_schema:
             init_postgres_schema(conn)
         self.grant_repository = PostgresGrantRepository(conn)
-        self.audit_writer = PostgresAuditWriter(conn)
+        self.audit_writer = PostgresAuditWriter(
+            conn, anchor=anchor_from_env(dict(os.environ))
+        )
+        # Opt-in SIEM/OTel export (VINCTOR_AUDIT_EXPORT): mirror SQLite — when set,
+        # wrap the durable writer so each persisted event is ALSO streamed,
+        # fail-open, after the write. Off (NullExport) leaves the writer as-is.
+        export = audit_export_from_env(dict(os.environ))
+        if not isinstance(export, NullExport):
+            self.audit_writer = ExportingAuditWriter(self.audit_writer, export)
         self.boundary_registry = PostgresBoundaryRegistry(conn)
         self.scope_bounds_repository = PostgresAgentIssuableScopeBoundsRepository(conn)
         self.grant_request_repository = PostgresGrantRequestRepository(conn)
@@ -1022,19 +1189,24 @@ class PostgresV1Service:
     def list_filtered(self, workspace_id: str, **filters: Any) -> tuple[AuditEvent, ...]:
         return self.audit_writer.list_filtered(workspace_id, **filters)
 
+    def list_auth_failures(self, *, limit: int) -> tuple[AuditEvent, ...]:
+        return self.audit_writer.list_auth_failures(limit=limit)
+
     def insert_grant(self, grant: Grant) -> None:
         self.grant_repository.insert(grant)
 
     def issue_grant(
         self, request: GrantIssueRequest, *, now: datetime,
     ) -> GrantIssueResult:
-        return issue_grant(
-            request,
-            grant_repository=self.grant_repository,
-            scope_bounds_repository=self.scope_bounds_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        # State change and its audit row commit together (or not at all).
+        with self.conn.transaction():
+            return issue_grant(
+                request,
+                grant_repository=self.grant_repository,
+                scope_bounds_repository=self.scope_bounds_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def lookup_grant(self, *, grant_ref: str, workspace_id: str) -> Grant | None:
         return lookup_grant(
@@ -1057,13 +1229,14 @@ class PostgresV1Service:
     def revoke_grant(
         self, *, grant_ref: str, workspace_id: str, now: datetime,
     ) -> tuple[Grant, str] | None:
-        return revoke_grant(
-            grant_ref=grant_ref,
-            workspace_id=workspace_id,
-            grant_repository=self.grant_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with self.conn.transaction():
+            return revoke_grant(
+                grant_ref=grant_ref,
+                workspace_id=workspace_id,
+                grant_repository=self.grant_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def set_agent_issuable_scope_bounds(
         self,
@@ -1085,12 +1258,13 @@ class PostgresV1Service:
     def create_grant_request(
         self, request: GrantRequestCreateRequest, *, now: datetime,
     ) -> GrantRequestCreateResult:
-        return create_grant_request(
-            request,
-            request_repository=self.grant_request_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with self.conn.transaction():
+            return create_grant_request(
+                request,
+                request_repository=self.grant_request_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def lookup_grant_request(
         self, *, request_id: str, workspace_id: str,
@@ -1111,50 +1285,53 @@ class PostgresV1Service:
         self, *, request_id: str, workspace_id: str, decided_by: str,
         decision_reason: str | None, now: datetime,
     ) -> GrantRequestDecisionResult:
-        return approve_grant_request(
-            request_id=request_id,
-            workspace_id=workspace_id,
-            decided_by=decided_by,
-            decision_reason=decision_reason,
-            request_repository=self.grant_request_repository,
-            grant_repository=self.grant_repository,
-            scope_bounds_repository=self.scope_bounds_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _grant_request_decision_transaction(self.conn, request_id):
+            return approve_grant_request(
+                request_id=request_id,
+                workspace_id=workspace_id,
+                decided_by=decided_by,
+                decision_reason=decision_reason,
+                request_repository=self.grant_request_repository,
+                grant_repository=self.grant_repository,
+                scope_bounds_repository=self.scope_bounds_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def reject_grant_request(
         self, *, request_id: str, workspace_id: str, decided_by: str,
         decision_reason: str | None, now: datetime,
     ) -> GrantRequestDecisionResult:
-        return reject_grant_request(
-            request_id=request_id,
-            workspace_id=workspace_id,
-            decided_by=decided_by,
-            decision_reason=decision_reason,
-            request_repository=self.grant_request_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _grant_request_decision_transaction(self.conn, request_id):
+            return reject_grant_request(
+                request_id=request_id,
+                workspace_id=workspace_id,
+                decided_by=decided_by,
+                decision_reason=decision_reason,
+                request_repository=self.grant_request_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def mint_subject_token(
         self, *, workspace_id, agent_id, grant_ref, audience, ttl_seconds, now,
         bound_action=None, bound_resource=None, pop=False,
     ):
-        return mint_subject_token(
-            grant_repository=self.grant_repository,
-            subject_token_repository=self.subject_token_repository,
-            audit_writer=self.audit_writer,
-            workspace_id=workspace_id,
-            agent_id=agent_id,
-            grant_ref=grant_ref,
-            audience=audience,
-            ttl_seconds=ttl_seconds,
-            now=now,
-            bound_action=bound_action,
-            bound_resource=bound_resource,
-            pop=pop,
-        )
+        with self.conn.transaction():
+            return mint_subject_token(
+                grant_repository=self.grant_repository,
+                subject_token_repository=self.subject_token_repository,
+                audit_writer=self.audit_writer,
+                workspace_id=workspace_id,
+                agent_id=agent_id,
+                grant_ref=grant_ref,
+                audience=audience,
+                ttl_seconds=ttl_seconds,
+                now=now,
+                bound_action=bound_action,
+                bound_resource=bound_resource,
+                pop=pop,
+            )
 
     def create_auto_approval_rule(self, rule: AutoApprovalRule) -> AutoApprovalRule:
         return create_auto_approval_rule(
@@ -1193,17 +1370,18 @@ class PostgresV1Service:
         self, *, request_id: str, workspace_id: str, decided_by: str,
         now: datetime,
     ) -> GrantRequestDecisionResult:
-        return auto_approve_grant_request(
-            request_id=request_id,
-            workspace_id=workspace_id,
-            decided_by=decided_by,
-            request_repository=self.grant_request_repository,
-            rule_repository=self.auto_approval_rule_repository,
-            grant_repository=self.grant_repository,
-            scope_bounds_repository=self.scope_bounds_repository,
-            audit_writer=self.audit_writer,
-            now=now,
-        )
+        with _grant_request_decision_transaction(self.conn, request_id):
+            return auto_approve_grant_request(
+                request_id=request_id,
+                workspace_id=workspace_id,
+                decided_by=decided_by,
+                request_repository=self.grant_request_repository,
+                rule_repository=self.auto_approval_rule_repository,
+                grant_repository=self.grant_repository,
+                scope_bounds_repository=self.scope_bounds_repository,
+                audit_writer=self.audit_writer,
+                now=now,
+            )
 
     def register_boundary(
         self, registration: BoundaryRegistrationInput, *,
@@ -1248,18 +1426,21 @@ class PostgresV1Service:
             workspace_id,
         )
 
-    def record_auth_failure(
-        self, *, surface: str, boundary_id: str | None, now: datetime
-    ) -> None:
-        self._auth_failures.record(
-            self.audit_writer,
-            surface=surface,
-            boundary_id=boundary_id,
-            now=now,
-        )
+    def record_auth_failure(self, *, surface: str, now: datetime) -> None:
+        self._auth_failures.record(self.audit_writer, surface=surface, now=now)
 
     def enforce(self, request: V1EnforceRequest, *, now: datetime) -> V1EnforceResponse:
         return enforce_v1_contract(
+            request,
+            grant_repository=self.grant_repository,
+            now=now,
+            audit_writer=self.audit_writer,
+            boundary_registry=self.boundary_registry,
+            agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
+        )
+
+    def simulate(self, request: V1SimulateRequest, *, now: datetime) -> V1SimulateResponse:
+        return simulate_v1_contract(
             request,
             grant_repository=self.grant_repository,
             now=now,
@@ -1278,14 +1459,19 @@ class PostgresV1Service:
 
     def delegated_enforce(
         self, request: V1DelegatedEnforceRequest, *, now: datetime,
+        pep_workspace_id: str | None = None,
         pop_skew_seconds: int = DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS,
     ) -> V1EnforceResponse:
+        # ``pep_workspace_id`` is the TRUSTED workspace derived from the
+        # authenticated PEP key (see handle_v1_delegated_enforce_http). Without
+        # it the contract fails closed.
         return delegated_enforce_v1_contract(
             request,
             grant_repository=self.grant_repository,
             now=now,
             audit_writer=self.audit_writer,
             boundary_registry=self.boundary_registry,
+            pep_workspace_id=pep_workspace_id,
             subject_token_repository=self.subject_token_repository,
             agent_enforcement_settings_repository=self.agent_enforcement_settings_repository,
             pop_replay_cache=self._pop_replay,

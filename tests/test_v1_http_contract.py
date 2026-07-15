@@ -66,13 +66,16 @@ def test_v1_http_permit_response_matches_contract() -> None:
     response = call(svc)
 
     assert response.status_code == 200
+    # No-disclosure: the agent-facing body carries the decision and the audit
+    # pointer only; grant/agent identifiers and the matched scope stay in the
+    # operator audit event.
     assert response.body == {
         "decision": "permit",
-        "grant_id": "grnt_main",
-        "agent_id": "agent_release",
-        "scope_matched": "write:repo/feature/*",
         "audit_event_id": svc.audit_events[0].event_id,
     }
+    assert svc.audit_events[0].grant_id == "grnt_main"
+    assert svc.audit_events[0].agent_id == "agent_release"
+    assert svc.audit_events[0].scope_matched == "write:repo/feature/*"
 
 
 def test_v1_http_deny_response_matches_contract() -> None:

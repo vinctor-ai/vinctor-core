@@ -76,7 +76,7 @@ def main() -> None:
             boundary_registry=registry,
         )
         assert inactive.status_code == 403
-        assert inactive.error == "boundary_inactive"
+        assert inactive.error == "boundary_unavailable"
 
         missing = enforce_v1_contract(
             _request(boundary_id="bnd_missing"),
@@ -86,7 +86,7 @@ def main() -> None:
             boundary_registry=registry,
         )
         assert missing.status_code == 403
-        assert missing.error == "boundary_not_found"
+        assert missing.error == "boundary_unavailable"
         assert _audit_boundary(conn, missing.audit_event_id or "") == (
             "bnd_missing",
             None,

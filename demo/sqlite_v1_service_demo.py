@@ -65,7 +65,7 @@ def main() -> None:
         )
         inactive = service.enforce(_request(boundary_id=boundary.boundary_id), now=now)
         assert inactive.status_code == 403
-        assert inactive.error == "boundary_inactive"
+        assert inactive.error == "boundary_unavailable"
         assert _audit_count(conn) == 4
 
         conn.close()

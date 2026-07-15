@@ -213,10 +213,13 @@ def test_local_http_service_permits_v1_enforce_request() -> None:
 
     assert status == 200
     assert response["decision"] == "permit"
-    assert response["grant_id"] == "grnt_main"
-    assert response["agent_id"] == "agent_release"
-    assert response["scope_matched"] == "write:repo/feature/*"
+    # No-disclosure: grant/agent identifiers and the matched scope are recorded
+    # in the operator audit, never in the agent-facing response body.
+    assert set(response) == {"decision", "audit_event_id"}
     assert len(svc.audit_events) == 1
+    assert svc.audit_events[0].grant_id == "grnt_main"
+    assert svc.audit_events[0].agent_id == "agent_release"
+    assert svc.audit_events[0].scope_matched == "write:repo/feature/*"
 
 
 def test_local_http_service_simulates_deny_without_returning_forbidden() -> None:
@@ -497,7 +500,7 @@ def test_local_http_service_creates_boundary_then_enforces_with_it() -> None:
     assert disable_status == 200
     assert disabled["status"] == "disabled"
     assert disabled_enforce_status == 403
-    assert disabled_enforce["error"] == "boundary_inactive"
+    assert disabled_enforce["error"] == "boundary_unavailable"
     assert enable_status == 200
     assert enabled["status"] == "active"
     assert enforce_status == 200

@@ -6,6 +6,7 @@ from datetime import datetime
 from vinctor_core.audit import (
     REASON_AGENT_GRANT_MISMATCH,
     AuditEventInput,
+    agent_facing_reason,
     build_audit_event,
     build_rejection_audit_event,
 )
@@ -61,7 +62,6 @@ def simulate_v1_contract(
             would_decision="deny",
             error="forbidden",
             reason=_GRANT_FORBIDDEN_MESSAGE,
-            agent_id=request.agent_id,
             audit_event_id=event.event_id,
         )
 
@@ -102,14 +102,17 @@ def simulate_v1_contract(
             "audit write failed; no simulation was recorded",
         )
 
+    # No-disclosure: like enforce, the agent-facing simulate response carries
+    # only the would-decision, coarse reason codes, and the audit_event_id; the
+    # grant/scope detail stays in the operator-only audit event written above.
+    agent_reason = None if decision.decision == "permit" else agent_facing_reason(
+        decision.reason
+    )
     return V1SimulateResponse(
         status_code=200,
         would_decision=decision.decision,
-        error=None if decision.decision == "permit" else decision.reason,
-        reason=None if decision.decision == "permit" else decision.reason,
-        grant_id=decision.grant_id,
-        agent_id=decision.agent_id,
-        scope_matched=decision.scope_matched,
+        error=agent_reason,
+        reason=agent_reason,
         audit_event_id=event.event_id,
     )
 

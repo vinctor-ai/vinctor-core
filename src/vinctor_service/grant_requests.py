@@ -94,12 +94,31 @@ def approve_grant_request(
     if grant_request.status != "pending":
         return GrantRequestDecisionResult(status="failed", reason="grant_request_not_pending")
 
+    # Claim the decision BEFORE issuing anything: the compare-and-set below
+    # transitions pending -> approved carrying the grant ref the request will
+    # reference, so a concurrent decider loses the race here — while no grant
+    # exists yet — and can never leave an orphaned live grant behind. The
+    # storage services additionally run this whole function inside one
+    # serialized transaction, so the claim, the issued grant, and the audit
+    # rows commit together or not at all.
+    updated = replace(
+        grant_request,
+        status="approved",
+        decided_at=now,
+        decided_by=decided_by,
+        decision_reason=decision_reason,
+        issued_grant_ref=_new_id("grt"),
+    )
+    if not request_repository.decide_request(updated):
+        return GrantRequestDecisionResult(status="failed", reason="grant_request_not_pending")
+
     issued = issue_grant(
         GrantIssueRequest(
             workspace_id=grant_request.workspace_id,
             target_agent_id=grant_request.target_agent_id,
             requested_scopes=grant_request.requested_scopes,
             ttl_seconds=grant_request.requested_ttl_seconds,
+            grant_ref=updated.issued_grant_ref,
         ),
         grant_repository=grant_repository,
         scope_bounds_repository=scope_bounds_repository,
@@ -107,17 +126,11 @@ def approve_grant_request(
         now=now,
     )
     if issued.status == "rejected" or issued.grant is None:
+        # Issuance was refused (bounds/TTL validation): release the claim so
+        # the request stays pending, exactly as before this decision started.
+        request_repository.update_request(grant_request)
         return GrantRequestDecisionResult(status="failed", reason=issued.reason)
 
-    updated = replace(
-        grant_request,
-        status="approved",
-        decided_at=now,
-        decided_by=decided_by,
-        decision_reason=decision_reason,
-        issued_grant_ref=issued.grant.grant_ref,
-    )
-    request_repository.update_request(updated)
     audit_event = _request_decision_event(
         event_type=audit_event_type,
         reason=audit_reason,
@@ -163,7 +176,10 @@ def reject_grant_request(
         decided_by=decided_by,
         decision_reason=decision_reason,
     )
-    request_repository.update_request(updated)
+    # Compare-and-set on status='pending': a decider that raced us in wins and
+    # this rejection reports already-decided instead of clobbering it.
+    if not request_repository.decide_request(updated):
+        return GrantRequestDecisionResult(status="failed", reason="grant_request_not_pending")
     audit_event = _request_lifecycle_event(
         event_type="grant_request_rejected",
         decision="deny",

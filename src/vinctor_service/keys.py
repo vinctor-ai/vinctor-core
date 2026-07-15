@@ -2,13 +2,34 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from secrets import token_urlsafe
 from typing import Literal
 
 from vinctor_service.boundary_http import WorkspaceIdentity
+from vinctor_service.sqlite_txn import conn_txn_lock
 from vinctor_service.v1_http import AgentIdentity, PepIdentity
+
+
+@contextmanager
+def _key_write_scope(conn: sqlite3.Connection) -> Iterator[None]:
+    """Join an already-open transaction, else run as a standalone commit.
+
+    Lets a single write participate in an outer unit of work (e.g. an atomic
+    key rotation) instead of committing on its own, while direct callers keep
+    their previous self-committing behavior. Runs under the SAME shared
+    per-connection lock as sqlite._write_scope, so key writes serialize with the
+    service's other writes on one connection.
+    """
+    with conn_txn_lock(conn):
+        if conn.in_transaction:
+            yield
+        else:
+            with conn:
+                yield
 
 KeyType = Literal[
     "workspace", "auditor", "service_operator", "agent", "resource_server"
@@ -45,6 +66,39 @@ class CreatedLocalKey:
 class SQLiteLocalKeyRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """One serialized unit of work for a multi-write key operation.
+
+        BEGIN IMMEDIATE takes the write lock up front (serializing rotations
+        across connections/processes); create/revoke join it via
+        _key_write_scope, so a new key and the revocation of its predecessors
+        commit together or not at all. Rotation must OWN this transaction so the
+        plaintext key is returned only after a real commit.
+
+        The connection lock is taken FIRST: a concurrent rotation or service
+        mutation on another thread therefore WAITS here instead of being mistaken
+        for caller nesting. Once the lock is held, ``in_transaction`` reflects
+        only this thread's state, so a True value means this thread's caller
+        already owns a transaction (nesting) — which rotation rejects, since
+        joining it would return the plaintext before the caller's commit and drop
+        the key on rollback.
+        """
+        with conn_txn_lock(self._conn):
+            if self._conn.in_transaction:
+                raise RuntimeError(
+                    "key rotation cannot run inside an open transaction; it must "
+                    "own its transaction so the plaintext is returned only after "
+                    "commit"
+                )
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except BaseException:
+                self._conn.rollback()
+                raise
+            self._conn.commit()
 
     def create_workspace_key(
         self,
@@ -241,7 +295,7 @@ class SQLiteLocalKeyRepository:
             return record
 
         used_at = now or datetime.now(UTC)
-        with self._conn:
+        with _key_write_scope(self._conn):
             self._conn.execute(
                 """
                 UPDATE local_keys
@@ -343,7 +397,7 @@ class SQLiteLocalKeyRepository:
             return record
 
         revoked_at = now or datetime.now(UTC)
-        with self._conn:
+        with _key_write_scope(self._conn):
             self._conn.execute(
                 """
                 UPDATE local_keys
@@ -411,7 +465,7 @@ class SQLiteLocalKeyRepository:
             status="active",
             created_at=timestamp,
         )
-        with self._conn:
+        with _key_write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO local_keys (

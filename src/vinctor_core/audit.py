@@ -63,6 +63,29 @@ REASON_SUBJECT_TOKEN_INVALID = "subject_token_invalid"
 REASON_SUBJECT_TOKEN_REQUIRED = "subject_token_required"
 REASON_POP_REQUIRED = "pop_required"
 
+# The core distinguishes a boundary that is absent, one that belongs to a
+# different workspace, and one that is disabled. That distinction is an
+# existence oracle: an agent could enumerate which boundary ids exist — e.g. in
+# another tenant's workspace — from the deny reason. Collapse all three to one
+# coarse agent-facing code; the precise reason is retained in the operator audit.
+REASON_BOUNDARY_UNAVAILABLE = "boundary_unavailable"
+_BOUNDARY_EXISTENCE_REASONS = frozenset(
+    {"boundary_not_found", "boundary_wrong_workspace", "boundary_inactive"}
+)
+
+
+def agent_facing_reason(reason: str) -> str:
+    """Coarsen a deny reason for an agent-facing response.
+
+    Collapses the boundary existence/state reasons to a single code so the
+    response cannot be used to enumerate boundary ids; every other reason passes
+    through unchanged. Never call this when building the operator audit event —
+    the audit must keep the precise reason.
+    """
+    if reason in _BOUNDARY_EXISTENCE_REASONS:
+        return REASON_BOUNDARY_UNAVAILABLE
+    return reason
+
 
 def build_rejection_audit_event(
     *,

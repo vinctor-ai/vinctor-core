@@ -9,6 +9,7 @@ from vinctor_core.audit import (
     REASON_SUBJECT_TOKEN_INVALID,
     REASON_SUBJECT_TOKEN_REQUIRED,
     AuditEventInput,
+    agent_facing_reason,
     build_audit_event,
     build_rejection_audit_event,
 )
@@ -126,11 +127,12 @@ def delegated_enforce_v1_contract(
     enforcing PEP principal is recorded separately from the subject ``agent_id``
     in the audit trail.
     """
-    # Trusted workspace comes ONLY from authenticated sources (the key-derived
-    # identity forwarded by the HTTP handler, or an explicit trusted override).
-    # We never fall back to request.workspace_id, which is caller-asserted and
-    # could otherwise be used to authorize a grant in an arbitrary workspace.
-    trusted_ws = pep_workspace_id or request.pep_workspace_id
+    # Trusted workspace comes ONLY from the authenticated ``pep_workspace_id``
+    # ARGUMENT (key-derived, supplied by the auth layer / service wiring). It
+    # is never read from the request DTO: every request field is
+    # caller-asserted, and falling back to one would let a direct/library
+    # caller self-assert a workspace and authorize a grant in any tenant.
+    trusted_ws = pep_workspace_id
     if not trusted_ws:
         # Fail closed: without a trusted PEP workspace identity we cannot
         # establish tenant isolation. Deny before any audit event is written
@@ -453,23 +455,24 @@ def _response_from_decision(
     decision: DecisionResult,
     audit_event: AuditEvent,
 ) -> V1EnforceResponse:
+    # No-disclosure (Codex release-blocker 2026-07): the agent-facing response
+    # carries ONLY the decision, the coarse low-cardinality reason code, and the
+    # audit_event_id. The detail (grant_id/grant_ref, classified action/resource,
+    # scope_attempted/scope_matched) lives in the operator-only audit event
+    # written above — never in the response an agent can read directly.
     if decision.decision == "permit":
         return V1EnforceResponse(
             status_code=200,
             decision="permit",
-            grant_id=decision.grant_id,
-            agent_id=decision.agent_id,
-            scope_matched=decision.scope_matched,
             audit_event_id=audit_event.event_id,
         )
 
+    agent_reason = agent_facing_reason(decision.reason)
     return V1EnforceResponse(
         status_code=403,
         decision="deny",
-        error=decision.reason,
-        reason=_deny_reason(decision),
-        grant_id=decision.grant_id,
-        agent_id=decision.agent_id,
+        error=agent_reason,
+        reason=agent_reason,
         audit_event_id=audit_event.event_id,
     )
 
@@ -517,18 +520,3 @@ def _invalid_action_reason(action: str) -> str:
             "action 'push' is not a recognized v1 action verb; use 'write' for git push operations"
         )
     return f"action '{action}' is not a recognized v1 action verb"
-
-
-def _deny_reason(decision: DecisionResult) -> str:
-    if decision.reason == "action_denied":
-        return f"scope {decision.scope_attempted} is not covered by grant {decision.grant_id}"
-    if decision.reason == "grant_revoked":
-        return f"grant {decision.grant_id} is revoked"
-    if decision.reason == "grant_expired":
-        return f"grant {decision.grant_id} is expired"
-    if decision.reason == "grant_not_active":
-        return f"grant {decision.grant_id} is not active"
-    if decision.reason.startswith("boundary_"):
-        boundary_id = decision.attempted_boundary_id or "unknown"
-        return f"boundary {boundary_id} could not be used for this enforce request"
-    return decision.reason
