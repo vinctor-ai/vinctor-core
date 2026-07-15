@@ -749,7 +749,7 @@ def _atomic_write(conn: sqlite3.Connection) -> Iterator[None]:
         if conn.in_transaction:
             yield
             return
-        with atomic_write_deferral():
+        with atomic_write_deferral(conn):
             conn.execute("BEGIN IMMEDIATE")
             try:
                 yield
@@ -1254,7 +1254,7 @@ class SQLiteSubjectTokenRepository:
         return _subject_token_from_row(row)
 
     def revoke(self, token_id: str, *, now: datetime) -> bool:
-        with self._conn:
+        with _write_scope(self._conn):
             cursor = self._conn.execute(
                 "UPDATE subject_tokens SET revoked_at = ? WHERE token_id = ?",
                 (_datetime_to_storage(now), token_id),
@@ -1419,9 +1419,9 @@ class SQLiteAuditWriter:
 
     def emit_or_defer(self, emission: Callable[[], None]) -> None:
         """Run a post-commit audit side effect (anchor/export) now, or defer it
-        to the current thread's _atomic_write commit if one is active (dropped on
-        rollback/commit-failure). Fail-open."""
-        _emit_or_defer(emission)
+        to this connection's active _atomic_write commit if one is active on this
+        thread (dropped on rollback/commit-failure). Fail-open."""
+        _emit_or_defer(self._conn, emission)
 
     def get(self, event_id: str) -> AuditEvent | None:
         row = self._conn.execute(

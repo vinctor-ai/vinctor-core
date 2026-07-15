@@ -210,3 +210,39 @@ def test_rotation_waits_for_another_threads_transaction(tmp_path: Path) -> None:
         ta.join(timeout=2)
         tb.join(timeout=2)
         conn.close()
+
+
+def test_token_revoke_serializes_with_atomic_write(tmp_path: Path) -> None:
+    # subject-token revoke (now routed through the shared connection lock) must
+    # not commit another thread's open _atomic_write transaction (Codex P1: it
+    # was the one write path still on a raw `with self._conn:`).
+    conn = sqlite3.connect(str(tmp_path / "v.sqlite"), check_same_thread=False)
+    service = SQLiteV1Service(conn)
+    a_inside = threading.Event()
+    b_done = threading.Event()
+    release_a = threading.Event()
+
+    def thread_a() -> None:
+        with sqlite_mod._atomic_write(conn):
+            a_inside.set()
+            release_a.wait(timeout=2)
+
+    def thread_b() -> None:
+        a_inside.wait(timeout=2)
+        service.subject_token_repository.revoke(token_id="tok_absent", now=NOW)
+        b_done.set()
+
+    ta, tb = threading.Thread(target=thread_a), threading.Thread(target=thread_b)
+    ta.start()
+    tb.start()
+    try:
+        assert a_inside.wait(timeout=2)
+        # The revoke is blocked on the connection lock, not committing A.
+        assert not b_done.wait(timeout=0.3)
+        release_a.set()
+        assert b_done.wait(timeout=2)
+    finally:
+        release_a.set()
+        ta.join(timeout=2)
+        tb.join(timeout=2)
+        conn.close()

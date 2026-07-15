@@ -40,13 +40,23 @@ def conn_txn_lock(conn: sqlite3.Connection) -> threading.RLock:
 
 
 # Deferred post-commit audit emissions (external anchor / export). Scoped to the
-# current thread's _atomic_write: an emission registered while an atomic write is
-# active runs only after that write COMMITS, and is dropped if it rolls back or
-# its commit fails. Thread-local (not keyed by connection) because an audit write
-# always runs on the same thread as the _atomic_write wrapping it — so there is
-# no process-global growth and no way for a stale callback to leak into a later,
-# unrelated transaction. Outside an _atomic_write the emission runs inline.
+# current thread's _atomic_write ON A SPECIFIC CONNECTION: an emission registered
+# while that connection's atomic write is active runs only after IT commits, and
+# is dropped if it rolls back or its commit fails. The scopes form a per-thread
+# LIFO stack of (connection-id, emissions); an emission is captured by the
+# innermost scope for ITS OWN connection, so a standalone write on connection B
+# inside connection A's atomic write is NOT captured by A (it emits inline, since
+# B's row is already committed and A's rollback must not drop it). No
+# process-global growth: connection ids live only for the duration of a scope.
 _local = threading.local()
+
+
+def _scope_stack() -> list[list]:
+    stack = getattr(_local, "scopes", None)
+    if stack is None:
+        stack = []
+        _local.scopes = stack
+    return stack
 
 
 def _run_fail_open(emission: Callable[[], None]) -> None:
@@ -59,34 +69,32 @@ def _run_fail_open(emission: Callable[[], None]) -> None:
 
 
 @contextmanager
-def atomic_write_deferral() -> Iterator[None]:
-    """Bracket an _atomic_write so deferred emissions flush on commit, drop on
-    rollback/commit-failure. Re-entrant per thread: only the outermost scope
-    flushes, and any exception (including a failing commit inside the scope)
-    discards the whole batch."""
-    depth = getattr(_local, "depth", 0)
-    if depth == 0:
-        _local.emissions = []
-    _local.depth = depth + 1
+def atomic_write_deferral(conn: sqlite3.Connection) -> Iterator[None]:
+    """Bracket an _atomic_write on ``conn`` so its deferred emissions flush on
+    commit and are dropped on rollback / a failing commit inside the scope.
+    Scoped to this connection: emissions on OTHER connections during this scope
+    belong to their own scope (or emit inline), so a peer connection's rollback
+    can never drop this connection's committed emission and vice versa."""
+    stack = _scope_stack()
+    scope: list = [id(conn), []]
+    stack.append(scope)
     try:
         yield
     except BaseException:
-        _local.depth -= 1
-        if _local.depth == 0:
-            _local.emissions = []
+        stack.pop()  # LIFO: this scope is the top; discard its queued emissions
         raise
-    _local.depth -= 1
-    if _local.depth == 0:
-        emissions = _local.emissions
-        _local.emissions = []
-        for emission in emissions:
-            _run_fail_open(emission)
-
-
-def emit_or_defer(emission: Callable[[], None]) -> None:
-    """Defer a post-commit audit emission to the current thread's atomic write if
-    one is active, otherwise run it inline (the row is already committed)."""
-    if getattr(_local, "depth", 0) > 0:
-        _local.emissions.append(emission)
-    else:
+    stack.pop()
+    for emission in scope[1]:
         _run_fail_open(emission)
+
+
+def emit_or_defer(conn: sqlite3.Connection, emission: Callable[[], None]) -> None:
+    """Defer a post-commit audit emission to the innermost active _atomic_write
+    scope FOR ``conn`` on the current thread; if none is active, run it inline
+    (the row is already committed)."""
+    cid = id(conn)
+    for scope in reversed(_scope_stack()):
+        if scope[0] == cid:
+            scope[1].append(emission)
+            return
+    _run_fail_open(emission)

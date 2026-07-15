@@ -489,3 +489,37 @@ def test_manual_transaction_rollback_does_not_leak_deferred_emission(
     with sqlite_mod._atomic_write(conn):
         writer.write(_event("evt_ok"))
     assert len(heads) - before == 1
+
+
+def test_deferral_is_per_connection_not_per_thread(tmp_path) -> None:
+    """Codex P1: the deferral was thread-scoped, so a standalone audit write on
+    connection B made inside connection A's _atomic_write was queued in A's scope
+    and DROPPED when A rolled back — losing the external anchor for B's committed
+    row. Deferral is now per-connection, so B emits inline and survives."""
+    import vinctor_service.sqlite as sqlite_mod
+
+    conn_a = sqlite3.connect(tmp_path / "a.sqlite")
+    init_sqlite_schema(conn_a)
+    conn_b = sqlite3.connect(tmp_path / "b.sqlite")
+    init_sqlite_schema(conn_b)
+    heads_b: list[int] = []
+
+    class _RecordingAnchor:
+        def emit(self, seq, row_hash, created_at):
+            heads_b.append(seq)
+
+        def emit_storage_op(self, *args, **kwargs):
+            pass
+
+    writer_b = SQLiteAuditWriter(conn_b, anchor=_RecordingAnchor())
+
+    # Inside connection A's _atomic_write (which rolls back), a STANDALONE audit
+    # write on connection B commits independently on the same thread.
+    with pytest.raises(RuntimeError), sqlite_mod._atomic_write(conn_a):
+        writer_b.write(_event("evt_b"))
+        raise RuntimeError("connection A rolls back")
+
+    # B's row is committed and its anchor emitted exactly once — A's rollback did
+    # NOT drop B's emission (it was never captured by A's scope).
+    assert conn_b.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 1
+    assert heads_b == [1]
