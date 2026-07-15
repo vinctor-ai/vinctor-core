@@ -1663,7 +1663,7 @@ def test_vinctor_cli_audit_list_filters_by_reason(tmp_path) -> None:
     from vinctor_core.audit import build_rejection_audit_event
 
     db_path = tmp_path / "vinctor.sqlite"
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         writer = SQLiteV1Service(conn).audit_writer
         writer.write(
