@@ -452,3 +452,40 @@ def test_anchor_emission_deferred_to_outer_commit_and_dropped_on_rollback(
         writer.write(_event("evt_commit"))
         assert heads == []  # still deferred inside the transaction
     assert heads == [1]
+
+
+def test_manual_transaction_rollback_does_not_leak_deferred_emission(
+    tmp_path,
+) -> None:
+    """Codex P1: emit_or_defer used to defer for ANY open transaction but only
+    _atomic_write discarded on rollback, so an audit write in a caller-managed
+    transaction that rolled back left a stale callback that flushed on the next
+    _atomic_write. Deferral is now scoped to _atomic_write only: a manual
+    transaction's audit write emits inline and never leaks into a later one."""
+    import vinctor_service.sqlite as sqlite_mod
+
+    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    init_sqlite_schema(conn)
+    heads: list[int] = []
+
+    class _RecordingAnchor:
+        def emit(self, seq, row_hash, created_at):
+            heads.append(seq)
+
+        def emit_storage_op(self, *args, **kwargs):
+            pass
+
+    writer = SQLiteAuditWriter(conn, anchor=_RecordingAnchor())
+
+    # Caller-managed transaction, rolled back. The audit write is NOT inside an
+    # _atomic_write, so it emits inline and queues no deferred callback.
+    conn.execute("BEGIN")
+    writer.write(_event("evt_manual"))
+    conn.rollback()
+
+    before = len(heads)
+    # A later valid _atomic_write emits exactly ONE anchor (its own) — no stale
+    # callback from the rolled-back manual transaction leaks in.
+    with sqlite_mod._atomic_write(conn):
+        writer.write(_event("evt_ok"))
+    assert len(heads) - before == 1

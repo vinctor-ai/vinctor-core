@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import sys
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -75,6 +74,13 @@ from vinctor_service.models import (
 from vinctor_service.observations import record_observation
 from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS
 from vinctor_service.simulations import simulate_v1_contract
+from vinctor_service.sqlite_txn import (
+    atomic_write_deferral,
+    conn_txn_lock,
+)
+from vinctor_service.sqlite_txn import (
+    emit_or_defer as _emit_or_defer,
+)
 from vinctor_service.subject_tokens import mint_subject_token
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 
@@ -700,56 +706,6 @@ class SQLiteGrantRepository:
         return revoked
 
 
-# sqlite3.Connection cannot hold an attribute or a weakref, so the per-connection
-# re-entrant lock that serializes whole transaction scopes is keyed by id(). A
-# connection is long-lived (one per service), so the map stays tiny; if an id is
-# reused after a connection is collected, the reused lock is simply un-contended
-# (the old connection is gone), which is harmless.
-_CONN_TXN_LOCKS: dict[int, threading.RLock] = {}
-_CONN_TXN_LOCKS_GUARD = threading.Lock()
-
-
-def _conn_txn_lock(conn: sqlite3.Connection) -> threading.RLock:
-    lock = _CONN_TXN_LOCKS.get(id(conn))
-    if lock is None:
-        with _CONN_TXN_LOCKS_GUARD:
-            lock = _CONN_TXN_LOCKS.get(id(conn))
-            if lock is None:
-                lock = threading.RLock()
-                _CONN_TXN_LOCKS[id(conn)] = lock
-    return lock
-
-
-# Post-commit audit emissions (external anchor / export) queued while an audit
-# write is JOINED to an outer transaction — flushed by the outermost _atomic_write
-# after it commits, discarded on rollback. This keeps an external sink from ever
-# recording a chain head that a later rollback removes. Keyed by id() for the
-# same reason as the lock (a connection is long-lived; a reused id is harmless).
-_CONN_AFTER_COMMIT: dict[int, list[Callable[[], None]]] = {}
-
-
-def _run_fail_open(emission: Callable[[], None]) -> None:
-    # A raising anchor/export sink must never surface into the enforce path or
-    # unwind the persisted audit row.
-    try:
-        emission()
-    except Exception as exc:  # noqa: BLE001 - deliberate fail-open
-        sys.stderr.write(f"vinctor: audit post-commit emission raised: {exc}\n")
-
-
-def _register_after_commit(conn: sqlite3.Connection, emission: Callable[[], None]) -> None:
-    _CONN_AFTER_COMMIT.setdefault(id(conn), []).append(emission)
-
-
-def _flush_after_commit(conn: sqlite3.Connection) -> None:
-    for emission in _CONN_AFTER_COMMIT.pop(id(conn), ()):
-        _run_fail_open(emission)
-
-
-def _discard_after_commit(conn: sqlite3.Connection) -> None:
-    _CONN_AFTER_COMMIT.pop(id(conn), None)
-
-
 @contextmanager
 def _write_scope(conn: sqlite3.Connection) -> Iterator[None]:
     """Commit scope for a single repository write.
@@ -761,12 +717,13 @@ def _write_scope(conn: sqlite3.Connection) -> Iterator[None]:
     commit the caller's WHOLE transaction mid-way — so the write joins the open
     transaction instead and the outer owner commits or rolls back everything.
 
-    The whole scope runs under the per-connection re-entrant lock so two threads
-    sharing one connection cannot interleave — or one accidentally join the
-    other's transaction through the shared ``in_transaction`` flag; same-thread
-    nesting re-enters the lock freely.
+    The whole scope runs under the shared per-connection re-entrant lock so two
+    threads sharing one connection cannot interleave (or one commit/join the
+    other's transaction through the connection-global ``in_transaction`` flag);
+    same-thread nesting re-enters the lock freely. EVERY write path on the
+    connection must use this (or _atomic_write) for the serialization to hold.
     """
-    with _conn_txn_lock(conn):
+    with conn_txn_lock(conn):
         if conn.in_transaction:
             yield
             return
@@ -779,29 +736,27 @@ def _atomic_write(conn: sqlite3.Connection) -> Iterator[None]:
     """One BEGIN IMMEDIATE transaction wrapping a whole state-plus-audit change.
 
     Every state write and its audit row commit together or not at all — an
-    audit-writer failure rolls back the state change rather than leaving it
-    unrecorded. A per-connection re-entrant lock serializes the whole scope so
-    two threads sharing one connection cannot be folded into one transaction
-    (the ``in_transaction`` nesting check then only ever observes this thread's
-    own state); BEGIN IMMEDIATE additionally serializes writers across separate
-    connections and processes. Same-thread service nesting re-enters the lock
-    and joins the open transaction.
+    audit-writer failure OR a failing commit rolls the state change back rather
+    than leaving it unrecorded. The shared per-connection re-entrant lock
+    serializes the whole scope so two threads sharing one connection cannot be
+    folded into one transaction; BEGIN IMMEDIATE additionally serializes writers
+    across connections/processes. Same-thread service nesting re-enters the lock
+    and joins the open transaction. Deferred audit anchor/export emissions are
+    bracketed by atomic_write_deferral: they flush only after this commit and are
+    dropped on rollback or a failing commit.
     """
-    with _conn_txn_lock(conn):
+    with conn_txn_lock(conn):
         if conn.in_transaction:
             yield
             return
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            yield
-        except BaseException:
-            conn.rollback()
-            _discard_after_commit(conn)
-            raise
-        conn.commit()
-        # Only now that the rows are durably committed do the deferred anchor /
-        # export emissions run — never for a transaction that rolled back.
-        _flush_after_commit(conn)
+        with atomic_write_deferral():
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
 
 
 class SQLiteAgentIssuableScopeBoundsRepository:
@@ -981,7 +936,7 @@ class SQLiteAgentEnforcementSettingsRepository:
     def set_require_subject_token(
         self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime
     ) -> None:
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
@@ -1016,7 +971,7 @@ class SQLiteAgentEnforcementSettingsRepository:
     def set_require_pop(
         self, *, workspace_id: str, agent_id: str, require_pop: bool, now: datetime
     ) -> None:
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
@@ -1200,7 +1155,7 @@ class SQLiteReplayStore:
         self, *, token_id: str, nonce: str, ts: int, now_unix: int, skew: int
     ) -> bool:
         cutoff = now_unix - skew
-        with self._lock, self._conn:
+        with self._lock, _write_scope(self._conn):
             self._conn.execute(
                 "DELETE FROM pop_replay_nonces WHERE ts < ?", (cutoff,)
             )
@@ -1463,13 +1418,10 @@ class SQLiteAuditWriter:
         self.emit_or_defer(lambda: self._anchor.emit(seq, rh, created))
 
     def emit_or_defer(self, emission: Callable[[], None]) -> None:
-        """Run a post-commit audit side effect (anchor/export) now if the row is
-        already committed, or defer it to the outermost commit if this write
-        joined an open transaction. Fail-open."""
-        if self._conn.in_transaction:
-            _register_after_commit(self._conn, emission)
-        else:
-            _run_fail_open(emission)
+        """Run a post-commit audit side effect (anchor/export) now, or defer it
+        to the current thread's _atomic_write commit if one is active (dropped on
+        rollback/commit-failure). Fail-open."""
+        _emit_or_defer(emission)
 
     def get(self, event_id: str) -> AuditEvent | None:
         row = self._conn.execute(
@@ -1670,7 +1622,7 @@ class SQLiteBoundaryRegistry:
         self._conn = conn
 
     def add(self, boundary: Boundary) -> Boundary:
-        with self._conn:
+        with _write_scope(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO boundaries (

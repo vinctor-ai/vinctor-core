@@ -17,7 +17,8 @@ from vinctor_core.scope import is_valid_grant_scope
 from vinctor_service.auto_approval import upsert_auto_approval_rule
 from vinctor_service.grants import validate_issuable_scope_bounds
 from vinctor_service.models import AutoApprovalRule
-from vinctor_service.sqlite import SQLiteV1Service, _conn_txn_lock
+from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite_txn import conn_txn_lock
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,7 @@ def _sqlite_apply_transaction(conn: sqlite3.Connection) -> Iterator[None]:
     and the service mutators) so concurrent same-connection callers cannot
     collide on BEGIN IMMEDIATE.
     """
-    with _conn_txn_lock(conn):
+    with conn_txn_lock(conn):
         conn.execute("BEGIN IMMEDIATE")
         try:
             yield

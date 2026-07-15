@@ -1,9 +1,39 @@
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Protocol
 
-from vinctor_service.keys import LocalKeyRecord, SQLiteLocalKeyRepository
+from vinctor_service.keys import CreatedLocalKey, LocalKeyRecord
+
+
+class KeyRotationRepository(Protocol):
+    """The local-key repository surface a rotation needs — implemented by both
+    SQLiteLocalKeyRepository and PostgresLocalKeyRepository, so rotation works on
+    either backend (it used to be typed for the SQLite class only)."""
+
+    def transaction(self) -> AbstractContextManager[None]: ...
+    def list_for_workspace(self, workspace_id: str) -> tuple[LocalKeyRecord, ...]: ...
+    def revoke_key(
+        self, key_id: str, *, now: datetime | None = ...
+    ) -> LocalKeyRecord | None: ...
+    def get_by_id(self, key_id: str) -> LocalKeyRecord | None: ...
+    def create_workspace_key(
+        self, *, workspace_id: str, now: datetime | None = ...
+    ) -> CreatedLocalKey: ...
+    def create_auditor_key(
+        self, *, workspace_id: str, now: datetime | None = ...
+    ) -> CreatedLocalKey: ...
+    def create_service_operator_key(
+        self, *, now: datetime | None = ...
+    ) -> CreatedLocalKey: ...
+    def create_agent_key(
+        self, *, workspace_id: str, agent_id: str, now: datetime | None = ...
+    ) -> CreatedLocalKey: ...
+    def create_pep_key(
+        self, *, workspace_id: str, pep_id: str, now: datetime | None = ...
+    ) -> CreatedLocalKey: ...
 
 
 @dataclass(frozen=True)
@@ -29,7 +59,7 @@ def serialize_key_record(record: LocalKeyRecord) -> dict[str, object]:
 
 
 def rotate_workspace_key(
-    repository: SQLiteLocalKeyRepository,
+    repository: KeyRotationRepository,
     *,
     workspace_id: str,
     now: datetime,
@@ -53,7 +83,7 @@ def rotate_workspace_key(
 
 
 def rotate_auditor_key(
-    repository: SQLiteLocalKeyRepository,
+    repository: KeyRotationRepository,
     *,
     workspace_id: str,
     now: datetime,
@@ -77,7 +107,7 @@ def rotate_auditor_key(
 
 
 def rotate_service_operator_key(
-    repository: SQLiteLocalKeyRepository,
+    repository: KeyRotationRepository,
     *,
     now: datetime,
 ) -> RotationResult:
@@ -100,7 +130,7 @@ def rotate_service_operator_key(
 
 
 def rotate_agent_key(
-    repository: SQLiteLocalKeyRepository,
+    repository: KeyRotationRepository,
     *,
     workspace_id: str,
     agent_id: str,
@@ -129,7 +159,7 @@ def rotate_agent_key(
 
 
 def rotate_pep_key(
-    repository: SQLiteLocalKeyRepository,
+    repository: KeyRotationRepository,
     *,
     workspace_id: str,
     pep_id: str,
@@ -158,7 +188,7 @@ def rotate_pep_key(
 
 
 def _revoke_prior(
-    repository: SQLiteLocalKeyRepository,
+    repository: KeyRotationRepository,
     *,
     workspace_id: str,
     new_key_id: str,
