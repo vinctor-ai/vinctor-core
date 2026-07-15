@@ -53,30 +53,32 @@ class InMemoryAgentIssuableScopeBoundsRepository:
         self,
         bounds: dict[tuple[str, str], tuple[str, ...]] | None = None,
     ) -> None:
-        self._bounds = dict(bounds or {})
-        self._max_ttl: dict[tuple[str, str], int] = {}
+        # One immutable AgentIssuableBounds per key: scopes and max TTL are read
+        # and written as a single value, so a concurrent set_bounds cannot
+        # produce a torn (old-scopes, new-ttl) snapshot. A single dict get/set
+        # is atomic under the GIL, so no explicit lock is needed.
+        self._bounds: dict[tuple[str, str], AgentIssuableBounds] = {
+            key: AgentIssuableBounds(scopes=scopes, max_ttl_seconds=None)
+            for key, scopes in (bounds or {}).items()
+        }
 
     def get_bounds(self, *, workspace_id: str, agent_id: str) -> tuple[str, ...] | None:
-        return self._bounds.get((workspace_id, agent_id))
+        entry = self._bounds.get((workspace_id, agent_id))
+        return entry.scopes if entry is not None else None
 
     def get_max_ttl_seconds(self, *, workspace_id: str, agent_id: str) -> int | None:
-        return self._max_ttl.get((workspace_id, agent_id))
+        entry = self._bounds.get((workspace_id, agent_id))
+        return entry.max_ttl_seconds if entry is not None else None
 
     def get_bounds_with_max_ttl(
         self, *, workspace_id: str, agent_id: str
     ) -> AgentIssuableBounds | None:
-        scopes = self._bounds.get((workspace_id, agent_id))
-        if scopes is None:
-            return None
-        return AgentIssuableBounds(
-            scopes=scopes,
-            max_ttl_seconds=self._max_ttl.get((workspace_id, agent_id)),
-        )
+        return self._bounds.get((workspace_id, agent_id))
 
     def list_bounds_for_workspace(self, workspace_id: str) -> ScopeBoundsListing:
         return tuple(
-            (agent_id, scopes)
-            for (bound_workspace_id, agent_id), scopes in sorted(self._bounds.items())
+            (agent_id, entry.scopes)
+            for (bound_workspace_id, agent_id), entry in sorted(self._bounds.items())
             if bound_workspace_id == workspace_id
         )
 
@@ -90,11 +92,10 @@ class InMemoryAgentIssuableScopeBoundsRepository:
         now: datetime,
     ) -> None:
         validate_issuable_scope_bounds(scopes, max_ttl_seconds=max_ttl_seconds)
-        self._bounds[(workspace_id, agent_id)] = scopes
-        if max_ttl_seconds is None:
-            self._max_ttl.pop((workspace_id, agent_id), None)
-        else:
-            self._max_ttl[(workspace_id, agent_id)] = max_ttl_seconds
+        # Single atomic dict write of the combined value.
+        self._bounds[(workspace_id, agent_id)] = AgentIssuableBounds(
+            scopes=scopes, max_ttl_seconds=max_ttl_seconds
+        )
 
 
 def issue_grant(
