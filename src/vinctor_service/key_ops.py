@@ -35,14 +35,16 @@ def rotate_workspace_key(
     now: datetime,
 ) -> RotationResult:
     """Mint a new workspace key and revoke the previously active workspace keys."""
-    created = repository.create_workspace_key(workspace_id=workspace_id, now=now)
-    revoked = _revoke_prior(
-        repository,
-        workspace_id=workspace_id,
-        new_key_id=created.record.key_id,
-        keep=lambda record: record.key_type == "workspace",
-        now=now,
-    )
+    with repository.transaction():
+        created = repository.create_workspace_key(workspace_id=workspace_id, now=now)
+        revoked = _revoke_prior(
+            repository,
+            workspace_id=workspace_id,
+            new_key_id=created.record.key_id,
+            keep=lambda record: record.key_type == "workspace",
+            now=now,
+        )
+    # Return the plaintext only after the rotation has committed.
     return RotationResult(
         raw_key=created.raw_key,
         new_key_id=created.record.key_id,
@@ -57,14 +59,16 @@ def rotate_auditor_key(
     now: datetime,
 ) -> RotationResult:
     """Mint a new read-only auditor key and revoke prior auditor keys."""
-    created = repository.create_auditor_key(workspace_id=workspace_id, now=now)
-    revoked = _revoke_prior(
-        repository,
-        workspace_id=workspace_id,
-        new_key_id=created.record.key_id,
-        keep=lambda record: record.key_type == "auditor",
-        now=now,
-    )
+    with repository.transaction():
+        created = repository.create_auditor_key(workspace_id=workspace_id, now=now)
+        revoked = _revoke_prior(
+            repository,
+            workspace_id=workspace_id,
+            new_key_id=created.record.key_id,
+            keep=lambda record: record.key_type == "auditor",
+            now=now,
+        )
+    # Return the plaintext only after the rotation has committed.
     return RotationResult(
         raw_key=created.raw_key,
         new_key_id=created.record.key_id,
@@ -78,14 +82,16 @@ def rotate_service_operator_key(
     now: datetime,
 ) -> RotationResult:
     """Mint one global service-operator key and revoke its predecessors."""
-    created = repository.create_service_operator_key(now=now)
-    revoked = _revoke_prior(
-        repository,
-        workspace_id="*",
-        new_key_id=created.record.key_id,
-        keep=lambda record: record.key_type == "service_operator",
-        now=now,
-    )
+    with repository.transaction():
+        created = repository.create_service_operator_key(now=now)
+        revoked = _revoke_prior(
+            repository,
+            workspace_id="*",
+            new_key_id=created.record.key_id,
+            keep=lambda record: record.key_type == "service_operator",
+            now=now,
+        )
+    # Return the plaintext only after the rotation has committed.
     return RotationResult(
         raw_key=created.raw_key,
         new_key_id=created.record.key_id,
@@ -101,18 +107,20 @@ def rotate_agent_key(
     now: datetime,
 ) -> RotationResult:
     """Mint a new agent key and revoke the previously active keys for that agent."""
-    created = repository.create_agent_key(
-        workspace_id=workspace_id,
-        agent_id=agent_id,
-        now=now,
-    )
-    revoked = _revoke_prior(
-        repository,
-        workspace_id=workspace_id,
-        new_key_id=created.record.key_id,
-        keep=lambda record: record.key_type == "agent" and record.agent_id == agent_id,
-        now=now,
-    )
+    with repository.transaction():
+        created = repository.create_agent_key(
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            now=now,
+        )
+        revoked = _revoke_prior(
+            repository,
+            workspace_id=workspace_id,
+            new_key_id=created.record.key_id,
+            keep=lambda record: record.key_type == "agent" and record.agent_id == agent_id,
+            now=now,
+        )
+    # Return the plaintext only after the rotation has committed.
     return RotationResult(
         raw_key=created.raw_key,
         new_key_id=created.record.key_id,
@@ -128,18 +136,20 @@ def rotate_pep_key(
     now: datetime,
 ) -> RotationResult:
     """Mint a new PEP (resource-server) key and revoke prior keys for that PEP."""
-    created = repository.create_pep_key(
-        workspace_id=workspace_id,
-        pep_id=pep_id,
-        now=now,
-    )
-    revoked = _revoke_prior(
-        repository,
-        workspace_id=workspace_id,
-        new_key_id=created.record.key_id,
-        keep=lambda record: record.key_type == "resource_server" and record.agent_id == pep_id,
-        now=now,
-    )
+    with repository.transaction():
+        created = repository.create_pep_key(
+            workspace_id=workspace_id,
+            pep_id=pep_id,
+            now=now,
+        )
+        revoked = _revoke_prior(
+            repository,
+            workspace_id=workspace_id,
+            new_key_id=created.record.key_id,
+            keep=lambda record: record.key_type == "resource_server" and record.agent_id == pep_id,
+            now=now,
+        )
+    # Return the plaintext only after the rotation has committed.
     return RotationResult(
         raw_key=created.raw_key,
         new_key_id=created.record.key_id,

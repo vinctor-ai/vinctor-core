@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from secrets import token_urlsafe
 from typing import Any
@@ -21,11 +23,31 @@ from vinctor_service.models import GrantRequest, SubjectToken
 from vinctor_service.v1_http import AgentIdentity, PepIdentity
 
 POP_REPLAY_LOCK_ID = 0x56494E50
+# Advisory-lock classid serializing local-key rotations (distinct keyspace from
+# the audit-chain / grant-decision / pop-replay locks). Rotations are rare
+# operator actions, so a single global rotation lock is sufficient and simplest.
+KEY_ROTATION_LOCK_CLASSID = 0x564B4559
 
 
 class PostgresLocalKeyRepository:
     def __init__(self, conn: Any) -> None:
         self._conn = conn
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """One serialized unit of work for a multi-write key operation.
+
+        Opens a single outer transaction and takes a global rotation advisory
+        lock up front; the per-method transaction() scopes underneath become
+        savepoints, so a new key and the revocation of its predecessors commit
+        together or roll back together.
+        """
+        with self._conn.transaction():
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(%s::int4, %s::int4)",
+                (KEY_ROTATION_LOCK_CLASSID, 0),
+            )
+            yield
 
     def create_workspace_key(
         self, *, workspace_id: str, raw_key: str | None = None,

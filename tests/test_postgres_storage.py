@@ -16,6 +16,7 @@ from vinctor_core import (
 )
 from vinctor_core.models import AuditEvent, Grant
 from vinctor_service.audit_chain import GENESIS_PREV_HASH, AnchorRecord
+from vinctor_service.key_ops import rotate_workspace_key
 from vinctor_service.models import (
     AgentIssuableBounds,
     GrantRequest,
@@ -1264,4 +1265,33 @@ def test_postgres_service_operator_key_create_and_resolve() -> None:
     assert repository.resolve_auditor_identity(created.raw_key, now=NOW) is None
     # An unknown key resolves to neither.
     assert repository.resolve_service_operator("sok_nonexistent", now=NOW) is False
+    conn.close()
+
+
+def test_postgres_key_rotation_is_atomic_when_revocation_fails() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    init_postgres_schema(conn)
+    repository = PostgresLocalKeyRepository(conn)
+    old = repository.create_workspace_key(workspace_id="ws_main", now=NOW)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("revoke failed mid-rotation")
+
+    original_revoke = repository.revoke_key
+    repository.revoke_key = _boom  # type: ignore[method-assign]
+    try:
+        with pytest.raises(RuntimeError, match="revoke failed"):
+            rotate_workspace_key(repository, workspace_id="ws_main", now=NOW)
+    finally:
+        repository.revoke_key = original_revoke  # type: ignore[method-assign]
+
+    # The advisory-locked transaction rolls back the freshly minted key, leaving
+    # the predecessor as the only active workspace key (no half-finished rotation).
+    active_workspace = [
+        record
+        for record in repository.list_for_workspace("ws_main")
+        if record.status == "active" and record.key_type == "workspace"
+    ]
+    assert [record.key_id for record in active_workspace] == [old.record.key_id]
     conn.close()

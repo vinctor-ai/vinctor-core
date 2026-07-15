@@ -4,6 +4,8 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from vinctor_service.key_ops import (
     rotate_agent_key,
     rotate_pep_key,
@@ -91,3 +93,30 @@ def test_rotate_pep_key_only_revokes_same_pep(tmp_path: Path) -> None:
     assert repo.get_by_id(pep_old.record.key_id).status == "revoked"
     assert repo.get_by_id(other_pep.record.key_id).status == "active"
     assert repo.get_by_id(agent_key.record.key_id).status == "active"
+
+
+def test_rotate_is_atomic_when_revocation_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = _repo(tmp_path / "vinctor.sqlite")
+    old = repo.create_workspace_key(workspace_id="ws_demo", now=NOW)
+
+    # Fail during the revoke step, after the new key has been minted. Without one
+    # transaction the freshly minted key is already committed — leaving two active
+    # workspace keys and a returned plaintext for a rotation that did not finish.
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("revoke failed mid-rotation")
+
+    monkeypatch.setattr(repo, "revoke_key", _boom)
+
+    with pytest.raises(RuntimeError, match="revoke failed"):
+        rotate_workspace_key(repo, workspace_id="ws_demo", now=NOW)
+
+    # All-or-nothing: the predecessor is still the sole active workspace key, and
+    # no half-minted key leaked (the plaintext was never returned to the caller).
+    active_workspace = [
+        record
+        for record in repo.list_for_workspace("ws_demo")
+        if record.status == "active" and record.key_type == "workspace"
+    ]
+    assert [record.key_id for record in active_workspace] == [old.record.key_id]
