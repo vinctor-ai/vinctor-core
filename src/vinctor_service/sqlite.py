@@ -699,23 +699,48 @@ class SQLiteGrantRepository:
         return revoked
 
 
+# sqlite3.Connection cannot hold an attribute or a weakref, so the per-connection
+# re-entrant lock that serializes whole transaction scopes is keyed by id(). A
+# connection is long-lived (one per service), so the map stays tiny; if an id is
+# reused after a connection is collected, the reused lock is simply un-contended
+# (the old connection is gone), which is harmless.
+_CONN_TXN_LOCKS: dict[int, threading.RLock] = {}
+_CONN_TXN_LOCKS_GUARD = threading.Lock()
+
+
+def _conn_txn_lock(conn: sqlite3.Connection) -> threading.RLock:
+    lock = _CONN_TXN_LOCKS.get(id(conn))
+    if lock is None:
+        with _CONN_TXN_LOCKS_GUARD:
+            lock = _CONN_TXN_LOCKS.get(id(conn))
+            if lock is None:
+                lock = threading.RLock()
+                _CONN_TXN_LOCKS[id(conn)] = lock
+    return lock
+
+
 @contextmanager
 def _write_scope(conn: sqlite3.Connection) -> Iterator[None]:
     """Commit scope for a single repository write.
 
     Standalone calls keep today's behavior: ``with conn:`` opens the write and
     commits (or rolls back) it on exit. When the caller already holds an
-    explicit transaction (policy apply's all-or-nothing BEGIN IMMEDIATE unit
-    of work), sqlite3's connection context manager must NOT be entered — its
-    exit would commit the caller's WHOLE transaction mid-way — so the write
-    joins the open transaction instead and the outer owner commits or rolls
-    back everything together.
+    explicit transaction (an all-or-nothing BEGIN IMMEDIATE unit of work),
+    sqlite3's connection context manager must NOT be entered — its exit would
+    commit the caller's WHOLE transaction mid-way — so the write joins the open
+    transaction instead and the outer owner commits or rolls back everything.
+
+    The whole scope runs under the per-connection re-entrant lock so two threads
+    sharing one connection cannot interleave — or one accidentally join the
+    other's transaction through the shared ``in_transaction`` flag; same-thread
+    nesting re-enters the lock freely.
     """
-    if conn.in_transaction:
-        yield
-        return
-    with conn:
-        yield
+    with _conn_txn_lock(conn):
+        if conn.in_transaction:
+            yield
+            return
+        with conn:
+            yield
 
 
 @contextmanager
@@ -724,21 +749,24 @@ def _atomic_write(conn: sqlite3.Connection) -> Iterator[None]:
 
     Every state write and its audit row commit together or not at all — an
     audit-writer failure rolls back the state change rather than leaving it
-    unrecorded — and taking the database write lock up front serializes writers
-    across connections and processes. The write methods underneath join this
-    open transaction via ``_write_scope``; this itself joins an already-open
-    transaction, so nested service calls stay safe.
+    unrecorded. A per-connection re-entrant lock serializes the whole scope so
+    two threads sharing one connection cannot be folded into one transaction
+    (the ``in_transaction`` nesting check then only ever observes this thread's
+    own state); BEGIN IMMEDIATE additionally serializes writers across separate
+    connections and processes. Same-thread service nesting re-enters the lock
+    and joins the open transaction.
     """
-    if conn.in_transaction:
-        yield
-        return
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        yield
-    except BaseException:
-        conn.rollback()
-        raise
-    conn.commit()
+    with _conn_txn_lock(conn):
+        if conn.in_transaction:
+            yield
+            return
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            conn.rollback()
+            raise
+        conn.commit()
 
 
 class SQLiteAgentIssuableScopeBoundsRepository:
