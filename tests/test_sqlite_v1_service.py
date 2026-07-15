@@ -12,12 +12,13 @@ from vinctor_service import (
     V1ObserveRequest,
     V1SimulateRequest,
 )
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
 
 def connect_db(tmp_path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(tmp_path / "vinctor.sqlite")
+    return connect_sqlite(tmp_path / "vinctor.sqlite")
 
 
 def grant(
@@ -261,7 +262,7 @@ def test_sqlite_v1_service_fails_closed_for_disabled_boundary(
 
     assert response.status_code == 403
     assert response.decision == "deny"
-    assert response.error == "boundary_inactive"
+    assert response.error == "boundary_unavailable"
     assert audit_count(conn) == 1
     conn.close()
 
@@ -319,9 +320,9 @@ def test_sqlite_v1_service_delegated_enforce_persists_enforcing_principal(
             grant_ref="grt_main",
             action="write",
             resource="repo/feature/readme",
-            pep_workspace_id="ws_main",
         ),
         now=NOW,
+        pep_workspace_id="ws_main",
     )
 
     assert response.status_code == 200
@@ -359,10 +360,10 @@ def test_sqlite_v1_service_delegated_enforce_persists_proven_identity(
             grant_ref="grt_main",
             action="write",
             resource="repo/feature/readme",
-            pep_workspace_id="ws_main",
             subject_token=minted.token,
         ),
         now=NOW,
+        pep_workspace_id="ws_main",
     )
 
     assert response.status_code == 200
@@ -463,9 +464,9 @@ def test_sqlite_v1_service_delegated_enforce_blocks_cross_workspace(
             grant_ref="grt_main",
             action="write",
             resource="repo/feature/readme",
-            pep_workspace_id="ws_main",
         ),
         now=NOW,
+        pep_workspace_id="ws_main",
     )
 
     assert response.status_code == 403

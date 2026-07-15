@@ -48,25 +48,19 @@ class V1HttpResponse:
 class V1EnforceService(Protocol):
     def enforce(self, request: V1EnforceRequest, *, now: datetime) -> V1EnforceResponse: ...
 
-    def record_auth_failure(
-        self, *, surface: str, boundary_id: str | None, now: datetime
-    ) -> None: ...
+    def record_auth_failure(self, *, surface: str, now: datetime) -> None: ...
 
 
 class V1ObserveService(Protocol):
     def observe(self, request: V1ObserveRequest, *, now: datetime) -> V1ObserveResponse: ...
 
-    def record_auth_failure(
-        self, *, surface: str, boundary_id: str | None, now: datetime
-    ) -> None: ...
+    def record_auth_failure(self, *, surface: str, now: datetime) -> None: ...
 
 
 class V1SimulateService(Protocol):
     def simulate(self, request: V1SimulateRequest, *, now: datetime) -> V1SimulateResponse: ...
 
-    def record_auth_failure(
-        self, *, surface: str, boundary_id: str | None, now: datetime
-    ) -> None: ...
+    def record_auth_failure(self, *, surface: str, now: datetime) -> None: ...
 
 
 class V1DelegatedEnforceService(Protocol):
@@ -75,12 +69,11 @@ class V1DelegatedEnforceService(Protocol):
         request: V1DelegatedEnforceRequest,
         *,
         now: datetime,
+        pep_workspace_id: str | None = None,
         pop_skew_seconds: int = 30,
     ) -> V1EnforceResponse: ...
 
-    def record_auth_failure(
-        self, *, surface: str, boundary_id: str | None, now: datetime
-    ) -> None: ...
+    def record_auth_failure(self, *, surface: str, now: datetime) -> None: ...
 
 
 class V1TokenService(Protocol):
@@ -98,9 +91,7 @@ class V1TokenService(Protocol):
         pop: bool = False,
     ) -> Any: ...
 
-    def record_auth_failure(
-        self, *, surface: str, boundary_id: str | None, now: datetime
-    ) -> None: ...
+    def record_auth_failure(self, *, surface: str, now: datetime) -> None: ...
 
 
 AgentIdentityResolver = Callable[[str, datetime], AgentIdentity | None]
@@ -118,7 +109,6 @@ def handle_v1_enforce_http(
 ) -> V1HttpResponse:
     normalized_headers = {key.lower(): value for key, value in headers.items()}
     agent_key = normalized_headers.get("x-agent-key")
-    boundary_id = normalized_headers.get("x-vinctor-boundary-id")
     identity = (
         _resolve_agent_identity(
             agent_key,
@@ -130,7 +120,7 @@ def handle_v1_enforce_http(
         else None
     )
     if identity is None:
-        service.record_auth_failure(surface="enforce", boundary_id=boundary_id, now=now)
+        service.record_auth_failure(surface="enforce", now=now)
         return _error(401, "authentication_required", "valid X-Agent-Key header is required")
 
     parsed = _parse_enforce_body(body)
@@ -171,7 +161,7 @@ def handle_v1_observe_http(
         else None
     )
     if identity is None:
-        service.record_auth_failure(surface="observe", boundary_id=boundary_id, now=now)
+        service.record_auth_failure(surface="observe", now=now)
         return _error(401, "authentication_required", "valid X-Agent-Key header is required")
 
     parsed = _parse_observe_body(body)
@@ -223,7 +213,7 @@ def handle_v1_simulate_http(
         else None
     )
     if identity is None:
-        service.record_auth_failure(surface="simulate", boundary_id=boundary_id, now=now)
+        service.record_auth_failure(surface="simulate", now=now)
         return _error(401, "authentication_required", "valid X-Agent-Key header is required")
 
     parsed = _parse_enforce_body(body)
@@ -241,6 +231,8 @@ def handle_v1_simulate_http(
         now=now,
     )
     if response.would_decision is not None:
+        # No-disclosure: only the would-decision, coarse reason codes, and the
+        # audit_event_id cross the agent-facing boundary (detail is audit-only).
         return V1HttpResponse(
             status_code=response.status_code,
             body={
@@ -248,9 +240,6 @@ def handle_v1_simulate_http(
                 "would_decision": response.would_decision,
                 "error": response.error,
                 "reason": response.reason,
-                "grant_id": response.grant_id,
-                "agent_id": response.agent_id,
-                "scope_matched": response.scope_matched,
                 "audit_event_id": response.audit_event_id,
             },
         )
@@ -273,7 +262,6 @@ def handle_v1_delegated_enforce_http(
 ) -> V1HttpResponse:
     normalized_headers = {key.lower(): value for key, value in headers.items()}
     pep_key = normalized_headers.get("x-pep-key")
-    boundary_id = normalized_headers.get("x-vinctor-boundary-id")
     identity = (
         _resolve_pep_identity(
             pep_key,
@@ -285,7 +273,7 @@ def handle_v1_delegated_enforce_http(
         else None
     )
     if identity is None:
-        service.record_auth_failure(surface="delegated", boundary_id=boundary_id, now=now)
+        service.record_auth_failure(surface="delegated", now=now)
         return _error(401, "authentication_required", "valid X-PEP-Key header is required")
 
     parsed = _parse_delegated_enforce_body(body)
@@ -300,12 +288,19 @@ def handle_v1_delegated_enforce_http(
         action=parsed["action"],
         resource=parsed["resource"],
         boundary_id=normalized_headers.get("x-vinctor-boundary-id"),
-        pep_workspace_id=identity.workspace_id,
         subject_token=normalized_headers.get("x-subject-token"),
         subject_token_proof=normalized_headers.get("x-subject-token-proof"),
     )
+    # The TRUSTED PEP workspace travels as an explicit argument derived from
+    # the authenticated key — never inside the request DTO, whose fields are
+    # all caller-asserted.
     return _http_response_from_enforce(
-        service.delegated_enforce(request, now=now, pop_skew_seconds=pop_skew_seconds)
+        service.delegated_enforce(
+            request,
+            now=now,
+            pep_workspace_id=identity.workspace_id,
+            pop_skew_seconds=pop_skew_seconds,
+        )
     )
 
 
@@ -332,7 +327,7 @@ def handle_v1_tokens_http(
         else None
     )
     if identity is None:
-        service.record_auth_failure(surface="tokens", boundary_id=None, now=now)
+        service.record_auth_failure(surface="tokens", now=now)
         return _error(401, "authentication_required", "valid X-Agent-Key header is required")
 
     parsed = _parse_tokens_body(body, max_ttl=max_ttl)
@@ -478,14 +473,14 @@ def _parse_string_body(
 
 
 def _http_response_from_enforce(response: V1EnforceResponse) -> V1HttpResponse:
+    # No-disclosure: the agent-facing body carries only the decision, coarse
+    # reason codes, and the audit_event_id. Grant/agent identifiers and the
+    # classified scope live exclusively in the operator-only audit event.
     if response.decision == "permit":
         return V1HttpResponse(
             status_code=response.status_code,
             body={
                 "decision": "permit",
-                "grant_id": response.grant_id,
-                "agent_id": response.agent_id,
-                "scope_matched": response.scope_matched,
                 "audit_event_id": response.audit_event_id,
             },
         )
@@ -497,8 +492,6 @@ def _http_response_from_enforce(response: V1EnforceResponse) -> V1HttpResponse:
                 "decision": "deny",
                 "error": response.error,
                 "reason": response.reason,
-                "grant_id": response.grant_id,
-                "agent_id": response.agent_id,
                 "audit_event_id": response.audit_event_id,
             },
         )

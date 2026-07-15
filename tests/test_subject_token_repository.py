@@ -1,4 +1,4 @@
-import sqlite3
+
 from datetime import UTC, datetime, timedelta
 
 from vinctor_service import (
@@ -7,6 +7,7 @@ from vinctor_service import (
     SubjectToken,
 )
 from vinctor_service.sqlite import get_sqlite_schema_versions, init_sqlite_schema
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -44,7 +45,7 @@ def test_in_memory_insert_and_get_by_hash() -> None:
 
 
 def test_sqlite_insert_and_get_by_hash_round_trip(tmp_path) -> None:
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     repo = SQLiteSubjectTokenRepository(conn)
     repo.insert(_token())
@@ -53,9 +54,9 @@ def test_sqlite_insert_and_get_by_hash_round_trip(tmp_path) -> None:
 
 
 def test_sqlite_schema_records_version_7(tmp_path) -> None:
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
-    assert get_sqlite_schema_versions(conn) == tuple(range(1, 13))
+    assert get_sqlite_schema_versions(conn) == tuple(range(1, 15))
 
 
 def test_in_memory_round_trip_revoked_at() -> None:
@@ -68,7 +69,7 @@ def test_in_memory_round_trip_revoked_at() -> None:
 
 
 def test_sqlite_round_trip_revoked_at(tmp_path) -> None:
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     repo = SQLiteSubjectTokenRepository(conn)
     revoked = _token(revoked_at=NOW + timedelta(seconds=60))
@@ -98,7 +99,7 @@ def test_in_memory_round_trip_unbound_defaults_none() -> None:
 
 
 def test_sqlite_round_trip_bound_action_resource(tmp_path) -> None:
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     repo = SQLiteSubjectTokenRepository(conn)
     bound = _token(bound_action="write", bound_resource="repo/x/y")
@@ -110,7 +111,7 @@ def test_sqlite_round_trip_bound_action_resource(tmp_path) -> None:
 
 
 def test_sqlite_round_trip_unbound_defaults_none(tmp_path) -> None:
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     repo = SQLiteSubjectTokenRepository(conn)
     repo.insert(_token())
@@ -137,7 +138,7 @@ def test_in_memory_round_trip_pop_secret_defaults_none() -> None:
 
 
 def test_sqlite_round_trip_pop_secret(tmp_path) -> None:
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     repo = SQLiteSubjectTokenRepository(conn)
     repo.insert(_token(pop_secret="pop-secret-value"))
@@ -147,7 +148,7 @@ def test_sqlite_round_trip_pop_secret(tmp_path) -> None:
 
 
 def test_sqlite_round_trip_pop_secret_defaults_none(tmp_path) -> None:
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     repo = SQLiteSubjectTokenRepository(conn)
     repo.insert(_token())

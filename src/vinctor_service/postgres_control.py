@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from secrets import token_urlsafe
 from typing import Any
@@ -9,7 +11,9 @@ from typing import Any
 from vinctor_service.boundary_http import WorkspaceIdentity
 from vinctor_service.keys import (
     AGENT_KEY_PREFIX,
+    AUDITOR_KEY_PREFIX,
     PEP_KEY_PREFIX,
+    SERVICE_OPERATOR_KEY_PREFIX,
     WORKSPACE_KEY_PREFIX,
     CreatedLocalKey,
     KeyType,
@@ -19,11 +23,40 @@ from vinctor_service.models import GrantRequest, SubjectToken
 from vinctor_service.v1_http import AgentIdentity, PepIdentity
 
 POP_REPLAY_LOCK_ID = 0x56494E50
+# Advisory-lock classid serializing local-key rotations (distinct keyspace from
+# the audit-chain / grant-decision / pop-replay locks). Rotations are rare
+# operator actions, so a single global rotation lock is sufficient and simplest.
+KEY_ROTATION_LOCK_CLASSID = 0x564B4559
 
 
 class PostgresLocalKeyRepository:
     def __init__(self, conn: Any) -> None:
         self._conn = conn
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """One serialized unit of work for a multi-write key operation.
+
+        Opens a single outer transaction and takes a global rotation advisory
+        lock up front; the per-method transaction() scopes underneath become
+        savepoints, so a new key and the revocation of its predecessors commit
+        together or roll back together. Rotation must OWN this transaction so the
+        plaintext key is returned only after a real commit; running it inside an
+        outer transaction is rejected rather than joined as a savepoint (which
+        would return the key before the caller's commit and drop it on rollback).
+        """
+        # PQTRANS_IDLE == 0; any other status means an outer transaction is open.
+        if int(self._conn.info.transaction_status) != 0:
+            raise RuntimeError(
+                "key rotation cannot run inside an open transaction; it must own "
+                "its transaction so the plaintext is returned only after commit"
+            )
+        with self._conn.transaction():
+            self._conn.execute(
+                "SELECT pg_advisory_xact_lock(%s::int4, %s::int4)",
+                (KEY_ROTATION_LOCK_CLASSID, 0),
+            )
+            yield
 
     def create_workspace_key(
         self, *, workspace_id: str, raw_key: str | None = None,
@@ -63,6 +96,35 @@ class PostgresLocalKeyRepository:
             raw_key=key,
             record=self._create_key(
                 key_type="resource_server", workspace_id=workspace_id, agent_id=pep_id,
+                raw_key=key, now=now, key_id=key_id,
+            ),
+        )
+
+    def create_auditor_key(
+        self, *, workspace_id: str, raw_key: str | None = None,
+        now: datetime | None = None, key_id: str | None = None,
+    ) -> CreatedLocalKey:
+        key = raw_key or _new_key(AUDITOR_KEY_PREFIX)
+        _validate_prefix(key, AUDITOR_KEY_PREFIX)
+        return CreatedLocalKey(
+            raw_key=key,
+            record=self._create_key(
+                key_type="auditor", workspace_id=workspace_id, agent_id=None,
+                raw_key=key, now=now, key_id=key_id,
+            ),
+        )
+
+    def create_service_operator_key(
+        self, *, raw_key: str | None = None,
+        now: datetime | None = None, key_id: str | None = None,
+    ) -> CreatedLocalKey:
+        # Global operator key: workspace_id="*" mirrors the SQLite reference.
+        key = raw_key or _new_key(SERVICE_OPERATOR_KEY_PREFIX)
+        _validate_prefix(key, SERVICE_OPERATOR_KEY_PREFIX)
+        return CreatedLocalKey(
+            raw_key=key,
+            record=self._create_key(
+                key_type="service_operator", workspace_id="*", agent_id=None,
                 raw_key=key, now=now, key_id=key_id,
             ),
         )
@@ -167,6 +229,24 @@ class PostgresLocalKeyRepository:
         ):
             return None
         return PepIdentity(workspace_id=record.workspace_id, pep_id=record.agent_id)
+
+    def resolve_auditor_identity(
+        self, raw_key: str, *, now: datetime | None = None,
+    ) -> WorkspaceIdentity | None:
+        record = self.get_by_raw_key(raw_key, now=now)
+        if record is None or record.status != "active" or record.key_type != "auditor":
+            return None
+        return WorkspaceIdentity(workspace_id=record.workspace_id)
+
+    def resolve_service_operator(
+        self, raw_key: str, *, now: datetime | None = None,
+    ) -> bool:
+        record = self.get_by_raw_key(raw_key, now=now)
+        return bool(
+            record is not None
+            and record.status == "active"
+            and record.key_type == "service_operator"
+        )
 
     def revoke_key(
         self, key_id: str, *, now: datetime | None = None,
@@ -300,6 +380,27 @@ class PostgresGrantRequestRepository:
         if row is None:
             raise ValueError(f"unknown grant request_id: {request.request_id}")
 
+    def decide_request(self, request: GrantRequest) -> bool:
+        with self._conn.transaction():
+            row = self._conn.execute(
+                """
+                UPDATE grant_requests SET
+                    status = %s, decided_at = %s, decided_by = %s,
+                    decision_reason = %s, issued_grant_ref = %s
+                WHERE request_id = %s AND status = 'pending'
+                RETURNING request_id
+                """,
+                (
+                    request.status,
+                    request.decided_at,
+                    request.decided_by,
+                    request.decision_reason,
+                    request.issued_grant_ref,
+                    request.request_id,
+                ),
+            ).fetchone()
+        return row is not None
+
 
 class PostgresSubjectTokenRepository:
     def __init__(self, conn: Any) -> None:
@@ -382,17 +483,13 @@ class PostgresReplayStore:
                 (token_id,),
             ).fetchone()[0]
             if per_token >= self._max_per_token:
-                self._conn.execute(
-                    """
-                    DELETE FROM pop_replay_nonces
-                    WHERE (token_id, nonce) = (
-                        SELECT token_id, nonce FROM pop_replay_nonces
-                        WHERE token_id = %s ORDER BY ts, nonce LIMIT 1
-                    )
-                    """,
-                    (token_id,),
-                )
-            elif self._conn.execute(
+                # Expired rows were purged above, so this token's cap is full of
+                # still-fresh nonces. NEVER evict a live nonce to make room
+                # (ADR 0007): a dropped fresh nonce would let its captured proof
+                # replay within the window. Fail closed; operators can raise the
+                # cap.
+                return False
+            if self._conn.execute(
                 "SELECT COUNT(*) FROM pop_replay_nonces"
             ).fetchone()[0] >= self._max:
                 return False

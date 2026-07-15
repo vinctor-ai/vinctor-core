@@ -26,6 +26,10 @@ and runtime operations.
 | Self-hostable service | Foundation supported | An operator can run the same SQLite-backed service on a machine they control. |
 | Hosted managed service | Future | Not implemented in this repository. |
 
+To adopt Vinctor without breaking an agent's workflow, start in a non-blocking
+mode and cut over gradually — see
+[Gradual rollout: observe → simulate → enforce](gradual-rollout.md).
+
 ## What This Provides
 
 - a SQLite-backed HTTP service runtime

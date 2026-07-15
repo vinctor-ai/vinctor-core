@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import tempfile
 from datetime import UTC, datetime, timedelta
 from http.client import HTTPConnection
@@ -17,13 +16,14 @@ from vinctor_service import (
     WorkspaceIdentity,
     create_v1_http_server,
 )
+from vinctor_service.sqlite_txn import connect_sqlite
 
 
 def main() -> None:
     now = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
     with tempfile.TemporaryDirectory() as temp_dir:
         db_path = Path(temp_dir) / "vinctor.sqlite"
-        conn = sqlite3.connect(db_path, check_same_thread=False)
+        conn = connect_sqlite(db_path, check_same_thread=False)
         try:
             service = SQLiteV1Service(conn)
             service.insert_grant(
@@ -92,6 +92,8 @@ def main() -> None:
                     headers={"X-Workspace-Key": "workspace_key_other"},
                 )
                 assert other_status == 404
+                # Operator boundary-registry lookup (workspace key), not the agent
+                # enforce path — it keeps the precise reason.
                 assert other["error"] == "boundary_not_found"
 
                 disable_status, disabled = post_json(
@@ -117,7 +119,7 @@ def main() -> None:
                     },
                 )
                 assert disabled_enforce_status == 403
-                assert disabled_enforce["error"] == "boundary_inactive"
+                assert disabled_enforce["error"] == "boundary_unavailable"
 
                 enable_status, enabled = post_json(
                     server,

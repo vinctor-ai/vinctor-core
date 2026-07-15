@@ -43,7 +43,6 @@ def _request(
         grant_ref="grt_main",
         action=action,
         resource=resource,
-        pep_workspace_id="ws_main",
         subject_token=subject_token,
     )
 
@@ -76,6 +75,7 @@ def _enforce(raw, repo, **over):
         grant_repository=InMemoryGrantRepository((_grant(),)),
         now=NOW,
         audit_writer=InMemoryAuditWriter(),
+        pep_workspace_id="ws_main",
         subject_token_repository=repo,
     )
 
@@ -88,6 +88,7 @@ def test_bound_token_for_exact_action_resource_permits() -> None:
         grant_repository=InMemoryGrantRepository((_grant(),)),
         now=NOW,
         audit_writer=audit,
+        pep_workspace_id="ws_main",
         subject_token_repository=repo,
     )
     assert response.decision == "permit"
@@ -102,6 +103,7 @@ def test_bound_token_for_different_action_denies_invalid_no_leak() -> None:
         grant_repository=InMemoryGrantRepository((_grant(),)),
         now=NOW,
         audit_writer=audit,
+        pep_workspace_id="ws_main",
         subject_token_repository=repo,
     )
     assert response.status_code == 403
@@ -120,6 +122,7 @@ def test_bound_token_for_different_resource_denies_invalid() -> None:
         grant_repository=InMemoryGrantRepository((_grant(),)),
         now=NOW,
         audit_writer=audit,
+        pep_workspace_id="ws_main",
         subject_token_repository=repo,
     )
     assert response.status_code == 403

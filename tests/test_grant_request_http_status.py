@@ -11,13 +11,14 @@ from vinctor_service import (
     WorkspaceIdentity,
 )
 from vinctor_service.grant_request_http import handle_v1_grant_requests_http
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 WORKSPACE_HEADERS = {"X-Workspace-Key": "workspace_key_main"}
 
 
 def connect_db(tmp_path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(tmp_path / "vinctor.sqlite")
+    return connect_sqlite(tmp_path / "vinctor.sqlite")
 
 
 def workspace_identities() -> dict[str, WorkspaceIdentity]:

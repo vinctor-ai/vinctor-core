@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
 from vinctor_service.postgres import PostgresV1Service, connect_postgres
 from vinctor_service.service_config import ServiceRuntimeConfig
 from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite_txn import connect_sqlite
 
 
 @dataclass
@@ -42,7 +42,7 @@ def prepare_decision_storage(config: ServiceRuntimeConfig) -> DecisionStorageHan
     else:
         db_path = config.sqlite_db_path.expanduser()
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(db_path, check_same_thread=False)
+        conn = connect_sqlite(str(db_path), check_same_thread=False)
         backend = "sqlite"
         service_factory = SQLiteV1Service
 

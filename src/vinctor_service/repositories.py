@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import replace
 from datetime import datetime
 from typing import Protocol
@@ -34,6 +35,15 @@ class GrantRequestRepository(Protocol):
     def list_requests_for_workspace(self, workspace_id: str) -> tuple[GrantRequest, ...]: ...
 
     def update_request(self, request: GrantRequest) -> None: ...
+
+    def decide_request(self, request: GrantRequest) -> bool:
+        """Compare-and-set the decision: persist ``request``'s decision fields
+        only if the stored status is still ``pending``.
+
+        Returns False when the request is unknown or already decided, so a
+        losing concurrent decider aborts instead of clobbering the winner.
+        """
+        ...
 
 
 class AutoApprovalRuleRepository(Protocol):
@@ -138,6 +148,7 @@ class InMemoryGrantRequestRepository:
                 raise ValueError(f"duplicate grant request_id: {request.request_id}")
             requests_by_id[request.request_id] = request
         self._requests_by_id = requests_by_id
+        self._decide_lock = threading.Lock()
 
     def insert_request(self, request: GrantRequest) -> None:
         if request.request_id in self._requests_by_id:
@@ -158,6 +169,15 @@ class InMemoryGrantRequestRepository:
         if request.request_id not in self._requests_by_id:
             raise ValueError(f"unknown grant request_id: {request.request_id}")
         self._requests_by_id[request.request_id] = request
+
+    def decide_request(self, request: GrantRequest) -> bool:
+        # The lock makes check-then-set atomic under the threaded HTTP runtime.
+        with self._decide_lock:
+            current = self._requests_by_id.get(request.request_id)
+            if current is None or current.status != "pending":
+                return False
+            self._requests_by_id[request.request_id] = request
+            return True
 
 
 class InMemoryAutoApprovalRuleRepository:

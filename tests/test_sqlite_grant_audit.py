@@ -15,6 +15,7 @@ from vinctor_service import (
     insert_grant,
 )
 from vinctor_service.sqlite import _grant_from_row
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -55,7 +56,7 @@ def request(
 
 
 def connect_db(tmp_path: Path, name: str = "vinctor.sqlite") -> sqlite3.Connection:
-    conn = sqlite3.connect(tmp_path / name)
+    conn = connect_sqlite(tmp_path / name)
     init_sqlite_schema(conn)
     return conn
 

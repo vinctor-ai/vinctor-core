@@ -40,11 +40,12 @@ def test_simulate_records_would_permit_without_enforcing() -> None:
 
     assert response.status_code == 200
     assert response.would_decision == "permit"
-    assert response.scope_matched == "write:repo/feature/*"
     event = service.audit_events[0]
     assert response.audit_event_id == event.event_id
     assert event.event_type == "action_would_permit"
     assert event.decision == "permit"
+    # No-disclosure: the matched scope is audit-only, never in the response.
+    assert event.scope_matched == "write:repo/feature/*"
 
 
 def test_simulate_records_would_deny_as_successful_dry_run() -> None:

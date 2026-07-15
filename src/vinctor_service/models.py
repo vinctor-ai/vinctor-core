@@ -58,11 +58,16 @@ class V1EnforceRequest:
 class V1DelegatedEnforceRequest:
     """An on-behalf-of enforce request from a Policy Enforcement Point (PEP).
 
-    The PEP authenticates with its own key (``pep_id`` / ``pep_workspace_id``)
-    and asserts the subject it is asking about (``workspace_id`` / ``agent_id``).
-    See ADR 0007. Identity is proven by presenting a ``subject_token``; a
-    PoP-required token additionally carries a ``subject_token_proof`` (an HMAC
-    proof-of-possession over this request's action/resource — see ADR 0007 C3).
+    The PEP authenticates with its own key and asserts the subject it is
+    asking about (``workspace_id`` / ``agent_id``). See ADR 0007. Every field
+    here is caller-asserted. The TRUSTED PEP workspace is deliberately NOT a
+    field of this DTO: it is derived from the authenticated key and passed to
+    ``delegated_enforce_v1_contract`` as its ``pep_workspace_id`` argument, so
+    the trusted value can never be supplied by (or confused with) the request
+    body — a self-asserted workspace here would defeat tenant isolation.
+    Identity is proven by presenting a ``subject_token``; a PoP-required token
+    additionally carries a ``subject_token_proof`` (an HMAC proof-of-possession
+    over this request's action/resource — see ADR 0007 C3).
     """
 
     pep_id: str
@@ -72,20 +77,26 @@ class V1DelegatedEnforceRequest:
     action: str
     resource: str
     boundary_id: str | None = None
-    pep_workspace_id: str | None = None
     subject_token: str | None = None
     subject_token_proof: str | None = None
 
 
 @dataclass(frozen=True)
 class V1EnforceResponse:
+    """Agent-facing enforce result (no-disclosure surface).
+
+    Deliberately carries ONLY the decision, coarse low-cardinality
+    ``error``/``reason`` codes, and the ``audit_event_id``. It must never grow
+    fields that reveal the classified action/resource, the grant's scopes, or
+    internal identifiers (grant_id/grant_ref/agent_id/boundary_id/
+    scope_matched) — an agent can call the core directly, so that detail
+    belongs to the operator-only audit event exclusively.
+    """
+
     status_code: int
     decision: Decision | None = None
     error: str | None = None
     reason: str | None = None
-    grant_id: str | None = None
-    agent_id: str | None = None
-    scope_matched: str | None = None
     audit_event_id: str | None = None
 
 
@@ -119,13 +130,12 @@ class V1SimulateRequest:
 
 @dataclass(frozen=True)
 class V1SimulateResponse:
+    """Agent-facing simulate result (same no-disclosure surface as enforce)."""
+
     status_code: int
     would_decision: Decision | None = None
     error: str | None = None
     reason: str | None = None
-    grant_id: str | None = None
-    agent_id: str | None = None
-    scope_matched: str | None = None
     audit_event_id: str | None = None
 
 
@@ -149,6 +159,19 @@ class GrantIssueResult:
     # only). Kept separate from `reason` so the low-cardinality reason code (used
     # for status mapping and the audit trail, ADR 0008) stays stable.
     detail: str | None = None
+
+
+@dataclass(frozen=True)
+class AgentIssuableBounds:
+    """One consistent snapshot of an agent's issuable-scope bounds row.
+
+    Both fields come from a single read of the bounds row so grant issuance
+    validates scopes and max TTL against the same version of the bounds (no
+    torn read across a concurrent set_bounds).
+    """
+
+    scopes: tuple[str, ...]
+    max_ttl_seconds: int | None
 
 
 @dataclass(frozen=True)

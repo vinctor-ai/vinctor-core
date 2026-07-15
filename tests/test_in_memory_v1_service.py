@@ -144,6 +144,7 @@ def test_in_memory_v1_service_fails_closed_for_disabled_boundary() -> None:
 
     assert response.status_code == 403
     assert response.decision == "deny"
-    assert response.error == "boundary_inactive"
+    assert response.error == "boundary_unavailable"
+    assert service.audit_events[0].reason == "boundary_inactive"  # audit keeps precise
     assert service.audit_events[0].boundary_id == "bnd_disabled"
     assert service.audit_events[0].runtime == "claude-code"

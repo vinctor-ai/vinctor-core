@@ -21,12 +21,13 @@ from vinctor_service import (
     init_sqlite_schema,
     insert_grant,
 )
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
 
 def connect_db(tmp_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(tmp_path / "vinctor.sqlite")
+    conn = connect_sqlite(tmp_path / "vinctor.sqlite")
     init_sqlite_schema(conn)
     return conn
 
@@ -220,10 +221,10 @@ def test_sqlite_disabled_boundary_fails_closed_and_writes_audit(
 
     assert response.status_code == 403
     assert response.decision == "deny"
-    assert response.error == "boundary_inactive"
+    assert response.error == "boundary_unavailable"  # coarse for the agent
     row = audit_row(conn, response.audit_event_id or "")
     assert row["decision"] == "deny"
-    assert row["reason"] == "boundary_inactive"
+    assert row["reason"] == "boundary_inactive"  # operator audit keeps precise
     assert row["boundary_id"] == "bnd_main"
     assert row["runtime"] == "claude-code"
     assert row["boundary_type"] == "pretooluse"
@@ -247,8 +248,9 @@ def test_sqlite_missing_boundary_fails_closed_with_attempted_id_only(
 
     assert response.status_code == 403
     assert response.decision == "deny"
-    assert response.error == "boundary_not_found"
+    assert response.error == "boundary_unavailable"
     row = audit_row(conn, response.audit_event_id or "")
+    assert row["reason"] == "boundary_not_found"  # operator audit keeps precise
     assert row["boundary_id"] == "bnd_missing"
     assert row["runtime"] is None
     assert row["boundary_type"] is None

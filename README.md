@@ -271,6 +271,10 @@ The response is `200` for both evaluated outcomes and reports
 execution. Every successful calculation is stored as `action_would_permit` or
 `action_would_deny`; invalid requests and unavailable storage fail explicitly.
 
+For rolling this out end to end — observe → simulate → selective enforcement →
+enforce, driven by the PEP's `VINCTOR_ENFORCEMENT_MODE` — see
+[docs/deployment/gradual-rollout.md](docs/deployment/gradual-rollout.md).
+
 Restart with explicit keys:
 
 ```bash

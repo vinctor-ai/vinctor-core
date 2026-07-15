@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -9,6 +8,7 @@ import pytest
 from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.models import GrantIssueRequest
 from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite_txn import connect_sqlite
 from vinctor_service.storage_ops import (
     backup_sqlite,
     migrate_sqlite,
@@ -21,7 +21,7 @@ NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
 
 def _seed_db(db_path: Path) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         service = SQLiteV1Service(conn)
         service.set_agent_issuable_scope_bounds(
@@ -58,9 +58,9 @@ def test_backup_sqlite_creates_queryable_copy(tmp_path: Path) -> None:
 
     assert result.output_path == output_path
     assert result.bytes > 0
-    assert result.schema_versions == tuple(range(1, 13))
+    assert result.schema_versions == tuple(range(1, 15))
 
-    conn = sqlite3.connect(output_path)
+    conn = connect_sqlite(output_path)
     try:
         grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
             "grt_seed"
@@ -95,8 +95,8 @@ def test_reset_clears_data_but_restores_schema(tmp_path: Path) -> None:
 
     result = reset_sqlite(db_path)
 
-    assert result.schema_versions == tuple(range(1, 13))
-    conn = sqlite3.connect(db_path)
+    assert result.schema_versions == tuple(range(1, 15))
+    conn = connect_sqlite(db_path)
     try:
         service = SQLiteV1Service(conn, initialize_schema=False)
         assert service.grant_repository.get_by_ref("grt_seed") is None
@@ -111,7 +111,7 @@ def test_reset_recreates_missing_db(tmp_path: Path) -> None:
     result = reset_sqlite(db_path)
 
     assert db_path.exists()
-    assert result.schema_versions == tuple(range(1, 13))
+    assert result.schema_versions == tuple(range(1, 15))
 
 
 def test_read_schema_versions_missing_db_returns_none(tmp_path: Path) -> None:
@@ -122,7 +122,7 @@ def test_read_schema_versions_existing_db(tmp_path: Path) -> None:
     db_path = tmp_path / "vinctor.sqlite"
     _seed_db(db_path)
 
-    assert read_schema_versions(db_path) == tuple(range(1, 13))
+    assert read_schema_versions(db_path) == tuple(range(1, 15))
 
 
 def test_read_schema_versions_does_not_create_db(tmp_path: Path) -> None:
@@ -141,8 +141,8 @@ def test_restore_replaces_db_from_snapshot(tmp_path: Path) -> None:
     result = restore_sqlite(target, source)
 
     assert result.input_path == source
-    assert result.schema_versions == tuple(range(1, 13))
-    conn = sqlite3.connect(target)
+    assert result.schema_versions == tuple(range(1, 15))
+    conn = connect_sqlite(target)
     try:
         grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
             "grt_seed"
@@ -160,7 +160,7 @@ def test_restore_overwrites_existing_target(tmp_path: Path) -> None:
 
     restore_sqlite(target, source)
 
-    assert read_schema_versions(target) == tuple(range(1, 13))
+    assert read_schema_versions(target) == tuple(range(1, 15))
 
 
 def test_restore_missing_input_raises(tmp_path: Path) -> None:
@@ -177,7 +177,7 @@ def test_restore_invalid_snapshot_raises_and_keeps_target(tmp_path: Path) -> Non
     with pytest.raises(ValueError):
         restore_sqlite(target, source)
 
-    assert read_schema_versions(target) == tuple(range(1, 13))
+    assert read_schema_versions(target) == tuple(range(1, 15))
 
 
 def test_migrate_initializes_and_reports_versions(tmp_path: Path) -> None:
@@ -186,7 +186,7 @@ def test_migrate_initializes_and_reports_versions(tmp_path: Path) -> None:
     result = migrate_sqlite(db_path)
 
     assert db_path.exists()
-    assert result.schema_versions == tuple(range(1, 13))
+    assert result.schema_versions == tuple(range(1, 15))
 
 
 def test_migrate_is_idempotent_and_preserves_data(tmp_path: Path) -> None:
@@ -195,12 +195,45 @@ def test_migrate_is_idempotent_and_preserves_data(tmp_path: Path) -> None:
 
     result = migrate_sqlite(db_path)
 
-    assert result.schema_versions == tuple(range(1, 13))
-    conn = sqlite3.connect(db_path)
+    assert result.schema_versions == tuple(range(1, 15))
+    conn = connect_sqlite(db_path)
     try:
         grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
             "grt_seed"
         )
+    finally:
+        conn.close()
+    assert grant is not None
+
+
+def test_restore_preserves_live_db_when_snapshot_chain_is_broken(tmp_path: Path) -> None:
+    live = tmp_path / "vinctor.sqlite"
+    _seed_db(live)
+
+    # A structurally valid snapshot whose audit chain has been tampered (the head
+    # row's hash nulled). It passes the up-front schema check but must fail the
+    # post-build chain verification, so the swap never happens.
+    snapshot = tmp_path / "snapshot.sqlite"
+    _seed_db(snapshot)
+    scon = connect_sqlite(snapshot)
+    scon.execute(
+        "UPDATE audit_events SET row_hash = NULL "
+        "WHERE seq = (SELECT MAX(seq) FROM audit_events)"
+    )
+    scon.commit()
+    scon.close()
+
+    with pytest.raises(ValueError, match="broken audit chain"):
+        restore_sqlite(live, snapshot)
+
+    # The failed restore never touched the live database (atomic swap-or-nothing):
+    # the original grant is still present.
+    assert live.exists()
+    conn = connect_sqlite(live)
+    try:
+        grant = SQLiteV1Service(
+            conn, initialize_schema=False
+        ).grant_repository.get_by_ref("grt_seed")
     finally:
         conn.close()
     assert grant is not None

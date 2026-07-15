@@ -14,12 +14,13 @@ from vinctor_service import (
     init_sqlite_schema,
     insert_grant,
 )
+from vinctor_service.sqlite_txn import connect_sqlite
 
 
 def main() -> None:
     now = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
     with TemporaryDirectory() as temp_dir:
-        conn = sqlite3.connect(f"{temp_dir}/vinctor.sqlite")
+        conn = connect_sqlite(f"{temp_dir}/vinctor.sqlite")
         init_sqlite_schema(conn)
 
         insert_grant(
@@ -76,7 +77,7 @@ def main() -> None:
             boundary_registry=registry,
         )
         assert inactive.status_code == 403
-        assert inactive.error == "boundary_inactive"
+        assert inactive.error == "boundary_unavailable"
 
         missing = enforce_v1_contract(
             _request(boundary_id="bnd_missing"),
@@ -86,7 +87,7 @@ def main() -> None:
             boundary_registry=registry,
         )
         assert missing.status_code == 403
-        assert missing.error == "boundary_not_found"
+        assert missing.error == "boundary_unavailable"
         assert _audit_boundary(conn, missing.audit_event_id or "") == (
             "bnd_missing",
             None,

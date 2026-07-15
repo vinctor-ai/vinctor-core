@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import socket
-import sqlite3
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from http.client import HTTPConnection
@@ -23,6 +22,7 @@ from vinctor_service.service_runtime import (
     serve_service_runtime,
 )
 from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -214,7 +214,7 @@ def test_service_runtime_service_operator_reads_only_global_auth_failures(
     key = SQLiteLocalKeyRepository(handle.conn).create_service_operator_key(
         raw_key="sok_demo", now=NOW
     )
-    handle.service.record_auth_failure(surface="enforce", boundary_id=None, now=NOW)
+    handle.service.record_auth_failure(surface="enforce", now=NOW)
     try:
         with running_runtime(handle):
             global_status, global_body, _ = request_json(
@@ -371,7 +371,7 @@ def test_service_runtime_wires_delegated_pep_enforce(tmp_path: Path) -> None:
     bootstrap.close()
 
     # Provision a PEP key for the workspace (no operator HTTP path exists yet).
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     SQLiteV1Service(conn)
     SQLiteLocalKeyRepository(conn).create_pep_key(
         workspace_id="ws_demo", pep_id="pep_runner", raw_key="pep_runner", now=NOW

@@ -31,7 +31,6 @@ def _request(raw: str) -> V1DelegatedEnforceRequest:
         grant_ref="grt_main",
         action="write",
         resource="repo/feature/readme",
-        pep_workspace_id="ws_main",
         subject_token=raw,
     )
 
@@ -61,6 +60,7 @@ def test_revoked_token_fails_closed_as_invalid() -> None:
         grant_repository=InMemoryGrantRepository((_grant(),)),
         now=NOW,
         audit_writer=audit,
+        pep_workspace_id="ws_main",
         subject_token_repository=repo,
     )
     assert response.status_code == 403

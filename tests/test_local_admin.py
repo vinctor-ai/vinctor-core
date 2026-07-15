@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
@@ -9,6 +8,7 @@ from threading import Thread
 from vinctor_service import GrantRequestCreateRequest, SQLiteV1Service
 from vinctor_service.local_admin import run_local_admin
 from vinctor_service.local_launcher import LocalLaunchConfig, prepare_local_service
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -134,7 +134,7 @@ def test_local_admin_bounds_and_audit_use_local_db(tmp_path: Path) -> None:
         ]
     )
 
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         service = SQLiteV1Service(conn)
         service.create_grant_request(

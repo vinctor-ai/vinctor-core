@@ -498,25 +498,25 @@ components:
         resource:
           type: string
     PermitResponse:
+      description: >-
+        No-disclosure agent-facing result: only the decision and the audit
+        pointer. Grant/agent identifiers and the matched scope are recorded in
+        the operator audit event, never returned to the caller.
       type: object
       required:
         - decision
       properties:
         decision:
           const: permit
-        grant_id:
-          type: string
-          nullable: true
-        agent_id:
-          type: string
-          nullable: true
-        scope_matched:
-          type: string
-          nullable: true
         audit_event_id:
           type: string
           nullable: true
     DenyResponse:
+      description: >-
+        No-disclosure agent-facing result: `error`/`reason` are coarse
+        low-cardinality codes (e.g. `action_denied`, `grant_revoked`) that
+        never name the classified action/resource, the grant's scopes, or any
+        internal identifier. Full detail is audit-only.
       type: object
       required:
         - decision
@@ -529,12 +529,6 @@ components:
           type: string
         reason:
           type: string
-        grant_id:
-          type: string
-          nullable: true
-        agent_id:
-          type: string
-          nullable: true
         audit_event_id:
           type: string
           nullable: true

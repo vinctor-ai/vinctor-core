@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from vinctor_core import Grant
 from vinctor_service import SQLiteGrantRepository, init_sqlite_schema, insert_grant
 from vinctor_service.repositories import InMemoryGrantRepository
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 11, 12, 0, tzinfo=UTC)
 
@@ -56,7 +56,7 @@ def test_in_memory_lists_grants_for_workspace_with_filters() -> None:
 
 
 def test_sqlite_lists_grants_for_workspace_with_filters(tmp_path: Path) -> None:
-    conn = sqlite3.connect(tmp_path / "vinctor.sqlite")
+    conn = connect_sqlite(tmp_path / "vinctor.sqlite")
     init_sqlite_schema(conn)
     insert_grant(conn, grant("grt_a", grant_id="grnt_a"))
     insert_grant(conn, grant("grt_b", grant_id="grnt_b", agent_id="agent_other"))

@@ -17,6 +17,7 @@ from vinctor_service.postgres import PostgresV1Service, connect_postgres
 from vinctor_service.postgres_control import PostgresLocalKeyRepository
 from vinctor_service.service_config import ServiceRuntimeConfig
 from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite_txn import connect_sqlite
 
 
 @dataclass
@@ -48,7 +49,7 @@ def prepare_service_runtime(
     else:
         db_path = config.sqlite_db_path.expanduser()
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(db_path, check_same_thread=False)
+        conn = connect_sqlite(db_path, check_same_thread=False)
     try:
         if config.storage_backend == "postgres":
             service = PostgresV1Service(conn)

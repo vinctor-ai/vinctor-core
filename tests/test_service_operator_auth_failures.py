@@ -1,15 +1,15 @@
-import sqlite3
 from datetime import UTC, datetime
 
 from vinctor_service.audit_http import handle_v1_service_auth_failures_http
 from vinctor_service.keys import SERVICE_OPERATOR_KEY_PREFIX, SQLiteLocalKeyRepository
 from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 7, 14, 12, 0, tzinfo=UTC)
 
 
 def test_service_operator_key_is_global_and_not_a_workspace_identity() -> None:
-    service = SQLiteV1Service(sqlite3.connect(":memory:"))
+    service = SQLiteV1Service(connect_sqlite(":memory:"))
     repository = SQLiteLocalKeyRepository(service.conn)
     created = repository.create_service_operator_key(
         raw_key="sok_test_secret",
@@ -24,8 +24,8 @@ def test_service_operator_key_is_global_and_not_a_workspace_identity() -> None:
 
 
 def test_service_operator_view_returns_only_unscoped_auth_failures() -> None:
-    service = SQLiteV1Service(sqlite3.connect(":memory:"))
-    service.record_auth_failure(surface="enforce", boundary_id=None, now=NOW)
+    service = SQLiteV1Service(connect_sqlite(":memory:"))
+    service.record_auth_failure(surface="enforce", now=NOW)
 
     response = handle_v1_service_auth_failures_http(
         method="GET",
@@ -45,8 +45,8 @@ def test_service_operator_view_returns_only_unscoped_auth_failures() -> None:
 
 
 def test_workspace_key_cannot_read_global_auth_failures() -> None:
-    service = SQLiteV1Service(sqlite3.connect(":memory:"))
-    service.record_auth_failure(surface="enforce", boundary_id=None, now=NOW)
+    service = SQLiteV1Service(connect_sqlite(":memory:"))
+    service.record_auth_failure(surface="enforce", now=NOW)
 
     response = handle_v1_service_auth_failures_http(
         method="GET",

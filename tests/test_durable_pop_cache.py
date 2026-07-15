@@ -12,12 +12,13 @@ from vinctor_service.sqlite import (
     get_sqlite_schema_versions,
     init_sqlite_schema,
 )
+from vinctor_service.sqlite_txn import connect_sqlite
 
 SKEW = 60
 
 
 def _conn(path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_sqlite(path)
     init_sqlite_schema(conn)
     return conn
 
@@ -110,18 +111,19 @@ def test_sqlite_replay_prunes_stale_entries(tmp_path) -> None:
 
 def test_sqlite_schema_records_version_9(tmp_path) -> None:
     conn = _conn(tmp_path / "v.sqlite")
-    assert get_sqlite_schema_versions(conn) == tuple(range(1, 13))
+    assert get_sqlite_schema_versions(conn) == tuple(range(1, 15))
 
 
 # ---- per-token partition (no cross-tenant lockout) -------------------------
 
 
 def test_sqlite_token_flood_does_not_lock_out_other_token(tmp_path) -> None:
-    # Token A floods its own nonces far past its per-token cap of 1; because each
-    # flood evicts A's OWN oldest, A's footprint stays at 1 row and never grows
-    # toward the generous global backstop. A FRESH proof for a DIFFERENT token B
-    # must still be accepted (no cross-token lockout) — this fails under a single
-    # global cap, where A's flood would have saturated capacity.
+    # Token A floods its own nonces far past its per-token cap of 1; beyond the
+    # cap each flood attempt is REJECTED (fail closed), so A's footprint stays
+    # at 1 row and never grows toward the generous global backstop. A FRESH
+    # proof for a DIFFERENT token B must still be accepted (no cross-token
+    # lockout) — this fails under a single global cap, where A's flood would
+    # have saturated capacity.
     store = SQLiteReplayStore(
         _conn(tmp_path / "v.sqlite"), max_entries=100, max_per_token=1
     )
@@ -133,14 +135,14 @@ def test_sqlite_token_flood_does_not_lock_out_other_token(tmp_path) -> None:
         )
         is True
     )
-    # A floods more distinct nonces: each evicts A's OWN oldest, net-zero global,
-    # never touching another token's capacity.
+    # A floods more distinct nonces: each is rejected at A's own cap, never
+    # evicting a1 and never touching another token's capacity.
     for i in range(2, 50):
         assert (
             store.check_and_record(
                 token_id="A", nonce=f"a{i}", ts=now_unix, now_unix=now_unix, skew=SKEW
             )
-            is True
+            is False
         )
     # A's live footprint never grew past its per-token cap despite the flood.
     a_rows = store._conn.execute(
@@ -156,10 +158,38 @@ def test_sqlite_token_flood_does_not_lock_out_other_token(tmp_path) -> None:
     )
 
 
-def test_sqlite_per_token_cap_evicts_own_oldest_not_others(tmp_path) -> None:
-    # With per-token cap 2: token A holds two nonces; a third nonce for A evicts
-    # A's OWN oldest (a1) -- so re-presenting a1 is fresh again -- while B's row
-    # is untouched (re-presenting B's nonce is still a replay).
+def test_sqlite_flood_cannot_evict_fresh_nonce_for_replay(tmp_path) -> None:
+    # SECURITY (ADR 0007): never evict a still-fresh nonce to make room. An
+    # attacker who captured a valid proof must not be able to flood the same
+    # token's cap with fresh nonces to push the captured nonce out and replay
+    # it inside the freshness window.
+    cap = 4
+    store = SQLiteReplayStore(
+        _conn(tmp_path / "v.sqlite"), max_entries=100, max_per_token=cap
+    )
+    now_unix = 1_000_000
+    # The captured proof's nonce: oldest ts in the window (still fresh).
+    assert store.check_and_record(
+        token_id="A", nonce="n1", ts=now_unix - 1, now_unix=now_unix, skew=SKEW
+    ) is True
+    # Attacker pushes `cap` more distinct fresh nonces for the SAME token.
+    for i in range(cap):
+        store.check_and_record(
+            token_id="A", nonce=f"flood{i}", ts=now_unix, now_unix=now_unix,
+            skew=SKEW,
+        )
+    # Re-presenting the captured nonce within the window MUST still be a
+    # replay: n1 was never evicted to make room for the flood.
+    assert store.check_and_record(
+        token_id="A", nonce="n1", ts=now_unix - 1, now_unix=now_unix, skew=SKEW
+    ) is False
+
+
+def test_sqlite_per_token_cap_full_of_fresh_fails_closed(tmp_path) -> None:
+    # When a token's cap is full of still-fresh nonces, a brand-new nonce is
+    # rejected (fail closed) — nothing is evicted, and other tokens are
+    # unaffected. Operators can raise the cap; correctness never depends on
+    # evicting a live nonce.
     store = SQLiteReplayStore(
         _conn(tmp_path / "v.sqlite"), max_entries=100, max_per_token=2
     )
@@ -168,24 +198,49 @@ def test_sqlite_per_token_cap_evicts_own_oldest_not_others(tmp_path) -> None:
         token_id="A", nonce="a1", ts=t, now_unix=t, skew=SKEW
     ) is True
     assert store.check_and_record(
-        token_id="B", nonce="b1", ts=t, now_unix=t, skew=SKEW
-    ) is True
-    # a2 has a strictly later ts so a1 is unambiguously A's oldest.
-    assert store.check_and_record(
         token_id="A", nonce="a2", ts=t + 1, now_unix=t, skew=SKEW
     ) is True
-    # A is now at its cap (a1, a2). A third nonce evicts A's oldest (a1).
+    # A's cap is full of fresh nonces -> a3 rejected (fail closed).
     assert store.check_and_record(
         token_id="A", nonce="a3", ts=t + 2, now_unix=t, skew=SKEW
-    ) is True
-    # a1 was evicted -> presenting a1 again is fresh (accepted), evicting a2 now.
+    ) is False
+    # Nothing was evicted: both held nonces are still replays.
     assert store.check_and_record(
-        token_id="A", nonce="a1", ts=t + 3, now_unix=t, skew=SKEW
-    ) is True
-    # B's row was never touched by A's churn: b1 is still a replay.
+        token_id="A", nonce="a1", ts=t, now_unix=t, skew=SKEW
+    ) is False
+    assert store.check_and_record(
+        token_id="A", nonce="a2", ts=t + 1, now_unix=t, skew=SKEW
+    ) is False
+    # A different token is unaffected by A's full cap.
     assert store.check_and_record(
         token_id="B", nonce="b1", ts=t, now_unix=t, skew=SKEW
-    ) is False
+    ) is True
+
+
+def test_sqlite_expired_entries_still_purged_at_cap(tmp_path) -> None:
+    # Fail-closed applies only to FRESH entries: once a window passes, expired
+    # rows are purged, so the store stays bounded across windows and the token
+    # is not locked out forever.
+    store = SQLiteReplayStore(
+        _conn(tmp_path / "v.sqlite"), max_entries=100, max_per_token=2
+    )
+    t0 = 1_000_000
+    assert store.check_and_record(
+        token_id="A", nonce="a1", ts=t0, now_unix=t0, skew=SKEW
+    ) is True
+    assert store.check_and_record(
+        token_id="A", nonce="a2", ts=t0, now_unix=t0, skew=SKEW
+    ) is True
+    # Next window: the t0 rows are expired -> purged, so a new nonce is
+    # accepted (no permanent lockout) and the footprint stays bounded.
+    t1 = t0 + SKEW + 1
+    assert store.check_and_record(
+        token_id="A", nonce="a3", ts=t1, now_unix=t1, skew=SKEW
+    ) is True
+    total = store._conn.execute(
+        "SELECT COUNT(*) FROM pop_replay_nonces"
+    ).fetchone()[0]
+    assert total == 1
 
 
 def test_sqlite_replay_within_token_still_detected_with_per_token_cap(tmp_path) -> None:

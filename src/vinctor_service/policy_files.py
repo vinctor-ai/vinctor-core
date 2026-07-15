@@ -3,6 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +18,7 @@ from vinctor_service.auto_approval import upsert_auto_approval_rule
 from vinctor_service.grants import validate_issuable_scope_bounds
 from vinctor_service.models import AutoApprovalRule
 from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite_txn import conn_txn_lock
 
 
 @dataclass(frozen=True)
@@ -56,6 +60,61 @@ def apply_policy_file(
     if policy_workspace_id is not None and policy_workspace_id != workspace_id:
         raise ValueError("policy workspace_id does not match selected workspace")
 
+    # The WHOLE apply — validation reads, every write, and the version-snapshot
+    # record — runs as ONE unit of work, serialized per workspace: a failure
+    # anywhere leaves the store exactly as it was, two concurrent applies queue
+    # instead of interleaving, and no reader ever observes a half-applied
+    # policy or a version snapshot that disagrees with the live policy.
+    if getattr(service, "storage_backend", None) == "postgres":
+        from vinctor_service.postgres_policy import postgres_policy_apply_transaction
+
+        transaction = postgres_policy_apply_transaction(
+            service=service, workspace_id=workspace_id
+        )
+    else:
+        transaction = _sqlite_apply_transaction(service.conn)
+    with transaction:
+        return _apply_policy_document(
+            document,
+            service=service,
+            workspace_id=workspace_id,
+            applied_by=applied_by,
+            now=now,
+        )
+
+
+@contextmanager
+def _sqlite_apply_transaction(conn: sqlite3.Connection) -> Iterator[None]:
+    """One BEGIN IMMEDIATE transaction for the whole policy apply.
+
+    BEGIN IMMEDIATE takes the database write lock up front, so concurrent
+    applies from other connections/processes serialize at the start instead of
+    interleaving, and neither ever sees a half-applied state. The SQLite
+    repositories' write methods join this open transaction rather than
+    committing it (see sqlite._write_scope); everything commits together here
+    or rolls back together on any failure. The per-connection lock serializes
+    this scope with every other transaction on the connection (apply, rollback,
+    and the service mutators) so concurrent same-connection callers cannot
+    collide on BEGIN IMMEDIATE.
+    """
+    with conn_txn_lock(conn):
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            conn.rollback()
+            raise
+        conn.commit()
+
+
+def _apply_policy_document(
+    document: dict[str, object],
+    *,
+    service: Any,
+    workspace_id: str,
+    applied_by: str,
+    now: datetime,
+) -> PolicyApplyResult:
     # Parse and fully validate the ENTIRE document (shape and scope grammar)
     # BEFORE any write. A malformed later entry must not leave earlier entries
     # committed, so apply is all-or-nothing with respect to validation. Only
@@ -134,14 +193,28 @@ def apply_policy_file(
             now=now,
         )
 
-    policy_version = _record_policy_version(
-        service=service,
-        workspace_id=workspace_id,
-        action="apply",
-        source_version=None,
-        applied_by=applied_by,
-        now=now,
-    )
+    # Record the immutable version snapshot INSIDE the same transaction: the
+    # version either commits with the writes it describes or unwinds with them.
+    if getattr(service, "storage_backend", None) == "postgres":
+        from vinctor_service.postgres_policy import record_postgres_policy_version
+
+        policy_version = record_postgres_policy_version(
+            service=service,
+            workspace_id=workspace_id,
+            action="apply",
+            source_version=None,
+            applied_by=applied_by,
+            now=now,
+        )
+    else:
+        policy_version = _insert_policy_version(
+            service=service,
+            workspace_id=workspace_id,
+            action="apply",
+            source_version=None,
+            applied_by=applied_by,
+            now=now,
+        )
     return PolicyApplyResult(
         workspace_id=workspace_id,
         bounds_set=len(parsed_bounds),
@@ -198,18 +271,21 @@ def rollback_policy_version(
             applied_by=applied_by,
             now=now,
         )
-    row = service.conn.execute(
-        """
-        SELECT snapshot_json
-        FROM policy_versions
-        WHERE workspace_id = ? AND version = ?
-        """,
-        (workspace_id, version),
-    ).fetchone()
-    if row is None:
-        raise ValueError(f"unknown policy version: {version}")
-    snapshot = _validated_policy_snapshot(json.loads(row[0]))
-    with service.conn:
+    with _sqlite_apply_transaction(service.conn):
+        # Read the snapshot INSIDE the serialized transaction so a concurrent
+        # apply cannot change it between the lookup and the restore (the read
+        # used to happen before the write lock was held).
+        row = service.conn.execute(
+            """
+            SELECT snapshot_json
+            FROM policy_versions
+            WHERE workspace_id = ? AND version = ?
+            """,
+            (workspace_id, version),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown policy version: {version}")
+        snapshot = _validated_policy_snapshot(json.loads(row[0]))
         _restore_policy_snapshot(
             service=service,
             workspace_id=workspace_id,
@@ -229,37 +305,6 @@ def rollback_policy_version(
         restored_version=version,
         policy_version=new_version,
     )
-
-
-def _record_policy_version(
-    *,
-    service: Any,
-    workspace_id: str,
-    action: str,
-    source_version: int | None,
-    applied_by: str,
-    now: datetime,
-) -> int:
-    if getattr(service, "storage_backend", None) == "postgres":
-        from vinctor_service.postgres_policy import record_postgres_policy_version
-
-        return record_postgres_policy_version(
-            service=service,
-            workspace_id=workspace_id,
-            action=action,
-            source_version=source_version,
-            applied_by=applied_by,
-            now=now,
-        )
-    with service.conn:
-        return _insert_policy_version(
-            service=service,
-            workspace_id=workspace_id,
-            action=action,
-            source_version=source_version,
-            applied_by=applied_by,
-            now=now,
-        )
 
 
 def _insert_policy_version(
