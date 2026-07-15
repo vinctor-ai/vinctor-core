@@ -204,3 +204,36 @@ def test_migrate_is_idempotent_and_preserves_data(tmp_path: Path) -> None:
     finally:
         conn.close()
     assert grant is not None
+
+
+def test_restore_preserves_live_db_when_snapshot_chain_is_broken(tmp_path: Path) -> None:
+    live = tmp_path / "vinctor.sqlite"
+    _seed_db(live)
+
+    # A structurally valid snapshot whose audit chain has been tampered (the head
+    # row's hash nulled). It passes the up-front schema check but must fail the
+    # post-build chain verification, so the swap never happens.
+    snapshot = tmp_path / "snapshot.sqlite"
+    _seed_db(snapshot)
+    scon = sqlite3.connect(snapshot)
+    scon.execute(
+        "UPDATE audit_events SET row_hash = NULL "
+        "WHERE seq = (SELECT MAX(seq) FROM audit_events)"
+    )
+    scon.commit()
+    scon.close()
+
+    with pytest.raises(ValueError, match="broken audit chain"):
+        restore_sqlite(live, snapshot)
+
+    # The failed restore never touched the live database (atomic swap-or-nothing):
+    # the original grant is still present.
+    assert live.exists()
+    conn = sqlite3.connect(live)
+    try:
+        grant = SQLiteV1Service(
+            conn, initialize_schema=False
+        ).grant_repository.get_by_ref("grt_seed")
+    finally:
+        conn.close()
+    assert grant is not None
