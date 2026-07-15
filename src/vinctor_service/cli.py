@@ -608,13 +608,16 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
         "list",
         help="List recent audit events (filterable).",
         description="List recent audit events, filterable by event type, grant ref, "
-        "boundary id, or request id.",
+        "boundary id, request id, or rejection reason code.",
     )
     audit_list.add_argument("--limit", type=int, default=20)
     audit_list.add_argument("--event")
     audit_list.add_argument("--grant-ref")
     audit_list.add_argument("--boundary-id")
     audit_list.add_argument("--request-id")
+    audit_list.add_argument(
+        "--reason", help="Filter by rejection reason_code (e.g. pop_required)."
+    )
     auth_failures = audit_commands.add_parser(
         "auth-failures",
         help="List unattributed authentication failures (service operator only).",
@@ -2636,6 +2639,8 @@ def _audit_event_matches(event: object, args: argparse.Namespace) -> bool:
     if args.grant_ref and event.grant_ref != args.grant_ref:
         return False
     if args.boundary_id and event.boundary_id != args.boundary_id:
+        return False
+    if args.reason and event.reason_code != args.reason:
         return False
     if args.request_id:
         request_resource = f"grant_request/{args.request_id}"

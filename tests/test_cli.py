@@ -1656,6 +1656,40 @@ def test_vinctor_cli_connection_flag_accepted_after_subcommand(tmp_path: Path) -
     assert both == before
 
 
+def test_vinctor_cli_audit_list_filters_by_reason(tmp_path) -> None:
+    # Completes the require-pop footgun surfacing: an operator can pull a specific
+    # rejection class (e.g. every `pop_required` lockout) instead of eyeballing the
+    # whole log. Storage already supports reason filtering; this exposes it on the CLI.
+    from vinctor_core.audit import build_rejection_audit_event
+
+    db_path = tmp_path / "vinctor.sqlite"
+    conn = connect_sqlite(db_path)
+    try:
+        writer = SQLiteV1Service(conn).audit_writer
+        writer.write(
+            build_rejection_audit_event(
+                reason_code="pop_required", workspace_id="ws_demo", agent_id="agent_a",
+                action="write", resource="repo/x", created_at=NOW,
+            )
+        )
+        writer.write(
+            build_rejection_audit_event(
+                reason_code="agent_grant_mismatch", workspace_id="ws_demo",
+                agent_id="agent_a", action="write", resource="repo/y", created_at=NOW,
+            )
+        )
+    finally:
+        conn.close()
+
+    common = ["--json", "--db", str(db_path)]
+    everything = _run([*common, "operator", "audit", "list"])
+    filtered = _run([*common, "operator", "audit", "list", "--reason", "pop_required"])
+
+    assert len(everything["audit_events"]) == 2
+    assert len(filtered["audit_events"]) == 1
+    assert filtered["audit_events"][0]["reason_code"] == "pop_required"
+
+
 def test_vinctor_cli_workspace_id_default_survives_after_subcommand_output_flag(
     tmp_path: Path,
 ) -> None:
