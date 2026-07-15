@@ -22,6 +22,7 @@ from vinctor_service.sqlite import (
     get_sqlite_schema_versions,
     init_sqlite_schema,
 )
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -61,7 +62,7 @@ def _event(
 
 def _sqlite_service(tmp_path: Path) -> SQLiteV1Service:
     tmp_path.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(tmp_path / "vinctor.sqlite")
+    conn = connect_sqlite(tmp_path / "vinctor.sqlite")
     return SQLiteV1Service(conn)
 
 
@@ -75,13 +76,13 @@ def _both_services(tmp_path: Path) -> list[object]:
 
 
 def test_schema_versions_include_audit_index_migration_10(tmp_path: Path) -> None:
-    conn = sqlite3.connect(tmp_path / "vinctor.sqlite")
+    conn = connect_sqlite(tmp_path / "vinctor.sqlite")
     init_sqlite_schema(conn)
     assert get_sqlite_schema_versions(conn) == tuple(range(1, 15))
 
 
 def test_audit_events_workspace_index_exists(tmp_path: Path) -> None:
-    conn = sqlite3.connect(tmp_path / "vinctor.sqlite")
+    conn = connect_sqlite(tmp_path / "vinctor.sqlite")
     init_sqlite_schema(conn)
     indexes = {
         row[1]
@@ -280,7 +281,7 @@ class _RecordingConnection(sqlite3.Connection):
 
 
 def _recording_service(tmp_path: Path) -> SQLiteV1Service:
-    conn = sqlite3.connect(
+    conn = connect_sqlite(
         tmp_path / "vinctor.sqlite", factory=_RecordingConnection
     )
     return SQLiteV1Service(conn)

@@ -1,4 +1,3 @@
-import sqlite3
 from datetime import UTC, datetime, timedelta
 
 from vinctor_core.enforce import evaluate_enforce
@@ -9,6 +8,7 @@ from vinctor_service import (
     V1DelegatedEnforceRequest,
     V1EnforceRequest,
 )
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -135,7 +135,7 @@ def test_sqlite_hardened_agent_denies_without_boundary(tmp_path) -> None:
     # Pins the production (SQLite) wiring: the per-agent flag must be consulted on
     # the SQLite enforce path too, not only InMemory (a dropped repo there would be
     # a silent fail-open the InMemory tests cannot catch).
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     service = SQLiteV1Service(conn)
     service.insert_grant(_grant())
     service.agent_enforcement_settings_repository.set_require_boundary(
@@ -151,7 +151,7 @@ def test_sqlite_hardened_agent_denies_without_boundary(tmp_path) -> None:
 
 def test_sqlite_unhardened_agent_permits_without_boundary(tmp_path) -> None:
     # Default-off regression on the real backend.
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     service = SQLiteV1Service(conn)
     service.insert_grant(_grant())
     request = V1EnforceRequest(

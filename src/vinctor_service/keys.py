@@ -10,7 +10,7 @@ from secrets import token_urlsafe
 from typing import Literal
 
 from vinctor_service.boundary_http import WorkspaceIdentity
-from vinctor_service.sqlite_txn import conn_txn_lock
+from vinctor_service.sqlite_txn import conn_txn_lock, require_serialized
 from vinctor_service.v1_http import AgentIdentity, PepIdentity
 
 
@@ -65,7 +65,7 @@ class CreatedLocalKey:
 
 class SQLiteLocalKeyRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = conn
+        self._conn = require_serialized(conn)
 
     @contextmanager
     def transaction(self) -> Iterator[None]:

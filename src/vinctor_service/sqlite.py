@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -75,11 +74,8 @@ from vinctor_service.observations import record_observation
 from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS
 from vinctor_service.simulations import simulate_v1_contract
 from vinctor_service.sqlite_txn import (
-    atomic_write_deferral,
     conn_txn_lock,
-)
-from vinctor_service.sqlite_txn import (
-    emit_or_defer as _emit_or_defer,
+    require_serialized,
 )
 from vinctor_service.subject_tokens import mint_subject_token
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
@@ -98,6 +94,7 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
     must own its transaction, since its commits would otherwise seal the
     caller's partial write).
     """
+    conn = require_serialized(conn)
     with conn_txn_lock(conn):
         if conn.in_transaction:
             raise RuntimeError(
@@ -400,6 +397,7 @@ def _apply_sqlite_schema(conn: sqlite3.Connection) -> None:
 
 
 def insert_grant(conn: sqlite3.Connection, grant: Grant) -> None:
+    conn = require_serialized(conn)
     existing = conn.execute(
         "SELECT 1 FROM grants WHERE grant_ref = ?",
         (grant.grant_ref,),
@@ -660,7 +658,7 @@ def get_sqlite_schema_versions(conn: sqlite3.Connection) -> tuple[int, ...]:
 
 class SQLiteGrantRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = conn
+        self._conn = require_serialized(conn)
 
     def get_by_ref(self, grant_ref: str) -> Grant | None:
         row = self._conn.execute(
@@ -772,7 +770,7 @@ def _atomic_write(conn: sqlite3.Connection) -> Iterator[None]:
         if conn.in_transaction:
             yield
             return
-        with atomic_write_deferral(conn):
+        with conn.atomic_write_deferral():
             conn.execute("BEGIN IMMEDIATE")
             try:
                 yield
@@ -784,7 +782,7 @@ def _atomic_write(conn: sqlite3.Connection) -> Iterator[None]:
 
 class SQLiteAgentIssuableScopeBoundsRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = conn
+        self._conn = require_serialized(conn)
 
     def get_bounds(self, *, workspace_id: str, agent_id: str) -> tuple[str, ...] | None:
         row = self._conn.execute(
@@ -877,7 +875,7 @@ class SQLiteAgentIssuableScopeBoundsRepository:
 
 class SQLiteAgentEnforcementSettingsRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = conn
+        self._conn = require_serialized(conn)
 
     def get_require_boundary(self, *, workspace_id: str, agent_id: str) -> bool:
         row = self._conn.execute(
@@ -1012,7 +1010,7 @@ class SQLiteAgentEnforcementSettingsRepository:
 
 class SQLiteGrantRequestRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = conn
+        self._conn = require_serialized(conn)
 
     def insert_request(self, request: GrantRequest) -> None:
         if self.get_request(request.request_id) is not None:
@@ -1159,7 +1157,7 @@ class SQLiteReplayStore:
         max_entries: int = 10000,
         max_per_token: int = 256,
     ) -> None:
-        self._conn = conn
+        self._conn = require_serialized(conn)
         self._max = max_entries
         # Per-token-id row cap. The global cap alone couples tenants: one token
         # could mint distinct fresh nonces up to ``max_entries`` and lock out
@@ -1168,17 +1166,15 @@ class SQLiteReplayStore:
         # cap has its NEW proofs rejected (fail closed), never evicting any row —
         # so the global cap stays a generous backstop, not a cross-tenant lever.
         self._max_per_token = max_per_token
-        # The live SQLite service shares ONE connection (check_same_thread=False)
-        # across ThreadingHTTPServer threads; serialize the multi-statement
-        # transaction within-process. The PK + IntegrityError covers cross-process
-        # / cross-thread races that slip past the lock.
-        self._lock = threading.Lock()
 
     def check_and_record(
         self, *, token_id: str, nonce: str, ts: int, now_unix: int, skew: int
     ) -> bool:
         cutoff = now_unix - skew
-        with self._lock, _write_scope(self._conn):
+        # _write_scope holds the connection's re-entrant lock across the whole
+        # check-then-insert, serializing it within-process; the PK +
+        # IntegrityError below still covers cross-process/thread races.
+        with _write_scope(self._conn):
             self._conn.execute(
                 "DELETE FROM pop_replay_nonces WHERE ts < ?", (cutoff,)
             )
@@ -1219,7 +1215,7 @@ class SQLiteReplayStore:
 
 class SQLiteSubjectTokenRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = conn
+        self._conn = require_serialized(conn)
 
     def insert(self, token: SubjectToken) -> None:
         if self.get_by_hash(token.token_hash) is not None:
@@ -1301,7 +1297,7 @@ class SQLiteSubjectTokenRepository:
 
 class SQLiteAutoApprovalRuleRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = conn
+        self._conn = require_serialized(conn)
 
     def add_rule(self, rule: AutoApprovalRule) -> None:
         if self.get_rule(rule.rule_id) is not None:
@@ -1386,7 +1382,7 @@ class SQLiteAutoApprovalRuleRepository:
 
 class SQLiteAuditWriter:
     def __init__(self, conn: sqlite3.Connection, anchor: AuditAnchor | None = None) -> None:
-        self._conn = conn
+        self._conn = require_serialized(conn)
         self._anchor = anchor if anchor is not None else NullAnchor()
 
     def write(self, event: AuditEvent) -> None:
@@ -1444,7 +1440,7 @@ class SQLiteAuditWriter:
         """Run a post-commit audit side effect (anchor/export) now, or defer it
         to this connection's active _atomic_write commit if one is active on this
         thread (dropped on rollback/commit-failure). Fail-open."""
-        _emit_or_defer(self._conn, emission)
+        self._conn.emit_or_defer(emission)
 
     def get(self, event_id: str) -> AuditEvent | None:
         row = self._conn.execute(
@@ -1642,7 +1638,7 @@ class SQLiteAuditWriter:
 
 class SQLiteBoundaryRegistry:
     def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = conn
+        self._conn = require_serialized(conn)
 
     def add(self, boundary: Boundary) -> Boundary:
         with _write_scope(self._conn):
@@ -1723,6 +1719,13 @@ class SQLiteV1Service:
     _auth_failures: AuthFailureAuditThrottle = field(init=False)
 
     def __post_init__(self) -> None:
+        # Every repository shares this one connection across the threaded HTTP
+        # runtime, so it must be serialized — and by exactly ONE wrapper. The
+        # service requires an already-serialized connection (from connect_sqlite,
+        # the single raw-opener) rather than wrapping raw itself, so two services
+        # on one physical connection cannot mint two independent locks. The same
+        # wrapper is handed to every repository below.
+        self.conn = require_serialized(self.conn)
         if self.initialize_schema:
             init_sqlite_schema(self.conn)
         self.grant_repository = SQLiteGrantRepository(self.conn)

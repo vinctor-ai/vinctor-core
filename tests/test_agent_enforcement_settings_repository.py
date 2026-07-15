@@ -1,4 +1,4 @@
-import sqlite3
+
 from datetime import UTC, datetime
 
 from vinctor_service import (
@@ -6,6 +6,7 @@ from vinctor_service import (
     SQLiteAgentEnforcementSettingsRepository,
 )
 from vinctor_service.sqlite import get_sqlite_schema_versions, init_sqlite_schema
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -20,7 +21,7 @@ def test_in_memory_default_false_and_set_get() -> None:
 
 
 def test_sqlite_default_false_and_round_trip(tmp_path) -> None:
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     repo = SQLiteAgentEnforcementSettingsRepository(conn)
     assert repo.get_require_boundary(workspace_id="ws", agent_id="a") is False
@@ -29,13 +30,13 @@ def test_sqlite_default_false_and_round_trip(tmp_path) -> None:
 
 
 def test_sqlite_schema_records_latest_version(tmp_path) -> None:
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     assert get_sqlite_schema_versions(conn) == tuple(range(1, 15))
 
 
 def test_unrelated_agent_setting_does_not_override_workspace_boundary(tmp_path) -> None:
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     repo = SQLiteAgentEnforcementSettingsRepository(conn)
     repo.set_require_boundary(
@@ -52,7 +53,7 @@ def test_boundary_override_presence_migration_preserves_existing_rows(tmp_path) 
     # reading as an explicit override; a require_boundary=0 row becomes UNSET
     # (None) rather than an explicit false, so it can no longer silently exempt
     # the agent from a workspace-wide mandate (schema v13 realignment).
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     conn.executescript(
         """
         CREATE TABLE agent_enforcement_settings (
@@ -86,7 +87,7 @@ def test_migrated_db_new_subject_token_row_does_not_override_workspace_boundary(
     # set_require_subject_token must NOT be read as an explicit boundary
     # override, or it would silently exempt the agent from a workspace-wide
     # require_boundary. Regression for the fresh-vs-migrated divergence.
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     conn.executescript(
         """
         CREATE TABLE agent_enforcement_settings (
@@ -109,7 +110,7 @@ def test_migrated_db_new_subject_token_row_does_not_override_workspace_boundary(
 
 def test_migrated_db_new_pop_row_does_not_override_workspace_boundary(tmp_path) -> None:
     # Same fresh-vs-migrated divergence, reached through set_require_pop.
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     conn.executescript(
         """
         CREATE TABLE agent_enforcement_settings (
@@ -133,7 +134,7 @@ def test_unrelated_setting_does_not_drop_workspace_require_subject_token(tmp_pat
     # workspace-wide require_subject_token mandate. The shared settings row means
     # "a row exists" was misread as "the agent explicitly set require_subject_token
     # = its default false", overriding the workspace true. Presence-bit gated.
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     repo = SQLiteAgentEnforcementSettingsRepository(conn)
     repo.set_require_subject_token(
@@ -145,7 +146,7 @@ def test_unrelated_setting_does_not_drop_workspace_require_subject_token(tmp_pat
 
 def test_unrelated_setting_does_not_drop_workspace_require_pop(tmp_path) -> None:
     # SECURITY: same bypass for the require_pop mandate.
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     repo = SQLiteAgentEnforcementSettingsRepository(conn)
     repo.set_require_pop(workspace_id="ws", agent_id="", require_pop=True, now=NOW)
@@ -155,7 +156,7 @@ def test_unrelated_setting_does_not_drop_workspace_require_pop(tmp_path) -> None
 
 def test_explicit_agent_require_subject_token_false_still_exempts(tmp_path) -> None:
     # The presence bit must still let an operator EXPLICITLY exempt an agent.
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     repo = SQLiteAgentEnforcementSettingsRepository(conn)
     repo.set_require_subject_token(
@@ -183,7 +184,7 @@ OLD_SCHEMA_WITHOUT_PRESENCE_BITS = """
 def test_presence_migration_keeps_existing_subject_token_mandate(tmp_path) -> None:
     # Fail-closed migration: an existing require_subject_token=1 row must be
     # marked "set" and keep reading as required after the *_set columns land.
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     conn.executescript(
         OLD_SCHEMA_WITHOUT_PRESENCE_BITS
         + """
@@ -204,7 +205,7 @@ def test_presence_migration_unrelated_row_keeps_workspace_token_and_pop_mandates
     # SECURITY: a migrated row that only ever carried an unrelated mandate
     # (require_boundary) must NOT read as explicit require_subject_token /
     # require_pop = false, which would drop the workspace-wide mandates.
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     conn.executescript(
         OLD_SCHEMA_WITHOUT_PRESENCE_BITS
         + """
@@ -227,7 +228,7 @@ def test_boundary_realignment_unsets_subject_token_only_row_override(tmp_path) -
     # require_boundary=false override of the workspace mandate. The one-time
     # version-gated realignment (schema v13) marks boundary "set" only where
     # require_boundary is already true, so the workspace mandate applies again.
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     conn.executescript(
         OLD_SCHEMA_WITHOUT_PRESENCE_BITS
         + """
@@ -246,7 +247,7 @@ def test_boundary_realignment_unsets_subject_token_only_row_override(tmp_path) -
 def test_boundary_realignment_is_one_time_and_version_gated(tmp_path) -> None:
     # After the v13 realignment has run, an operator's explicit
     # require_boundary=false exemption must survive a later re-init.
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     repo = SQLiteAgentEnforcementSettingsRepository(conn)
     repo.set_require_boundary(workspace_id="ws", agent_id="", require_boundary=True, now=NOW)
@@ -267,7 +268,7 @@ def test_in_memory_require_pop_default_false_and_set_get() -> None:
 
 
 def test_sqlite_require_pop_default_false_and_round_trip(tmp_path) -> None:
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
     repo = SQLiteAgentEnforcementSettingsRepository(conn)
     assert repo.get_require_pop_setting(workspace_id="ws", agent_id="a") is None

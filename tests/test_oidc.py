@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import sys
 from datetime import UTC, datetime
 from http.client import HTTPConnection
@@ -19,6 +18,7 @@ from vinctor_service.oidc import (
     principal_from_claims,
 )
 from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 7, 14, 12, 0, tzinfo=UTC)
 
@@ -162,7 +162,7 @@ def test_pyjwt_verifier_requires_configured_issuer_audience_and_algorithm(
 
 
 def test_oidc_roles_are_enforced_by_http_surface() -> None:
-    service = SQLiteV1Service(sqlite3.connect(":memory:", check_same_thread=False))
+    service = SQLiteV1Service(connect_sqlite(":memory:", check_same_thread=False))
     service.record_auth_failure(surface="enforce", now=NOW)
     verifier = _Verifier(
         {

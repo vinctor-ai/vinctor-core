@@ -21,6 +21,7 @@ from vinctor_service.keys import (
 from vinctor_service.local_http import create_v1_http_server
 from vinctor_service.models import GrantIssueRequest
 from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite_txn import connect_sqlite
 
 DEFAULT_SCOPE = "write:repo/feature/*"
 
@@ -75,7 +76,7 @@ def prepare_local_service(
     _validate_config(config)
     db_path = config.db_path.expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn = connect_sqlite(db_path, check_same_thread=False)
 
     try:
         service = SQLiteV1Service(conn)

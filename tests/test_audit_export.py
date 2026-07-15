@@ -1,5 +1,4 @@
 import json
-import sqlite3
 import threading
 from datetime import UTC, datetime
 from urllib.error import HTTPError
@@ -16,6 +15,7 @@ from vinctor_service.audit_export import (
     audit_export_from_env,
 )
 from vinctor_service.sqlite import SQLiteAuditWriter, SQLiteV1Service
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 7, 14, 12, 0, tzinfo=UTC)
 
@@ -371,14 +371,14 @@ def test_exporting_writer_closes_background_export() -> None:
 
 def test_sqlite_service_writer_is_unwrapped_when_env_unset(monkeypatch) -> None:
     monkeypatch.delenv("VINCTOR_AUDIT_EXPORT", raising=False)
-    service = SQLiteV1Service(sqlite3.connect(":memory:"))
+    service = SQLiteV1Service(connect_sqlite(":memory:"))
     assert type(service.audit_writer) is SQLiteAuditWriter
 
 
 def test_sqlite_service_writer_exports_when_env_set(tmp_path, monkeypatch) -> None:
     path = tmp_path / "export.log"
     monkeypatch.setenv("VINCTOR_AUDIT_EXPORT", f"file:{path}")
-    service = SQLiteV1Service(sqlite3.connect(":memory:"))
+    service = SQLiteV1Service(connect_sqlite(":memory:"))
     assert isinstance(service.audit_writer, ExportingAuditWriter)
 
     ev = _event()

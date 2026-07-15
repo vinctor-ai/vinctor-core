@@ -10,12 +10,13 @@ from vinctor_service import (
     SQLiteV1Service,
     V1EnforceRequest,
 )
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
 
 def connect_db(tmp_path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(tmp_path / "vinctor.sqlite")
+    return connect_sqlite(tmp_path / "vinctor.sqlite")
 
 
 def rule(

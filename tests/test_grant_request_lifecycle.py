@@ -16,12 +16,13 @@ from vinctor_service import (
     SQLiteV1Service,
     V1EnforceRequest,
 )
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
 
 def connect_db(tmp_path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(tmp_path / "vinctor.sqlite")
+    return connect_sqlite(tmp_path / "vinctor.sqlite")
 
 
 def create_request(
@@ -217,7 +218,7 @@ def test_concurrent_approvals_issue_exactly_one_grant(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path = tmp_path / "vinctor.sqlite"
-    setup_conn = sqlite3.connect(str(db_path))
+    setup_conn = connect_sqlite(str(db_path))
     setup = SQLiteV1Service(setup_conn)
     setup.set_agent_issuable_scope_bounds(
         workspace_id="ws_main",
@@ -243,7 +244,7 @@ def test_concurrent_approvals_issue_exactly_one_grant(
     monkeypatch.setattr(grant_requests_module, "issue_grant", rendezvous_issue_grant)
 
     def approve(decided_by: str) -> GrantRequestDecisionResult:
-        conn = sqlite3.connect(str(db_path), timeout=10)
+        conn = connect_sqlite(str(db_path), timeout=10)
         try:
             worker = SQLiteV1Service(conn, initialize_schema=False)
             return worker.approve_grant_request(
@@ -266,7 +267,7 @@ def test_concurrent_approvals_issue_exactly_one_grant(
     assert loser.reason == "grant_request_not_pending"
     assert loser.grant is None
 
-    check = SQLiteV1Service(sqlite3.connect(str(db_path)), initialize_schema=False)
+    check = SQLiteV1Service(connect_sqlite(str(db_path)), initialize_schema=False)
     active = check.list_grants(workspace_id="ws_main", agent_id="agent_runner", status="active")
     assert len(active) == 1
     request = check.lookup_grant_request(request_id="grq_main", workspace_id="ws_main")

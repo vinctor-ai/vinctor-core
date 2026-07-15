@@ -16,12 +16,13 @@ from vinctor_service.audit import InMemoryAuditWriter
 from vinctor_service.grants import DEFAULT_TTL_SECONDS, issue_grant
 from vinctor_service.models import AgentIssuableBounds
 from vinctor_service.repositories import InMemoryGrantRepository
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
 
 def connect_db(tmp_path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(tmp_path / "vinctor.sqlite")
+    return connect_sqlite(tmp_path / "vinctor.sqlite")
 
 
 def issue_request(

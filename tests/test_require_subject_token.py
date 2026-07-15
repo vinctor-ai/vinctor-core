@@ -1,4 +1,3 @@
-import sqlite3
 from datetime import UTC, datetime, timedelta
 
 from vinctor_core import Grant
@@ -16,6 +15,7 @@ from vinctor_service.repositories import (
     InMemoryAgentEnforcementSettingsRepository,
     InMemorySubjectTokenRepository,
 )
+from vinctor_service.sqlite_txn import connect_sqlite
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
@@ -152,7 +152,7 @@ def test_service_unhardened_subject_permits_without_token() -> None:
 def test_sqlite_hardened_subject_denies_without_token(tmp_path) -> None:
     # Pins the production (SQLite) wiring: the per-agent mandate must be consulted on
     # the SQLite delegated path too, not only InMemory.
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     service = SQLiteV1Service(conn)
     service.insert_grant(_grant())
     service.agent_enforcement_settings_repository.set_require_subject_token(
@@ -167,7 +167,7 @@ def test_sqlite_hardened_subject_denies_without_token(tmp_path) -> None:
 
 def test_sqlite_unhardened_subject_permits_without_token(tmp_path) -> None:
     # Default-off regression on the real backend.
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     service = SQLiteV1Service(conn)
     service.insert_grant(_grant())
     r = service.delegated_enforce(
@@ -207,7 +207,7 @@ def test_no_rows_is_not_required() -> None:
 def test_sqlite_settings_distinguishes_absent_from_explicit_false(tmp_path) -> None:
     # Resolution must distinguish absent (None) from an explicit False row, and must
     # not clobber the require_boundary column when upserting require_subject_token.
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     service = SQLiteV1Service(conn)
     repo = service.agent_enforcement_settings_repository
     assert (
@@ -233,7 +233,7 @@ def test_sqlite_settings_distinguishes_absent_from_explicit_false(tmp_path) -> N
 def test_sqlite_require_pop_upsert_does_not_clobber_other_flags(tmp_path) -> None:
     # set_require_pop must not null out require_boundary / require_subject_token on the
     # same (workspace, agent) row.
-    conn = sqlite3.connect(tmp_path / "v.sqlite")
+    conn = connect_sqlite(tmp_path / "v.sqlite")
     service = SQLiteV1Service(conn)
     repo = service.agent_enforcement_settings_repository
     repo.set_require_boundary(

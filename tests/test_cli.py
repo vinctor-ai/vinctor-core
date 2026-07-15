@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import importlib.metadata
 import json
-import sqlite3
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
@@ -27,6 +26,7 @@ from vinctor_service.cli import (
 from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.local_launcher import LocalLaunchConfig, prepare_local_service
 from vinctor_service.models import GrantIssueRequest
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -503,7 +503,7 @@ def test_vinctor_cli_audit_export_requires_valid_workspace_key(tmp_path: Path) -
 def test_vinctor_cli_audit_export_accepts_read_only_auditor_key(tmp_path: Path) -> None:
     db_path = tmp_path / "vinctor.sqlite"
     _seed_rejected_request_audit(db_path)
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     SQLiteLocalKeyRepository(conn).create_auditor_key(
         workspace_id="ws_demo", raw_key="auk_demo", now=NOW
     )
@@ -529,7 +529,7 @@ def test_vinctor_cli_audit_export_accepts_read_only_auditor_key(tmp_path: Path) 
 
 def test_vinctor_cli_auth_failures_requires_service_operator_key(tmp_path: Path) -> None:
     db_path = tmp_path / "vinctor.sqlite"
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     service = SQLiteV1Service(conn)
     SQLiteLocalKeyRepository(conn).create_service_operator_key(
         raw_key="sok_demo", now=NOW
@@ -669,7 +669,7 @@ auto_approval_rules:
     service_info = _run([*common, "operator", "service", "info"])
     exported = _run([*common, "operator", "policy", "export", "--file", str(exported_path)])
 
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     service = SQLiteV1Service(conn)
     bounds = service.scope_bounds_repository.get_bounds(
         workspace_id="ws_demo",
@@ -707,7 +707,7 @@ auto_approval_rules:
     assert reapplied["rules_updated"] == 1
     assert reapplied["rules_created"] == 0
 
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     service = SQLiteV1Service(conn)
     rules_after = service.list_auto_approval_rules(workspace_id="ws_demo")
     assert rules_after[0].max_ttl_seconds == 1800
@@ -734,7 +734,7 @@ require_boundary:
     _run([*common, "operator", "policy", "apply", "--file", str(policy_path)])
     _run([*common, "operator", "policy", "export", "--file", str(exported_path)])
 
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     service = SQLiteV1Service(conn)
     repo = service.agent_enforcement_settings_repository
     assert repo.is_boundary_required(workspace_id="ws_demo", agent_id="agent_runner") is True
@@ -784,7 +784,7 @@ agent_bounds:
         "restored_version": 1,
         "policy_version": 3,
     }
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     service = SQLiteV1Service(conn)
     assert service.scope_bounds_repository.list_bounds_for_workspace("ws_demo") == (
         ("agent_a", ("read:repo/a",)),
@@ -831,7 +831,7 @@ agent_bounds:
     assert status != 0
     assert "invalid issuable scope bound" in stderr.getvalue()
     # Atomic apply: the valid earlier bound must NOT have been committed.
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     service = SQLiteV1Service(conn)
     assert (
         service.scope_bounds_repository.get_bounds(workspace_id="ws_demo", agent_id="agent_a")
@@ -858,8 +858,8 @@ def test_vinctor_cli_storage_backup_and_reset(tmp_path: Path) -> None:
         "schema_versions": list(range(1, 15)),
     }
 
-    backup_conn = sqlite3.connect(backup_path)
-    reset_conn = sqlite3.connect(db_path)
+    backup_conn = connect_sqlite(backup_path)
+    reset_conn = connect_sqlite(db_path)
     try:
         backup_grant = SQLiteV1Service(
             backup_conn, initialize_schema=False
@@ -887,7 +887,7 @@ def test_vinctor_cli_storage_reset_requires_yes(tmp_path: Path) -> None:
     )
 
     assert status != 0
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
             "grt_seed"
@@ -966,7 +966,7 @@ def test_vinctor_cli_storage_restore_roundtrip(tmp_path: Path) -> None:
         "restored": True,
         "schema_versions": list(range(1, 15)),
     }
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
             "grt_seed"
@@ -1026,7 +1026,7 @@ def test_vinctor_cli_storage_restore_rejects_invalid_input(tmp_path: Path) -> No
         stderr=stderr,
     )
     assert status != 0
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
             "grt_seed"
@@ -1046,7 +1046,7 @@ def test_vinctor_cli_storage_migrate_reports_versions(tmp_path: Path) -> None:
         "db_path": str(db_path),
         "schema_versions": list(range(1, 15)),
     }
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
             "grt_seed"
@@ -1075,7 +1075,7 @@ def test_vinctor_cli_keys_list_and_revoke(tmp_path: Path) -> None:
     assert revoked["key_id"] == key_id
     assert revoked["status"] == "revoked"
 
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         record = SQLiteLocalKeyRepository(conn).get_by_id(key_id)
     finally:
@@ -1098,7 +1098,7 @@ def test_vinctor_cli_grants_revoke_direct_db(tmp_path: Path) -> None:
     assert revoked["status"] == "revoked"
     assert revoked["audit_event_id"].startswith("evt_")
 
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
             "grt_seed"
@@ -1506,7 +1506,7 @@ def test_vinctor_cli_operator_grants_revoke_requires_workspace_key(tmp_path: Pat
 
 
 def _mint_subject_token(db_path: Path) -> tuple[str, str]:
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         result = SQLiteV1Service(conn).mint_subject_token(
             workspace_id="ws_demo",
@@ -1539,7 +1539,7 @@ def _insert_pop_token(db_path: Path) -> str:
         created_by="agent_runner",
         pop_secret="pop-secret-value",
     )
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         SQLiteV1Service(conn).subject_token_repository.insert(token)
     finally:
@@ -1548,7 +1548,7 @@ def _insert_pop_token(db_path: Path) -> str:
 
 
 def _delegated_enforce(db_path: Path, raw: str):
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         return SQLiteV1Service(conn).delegated_enforce(
             V1DelegatedEnforceRequest(
@@ -1568,7 +1568,7 @@ def _delegated_enforce(db_path: Path, raw: str):
 
 
 def _seed_storage_db(db_path: Path) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         service = SQLiteV1Service(conn)
         service.set_agent_issuable_scope_bounds(
@@ -1691,7 +1691,7 @@ def _start_service(tmp_path: Path, *, scopes: tuple[str, ...]):
 
 
 def _seed_rejected_request_audit(db_path: Path) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     try:
         service = SQLiteV1Service(conn)
         SQLiteLocalKeyRepository(conn).create_workspace_key(

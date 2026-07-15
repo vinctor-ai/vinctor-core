@@ -12,12 +12,13 @@ from vinctor_service.sqlite import (
     get_sqlite_schema_versions,
     init_sqlite_schema,
 )
+from vinctor_service.sqlite_txn import connect_sqlite
 
 SKEW = 60
 
 
 def _conn(path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_sqlite(path)
     init_sqlite_schema(conn)
     return conn
 

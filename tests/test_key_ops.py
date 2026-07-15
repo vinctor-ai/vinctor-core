@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -19,12 +18,13 @@ from vinctor_service.keys import (
     SQLiteLocalKeyRepository,
 )
 from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
 
 def _repo(db_path: Path) -> SQLiteLocalKeyRepository:
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     SQLiteV1Service(conn)
     return SQLiteLocalKeyRepository(conn)
 
