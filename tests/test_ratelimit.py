@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from ipaddress import ip_network
 
 from vinctor_service.ratelimit import FixedWindowRateLimiter
 
@@ -38,6 +39,30 @@ def test_per_source_isolation() -> None:
     # Source B is unaffected by source A being at its limit.
     assert limiter.allow("B", now=1000.0) is True
     assert limiter.allow("B", now=1000.0) is False
+
+
+def test_untrusted_peer_cannot_forge_xff_to_lift_its_limit() -> None:
+    from vinctor_service.ratelimit import resolve_rate_limit_source
+
+    limiter = FixedWindowRateLimiter(max_requests=1, window_seconds=60)
+    trusted_proxies = (ip_network("10.0.0.0/8"),)
+    peer = "198.51.100.20"
+
+    first_source = resolve_rate_limit_source(
+        peer=peer,
+        forwarded_for="203.0.113.1",
+        trusted_proxies=trusted_proxies,
+    )
+    forged_source = resolve_rate_limit_source(
+        peer=peer,
+        forwarded_for="203.0.113.2",
+        trusted_proxies=trusted_proxies,
+    )
+
+    assert first_source == peer
+    assert forged_source == peer
+    assert limiter.allow(first_source, now=1000.0) is True
+    assert limiter.allow(forged_source, now=1000.0) is False
 
 
 def test_memory_bound_fail_open_for_new_source_when_full() -> None:
