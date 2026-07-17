@@ -61,6 +61,18 @@ Clock = Callable[[], datetime]
 ReadinessCheck = Callable[[], bool]
 RequestScope = Callable[[], AbstractContextManager[None]]
 
+# Routes that answer from process state alone and so must never wait for a
+# pooled connection. /healthz is a liveness probe: a probe that queues behind
+# saturated database traffic gets a healthy-but-busy process killed, which
+# removes capacity and deepens the contention. /readyz is deliberately NOT here
+# — checking the backend is its whole job, so it leases a real connection and a
+# saturated pool correctly reads as NotReady.
+DATABASE_FREE_PATHS = frozenset({"/healthz", "/metrics"})
+
+
+def _needs_database(raw_path: str) -> bool:
+    return urlsplit(raw_path).path not in DATABASE_FREE_PATHS
+
 # All legitimate request bodies are tiny JSON payloads. Cap the read so a hostile
 # (or merely huge) Content-Length cannot pin a worker thread or exhaust memory
 # before authentication. Applied by every body-accepting route.
@@ -251,9 +263,13 @@ def create_v1_http_handler(
             self._vinctor_decision = None
             self._vinctor_error = None
             try:
-                # SQLite runtimes lease one independent connection/service for
-                # the whole request. Other backends use the no-op default.
-                with open_request_scope():
+                if _needs_database(self.path):
+                    # SQLite runtimes lease one independent connection/service
+                    # for the whole request. Other backends use the no-op
+                    # default.
+                    with open_request_scope():
+                        _handle_request(self, method)
+                else:
                     _handle_request(self, method)
             finally:
                 _observe(self, method)

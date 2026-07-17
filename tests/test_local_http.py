@@ -88,6 +88,7 @@ def running_server(
     pep_keys: dict[str, PepIdentity] | None = None,
     metrics: Metrics | None = None,
     readiness_check=None,
+    request_scope=None,
 ) -> Iterator[ThreadingHTTPServer]:
     server = create_v1_http_server(
         ("127.0.0.1", 0),
@@ -98,6 +99,7 @@ def running_server(
         clock=lambda: NOW,
         metrics=metrics,
         readiness_check=readiness_check,
+        request_scope=request_scope,
     )
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -1710,3 +1712,54 @@ def test_local_http_invalid_pop_skew_does_not_500_delegated_path(
     assert response.get("error") != "internal_error"
     assert status == 200
     assert response["decision"] == "permit"
+
+
+def _scope_recorder() -> tuple[list[str], Any]:
+    leases: list[str] = []
+
+    @contextmanager
+    def scope() -> Iterator[None]:
+        leases.append("leased")
+        yield
+
+    return leases, scope
+
+
+def test_healthz_does_not_lease_a_request_scope() -> None:
+    # Liveness must never queue for a pooled connection. /healthz does not touch
+    # the database, yet it was wrapped in the same request scope as real
+    # traffic, so a saturated pool stalled the probe: a dogfood run measured
+    # /healthz at 0.25ms idle but p99 1.0s under 64 concurrent writers. That is
+    # long enough for an orchestrator's default 1s liveness timeout to kill a
+    # healthy-but-busy process — and the restart makes the contention worse.
+    leases, scope = _scope_recorder()
+
+    with running_server(service(), request_scope=scope) as server:
+        status, _ = get_text(server, path="/healthz")
+
+    assert status == 200
+    assert leases == []
+
+
+def test_metrics_does_not_lease_a_request_scope() -> None:
+    # Same reasoning as /healthz: metrics are in-process counters, so reporting
+    # them must not wait behind database traffic for a pooled connection.
+    leases, scope = _scope_recorder()
+
+    with running_server(service(), metrics=Metrics(), request_scope=scope) as server:
+        status, _ = get_text(server, path="/metrics")
+
+    assert status == 200
+    assert leases == []
+
+
+def test_enforce_still_leases_a_request_scope() -> None:
+    # Positive control: exempting the database-free routes must not switch the
+    # scope off for real traffic, which is what actually needs the connection.
+    leases, scope = _scope_recorder()
+
+    with running_server(service(), request_scope=scope) as server:
+        status, _ = post_json(server)
+
+    assert status == 200
+    assert leases == ["leased"]
