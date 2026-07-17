@@ -25,19 +25,34 @@ carrying the whole 2026-07-14 Postgres / OIDC / OTLP / RBAC wave (ADRs
   repository must switch to `connect_sqlite`; `require_serialized` rejects a raw
   `sqlite3.Connection`. Two wrappers over one physical connection means two
   locks and silent data loss, so this is enforced rather than advised.
-- **Existing databases are converted to `journal_mode=WAL` on first open.**
-  WAL is a property of the database *file*, not the connection — once converted,
-  the database stays WAL for every later connection and process, permanently.
-  A WAL database is **three files**: `<db>`, `<db>-wal`, `<db>-shm`.
-  - **Any operator backup that copies the database file must now include the
-    `-wal` / `-shm` sidecars, or checkpoint first**
-    (`PRAGMA wal_checkpoint(TRUNCATE)`). Copying only the main file can silently
-    lose committed transactions still resident in the WAL.
-  - `vinctor operator storage backup` is unaffected — it dumps through a
-    connection rather than copying the file.
-  - If WAL cannot be enabled (a network filesystem, say), the service writes a
-    warning to stderr and continues on the filesystem's default journal mode.
-    WAL is required for concurrency, not for correctness.
+- **Databases are now opened with `journal_mode=WAL`.** WAL — unlike the other
+  journal modes — is a property of the database *file*, so once a database has
+  been converted, later connections come up in WAL too. Neither half of that is
+  a guarantee: if WAL cannot be enabled (some network filesystems cannot support
+  it) the service warns on stderr and continues on whatever journal mode it got,
+  and the setting persists in the file rather than being permanent — a later
+  connection can switch it. WAL is required for concurrency, not for
+  correctness.
+  - **Use `vinctor operator storage backup`.** It reads through the SQLite
+    backup API, so it captures committed transactions still resident in the
+    `-wal` sidecar and writes one self-contained file.
+  - **Do not copy a live database's files.** While a WAL database is in use,
+    committed rows can be resident in a `<db>-wal` sidecar while the main file
+    looks untouched — so copying the main file alone yields a database that
+    opens cleanly, queries cleanly, and is quietly missing rows, with no error
+    at copy time or read time. Copying the sidecars as well does **not** fix
+    that: files that are changing cannot be captured as an atomic snapshot by
+    copying them one after another. If you must move files, stop or quiesce the
+    service and checkpoint first (`PRAGMA wal_checkpoint(TRUNCATE)`).
+
+  > *Corrected 2026-07-17.* The published 0.5.0 artifact carries an earlier
+  > wording of this note that called the conversion "permanent", stated a WAL
+  > database is always three files, and offered "include the `-wal`/`-shm`
+  > sidecars" as a way to copy a live database. The first two overstate; the
+  > third is unsafe advice, and copying a live database that way can lose data
+  > rather than preserve it. See
+  > [Operational Runbooks](docs/deployment/operational-runbooks.md) for the full
+  > version.
 
 ### Added
 
