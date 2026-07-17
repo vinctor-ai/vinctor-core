@@ -261,10 +261,10 @@ def test_write_is_fail_open_when_anchor_raises(tmp_path) -> None:
 
 
 def test_chain_stays_valid_under_concurrent_enforce(tmp_path) -> None:
-    # The chain's head-read-then-insert is safe because the local HTTP service
-    # serializes DB-touching request handling with db_access_lock (2026-07-12
-    # concurrency fix). Hammer a real service, then verify the resulting chain is
-    # gapless and unbroken. Mirrors tests/test_local_http_concurrency.py.
+    # The chain's head-read-then-insert is safe across pooled connections because
+    # every standalone write scope starts with BEGIN IMMEDIATE. Hammer a real
+    # service, then verify the resulting chain is gapless and unbroken. Mirrors
+    # tests/test_local_http_concurrency.py.
     import json as _json
     import urllib.request
     from concurrent.futures import ThreadPoolExecutor

@@ -731,8 +731,8 @@ class SQLiteGrantRepository:
 def _write_scope(conn: sqlite3.Connection) -> Iterator[None]:
     """Commit scope for a single repository write.
 
-    Standalone calls keep today's behavior: ``with conn:`` opens the write and
-    commits (or rolls back) it on exit. When the caller already holds an
+    Standalone calls take SQLite's write-reservation lock up front with ``BEGIN
+    IMMEDIATE`` and commit (or roll back) on exit. When the caller already holds an
     explicit transaction (an all-or-nothing BEGIN IMMEDIATE unit of work),
     sqlite3's connection context manager must NOT be entered — its exit would
     commit the caller's WHOLE transaction mid-way — so the write joins the open
@@ -748,8 +748,13 @@ def _write_scope(conn: sqlite3.Connection) -> Iterator[None]:
         if conn.in_transaction:
             yield
             return
-        with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
             yield
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
 
 @contextmanager

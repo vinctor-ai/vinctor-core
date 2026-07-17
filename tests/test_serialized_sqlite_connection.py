@@ -31,6 +31,23 @@ def test_connect_sqlite_returns_wrapper(tmp_path):
     conn.execute("SELECT 1")
 
 
+def test_connect_sqlite_enables_wal_and_busy_timeout(tmp_path):
+    conn = connect_sqlite(str(tmp_path / "wal.sqlite"))
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] > 0
+    finally:
+        conn.close()
+
+
+def test_connect_sqlite_preserves_explicit_nonzero_timeout(tmp_path):
+    conn = connect_sqlite(str(tmp_path / "timeout.sqlite"), timeout=0.125)
+    try:
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 125
+    finally:
+        conn.close()
+
+
 def test_getattr_delegates(tmp_path):
     raw = _raw(tmp_path)
     conn = SerializedSQLiteConnection(raw)

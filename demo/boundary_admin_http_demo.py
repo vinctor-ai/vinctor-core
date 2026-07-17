@@ -16,6 +16,8 @@ from vinctor_service import (
     WorkspaceIdentity,
     create_v1_http_server,
 )
+from vinctor_service.keys import SQLiteLocalKeyRepository
+from vinctor_service.sqlite_pool import SQLiteServicePool
 from vinctor_service.sqlite_txn import connect_sqlite
 
 
@@ -24,6 +26,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         db_path = Path(temp_dir) / "vinctor.sqlite"
         conn = connect_sqlite(db_path, check_same_thread=False)
+        pool: SQLiteServicePool | None = None
         try:
             service = SQLiteV1Service(conn)
             service.insert_grant(
@@ -37,10 +40,16 @@ def main() -> None:
                     expires_at=now + timedelta(hours=1),
                 )
             )
+            pool = SQLiteServicePool(
+                db_path,
+                primary_connection=conn,
+                primary_service=service,
+                primary_key_repository=SQLiteLocalKeyRepository(conn),
+            )
 
             server = create_v1_http_server(
                 ("127.0.0.1", 0),
-                service=service,
+                service=pool.service,
                 agent_identities={
                     "agent_key_demo": AgentIdentity(
                         workspace_id="ws_demo",
@@ -52,6 +61,7 @@ def main() -> None:
                     "workspace_key_other": WorkspaceIdentity(workspace_id="ws_other"),
                 },
                 clock=lambda: now,
+                request_scope=pool.request_scope,
             )
             thread = Thread(target=server.serve_forever, daemon=True)
             thread.start()
@@ -161,7 +171,10 @@ def main() -> None:
                 thread.join(timeout=5)
                 server.server_close()
         finally:
-            conn.close()
+            if pool is not None:
+                pool.close()
+            else:
+                conn.close()
 
     print("ALL BOUNDARY ADMIN HTTP STEPS PASSED \u2713")
 

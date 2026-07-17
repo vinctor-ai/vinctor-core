@@ -71,7 +71,8 @@ def test_service_runtime_readiness_checks_database(tmp_path: Path) -> None:
     try:
         with running_runtime(handle):
             ready_status, ready_body, _ = request_json(handle, "GET", "/readyz")
-            handle.conn.close()
+            assert handle.sqlite_pool is not None
+            handle.sqlite_pool.close()
             failed_status, failed_body, _ = request_json(handle, "GET", "/readyz")
 
         assert ready_status == 200
