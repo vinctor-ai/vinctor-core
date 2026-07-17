@@ -44,19 +44,28 @@ class PostgresLocalKeyRepository:
         plaintext key is returned only after a real commit; running it inside an
         outer transaction is rejected rather than joined as a savepoint (which
         would return the key before the caller's commit and drop it on rollback).
+
+        The connection lock is taken FIRST: ``info.transaction_status`` describes
+        the connection, not the calling thread, so reading it unlocked would
+        mistake a concurrent rotation or service mutation on another thread for
+        caller nesting and reject a legitimate rotation. Once the lock is held
+        the status reflects only this thread, so a non-idle value really does
+        mean this thread's caller already owns a transaction. Mirrors the SQLite
+        rotation scope in ``keys.py``.
         """
-        # PQTRANS_IDLE == 0; any other status means an outer transaction is open.
-        if int(self._conn.info.transaction_status) != 0:
-            raise RuntimeError(
-                "key rotation cannot run inside an open transaction; it must own "
-                "its transaction so the plaintext is returned only after commit"
-            )
-        with self._conn.transaction():
-            self._conn.execute(
-                "SELECT pg_advisory_xact_lock(%s::int4, %s::int4)",
-                (KEY_ROTATION_LOCK_CLASSID, 0),
-            )
-            yield
+        with self._conn.lock:
+            # PQTRANS_IDLE == 0; any other status means an outer transaction is open.
+            if int(self._conn.info.transaction_status) != 0:
+                raise RuntimeError(
+                    "key rotation cannot run inside an open transaction; it must own "
+                    "its transaction so the plaintext is returned only after commit"
+                )
+            with self._conn.transaction():
+                self._conn.execute(
+                    "SELECT pg_advisory_xact_lock(%s::int4, %s::int4)",
+                    (KEY_ROTATION_LOCK_CLASSID, 0),
+                )
+                yield
 
     def create_workspace_key(
         self, *, workspace_id: str, raw_key: str | None = None,

@@ -142,6 +142,17 @@ class SerializedPostgresConnection:
         self._connection = connection
         self._lock = threading.RLock()
 
+    @property
+    def lock(self) -> threading.RLock:
+        """The re-entrant lock serializing every transaction scope on this connection.
+
+        A scope that must inspect connection-global state before opening its
+        transaction acquires this first: ``info.transaction_status`` describes
+        the connection, not the calling thread, so reading it unlocked cannot
+        tell a peer thread's open transaction from this thread's caller nesting.
+        """
+        return self._lock
+
     @contextmanager
     def transaction(self):
         with self._lock, self._connection.transaction():
