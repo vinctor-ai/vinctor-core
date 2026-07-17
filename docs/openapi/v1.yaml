@@ -1,0 +1,769 @@
+openapi: 3.1.0
+info:
+  title: Vinctor Local V1 API
+  version: 0.1.0
+  description: Local prototype API contract. Not a hosted production service contract.
+servers:
+  - url: http://127.0.0.1:8765
+security: []
+paths:
+  /healthz:
+    get:
+      summary: Check service health.
+      description: Does not expose secrets, keys, grant refs, database path, or internal config.
+      responses:
+        "200":
+          description: Service is reachable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /readyz:
+    get:
+      summary: Check whether the service can accept traffic.
+      description: Returns 503 when the configured durable store is unavailable.
+      responses:
+        "200":
+          description: Service and durable store are ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+        "503":
+          description: Durable store is unavailable; remove this instance from traffic.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+  /v1/enforce:
+    post:
+      summary: Enforce one action/resource check with an issued grant.
+      security:
+        - AgentKey: []
+      parameters:
+        - name: X-Vinctor-Boundary-Id
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnforceRequest"
+      responses:
+        "200":
+          description: Action permitted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PermitResponse"
+        "403":
+          description: Action denied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DenyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+  /v1/grant-requests:
+    post:
+      summary: Create an agent grant request.
+      security:
+        - AgentKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GrantRequestCreate"
+      responses:
+        "201":
+          description: Grant request created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/GrantRequest"
+                  - type: object
+                    properties:
+                      routing_hint:
+                        type: string
+                        enum:
+                          - pending_review
+                          - auto_approval_available
+                          - manual_review_required
+                      routing_reason:
+                        type: string
+                      audit_event_id:
+                        type: string
+                        nullable: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+    get:
+      summary: List workspace grant requests.
+      security:
+        - WorkspaceKey: []
+      responses:
+        "200":
+          description: Workspace queue.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - grant_requests
+                properties:
+                  grant_requests:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/GrantRequest"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+  /v1/grant-requests/{request_id}:
+    get:
+      summary: Get one grant request.
+      description: Agent-key callers can only read their own request.
+      security:
+        - AgentKey: []
+        - WorkspaceKey: []
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Grant request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GrantRequest"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/grant-requests/{request_id}/auto-approve:
+    post:
+      summary: Evaluate a pending grant request against auto-approval rules.
+      security:
+        - WorkspaceKey: []
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+      responses:
+        "200":
+          description: Approved or left pending.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GrantRequestDecision"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+        "403":
+          $ref: "#/components/responses/IssuableBoundsForbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/GrantRequestNotPending"
+  /v1/grant-requests/{request_id}/approve:
+    post:
+      summary: Manually approve a grant request.
+      security:
+        - WorkspaceKey: []
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecisionReason"
+      responses:
+        "200":
+          description: Approved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GrantRequestDecision"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+        "403":
+          $ref: "#/components/responses/IssuableBoundsForbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/GrantRequestNotPending"
+  /v1/grant-requests/{request_id}/reject:
+    post:
+      summary: Reject a grant request.
+      security:
+        - WorkspaceKey: []
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecisionReason"
+      responses:
+        "200":
+          description: Rejected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GrantRequestDecision"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+        "403":
+          $ref: "#/components/responses/IssuableBoundsForbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/GrantRequestNotPending"
+  /v1/grants:
+    post:
+      summary: Issue a workspace grant.
+      security:
+        - WorkspaceKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GrantIssueRequest"
+      responses:
+        "201":
+          description: Grant issued.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Grant"
+                  - type: object
+                    properties:
+                      audit_event_id:
+                        type: string
+                        nullable: true
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+    get:
+      summary: List workspace grants.
+      security:
+        - WorkspaceKey: []
+      parameters:
+        - name: agent_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Workspace grants.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - grants
+                properties:
+                  grants:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Grant"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+  /v1/grants/{grant_ref}:
+    get:
+      summary: Get one workspace grant.
+      security:
+        - WorkspaceKey: []
+      parameters:
+        - name: grant_ref
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Grant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Grant"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/audit-events:
+    get:
+      summary: List workspace audit events.
+      description: Returns allowlisted audit fields only; raw payloads, prompts, commands, keys, hashes, and service internals are omitted.
+      security:
+        - WorkspaceKey: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: event_type
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: agent_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: grant_ref
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: boundary_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: request_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Workspace audit events.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - audit_events
+                properties:
+                  audit_events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditEvent"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+  /v1/audit-events/{event_id}:
+    get:
+      summary: Get one workspace audit event.
+      description: Returns the same allowlisted audit fields as the list endpoint.
+      security:
+        - WorkspaceKey: []
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Audit event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditEvent"
+        "401":
+          $ref: "#/components/responses/AuthRequired"
+        "404":
+          $ref: "#/components/responses/NotFound"
+components:
+  securitySchemes:
+    AgentKey:
+      type: apiKey
+      in: header
+      name: X-Agent-Key
+    WorkspaceKey:
+      type: apiKey
+      in: header
+      name: X-Workspace-Key
+  parameters:
+    RequestId:
+      name: request_id
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    AuthRequired:
+      description: Missing or invalid key.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    BadRequest:
+      description: Invalid request body.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    NotFound:
+      description: Object not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    IssuableBoundsForbidden:
+      description: >-
+        Issuance was refused because the request falls outside the workspace
+        issuable bounds. Reason is one of scope_outside_issuable_bounds,
+        ttl_exceeds_issuable_max, or issuable_bounds_not_found. Mirrors the
+        direct POST /v1/grants 403 mapping.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    GrantRequestNotPending:
+      description: Grant request is not pending (reason grant_request_not_pending).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - service
+        - mode
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+        service:
+          type: string
+          enum:
+            - vinctor-service
+        mode:
+          type: string
+          enum:
+            - local
+            - self_hosted
+    ReadinessResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - service
+      properties:
+        status:
+          type: string
+          enum:
+            - ready
+            - unavailable
+        service:
+          type: string
+          enum:
+            - vinctor-service
+    EnforceRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - grant_ref
+        - action
+        - resource
+      properties:
+        grant_ref:
+          type: string
+        action:
+          type: string
+        resource:
+          type: string
+    PermitResponse:
+      description: >-
+        No-disclosure agent-facing result: only the decision and the audit
+        pointer. Grant/agent identifiers and the matched scope are recorded in
+        the operator audit event, never returned to the caller.
+      type: object
+      required:
+        - decision
+      properties:
+        decision:
+          const: permit
+        audit_event_id:
+          type: string
+          nullable: true
+    DenyResponse:
+      description: >-
+        No-disclosure agent-facing result: `error`/`reason` are coarse
+        low-cardinality codes (e.g. `action_denied`, `grant_revoked`) that
+        never name the classified action/resource, the grant's scopes, or any
+        internal identifier. Full detail is audit-only.
+      type: object
+      required:
+        - decision
+        - error
+        - reason
+      properties:
+        decision:
+          const: deny
+        error:
+          type: string
+        reason:
+          type: string
+        audit_event_id:
+          type: string
+          nullable: true
+    GrantIssueRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - agent_id
+        - scopes
+        - ttl_seconds
+      properties:
+        agent_id:
+          type: string
+        scopes:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        ttl_seconds:
+          type: integer
+          minimum: 1
+    Grant:
+      type: object
+      additionalProperties: false
+      required:
+        - grant_id
+        - grant_ref
+        - workspace_id
+        - agent_id
+        - scopes
+        - status
+      properties:
+        grant_id:
+          type: string
+        grant_ref:
+          type: string
+        workspace_id:
+          type: string
+        agent_id:
+          type: string
+        scopes:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+    GrantRequestCreate:
+      type: object
+      additionalProperties: false
+      required:
+        - scopes
+        - ttl_seconds
+        - reason
+      properties:
+        scopes:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        ttl_seconds:
+          type: integer
+          minimum: 1
+        reason:
+          type: string
+        task_id:
+          type: string
+        session_id:
+          type: string
+        boundary_id:
+          type: string
+        requester_runtime:
+          type: string
+        repo:
+          type: string
+        worktree:
+          type: string
+    GrantRequest:
+      type: object
+      required:
+        - request_id
+        - workspace_id
+        - requester_agent_id
+        - target_agent_id
+        - requested_scopes
+        - requested_ttl_seconds
+        - reason
+        - status
+        - created_at
+      properties:
+        request_id:
+          type: string
+        workspace_id:
+          type: string
+        requester_agent_id:
+          type: string
+        target_agent_id:
+          type: string
+        requested_scopes:
+          type: array
+          items:
+            type: string
+        requested_ttl_seconds:
+          type: integer
+        reason:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - rejected
+            - cancelled
+            - expired
+        created_at:
+          type: string
+          format: date-time
+        decided_at:
+          type: string
+          format: date-time
+          nullable: true
+        decided_by:
+          type: string
+          nullable: true
+        decision_reason:
+          type: string
+          nullable: true
+        issued_grant_ref:
+          type: string
+          nullable: true
+        task_id:
+          type: string
+          nullable: true
+        session_id:
+          type: string
+          nullable: true
+        boundary_id:
+          type: string
+          nullable: true
+        requester_runtime:
+          type: string
+          nullable: true
+        repo:
+          type: string
+          nullable: true
+        worktree:
+          type: string
+          nullable: true
+    GrantRequestDecision:
+      allOf:
+        - $ref: "#/components/schemas/GrantRequest"
+        - type: object
+          properties:
+            grant:
+              type: object
+              nullable: true
+            auto_approval:
+              type: object
+              nullable: true
+            audit_event_id:
+              type: string
+              nullable: true
+    DecisionReason:
+      type: object
+      additionalProperties: false
+      properties:
+        decision_reason:
+          type: string
+    AuditEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - event_id
+        - event_type
+        - decision
+        - reason
+        - workspace_id
+        - agent_id
+        - grant_id
+        - grant_ref
+        - action
+        - resource
+        - scope_attempted
+        - created_at
+      properties:
+        event_id:
+          type: string
+        event_type:
+          type: string
+        decision:
+          type: string
+          enum:
+            - permit
+            - deny
+        reason:
+          type: string
+        workspace_id:
+          type: string
+        agent_id:
+          type: string
+        grant_id:
+          type: string
+        grant_ref:
+          type: string
+        action:
+          type: string
+        resource:
+          type: string
+        scope_attempted:
+          type: string
+        scope_matched:
+          type: string
+          nullable: true
+        boundary_id:
+          type: string
+          nullable: true
+        runtime:
+          type: string
+          nullable: true
+        boundary_type:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - reason
+      properties:
+        error:
+          type: string
+        reason:
+          type: string

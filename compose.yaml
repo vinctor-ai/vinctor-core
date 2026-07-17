@@ -1,0 +1,34 @@
+services:
+  vinctor:
+    build: .
+    command: ["vinctor", "service", "serve"]
+    environment:
+      VINCTOR_HOST: "0.0.0.0"
+      VINCTOR_PORT: "8765"
+      VINCTOR_DB: "/data/vinctor.sqlite"
+      VINCTOR_SERVICE_MODE: "self_hosted"
+      VINCTOR_LOG_LEVEL: "info"
+    ports:
+      # Bind host-local only: `docker compose up` + `curl localhost:8765` works,
+      # but the raw server is not network-exposed. For network exposure, put a
+      # reverse proxy (TLS termination + request-body cap) in front — see
+      # docs/deployment/operational-runbooks.md.
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - vinctor-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          response = urllib.request.urlopen('http://127.0.0.1:8765/readyz', timeout=5);
+          raise SystemExit(0 if json.load(response).get('status') == 'ready' else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+volumes:
+  vinctor-data:
