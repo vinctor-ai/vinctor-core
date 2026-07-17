@@ -1,7 +1,7 @@
 PYTHON ?= .venv/bin/python
 VINCTOR ?= .venv/bin/vinctor
 
-.PHONY: install-dev test lint demo demo-self-host demo-mock build
+.PHONY: install-dev test lint demo demo-self-host demo-mock build check-public-snapshot
 
 install-dev:
 	$(PYTHON) -m pip install -e ".[dev]"
@@ -24,3 +24,8 @@ demo-mock:
 
 build:
 	$(PYTHON) -m build
+
+# Release pre-flight: the public snapshot must be a verbatim copy of what we
+# tag. Run after re-syncing the snapshot, before pushing the tag.
+check-public-snapshot:
+	tools/check-public-snapshot.sh
