@@ -112,6 +112,34 @@ repo root installs the same CLI.)
 `--db` is required by `vinctor local start`; the snippet above writes the local
 service state to `.vinctor-local.sqlite`.
 
+### Docker
+
+The released image runs as a non-root user and is pushed to GHCR. The package
+is set to public visibility in GHCR (a registry-side setting this repo's
+workflow does not control), so pulling needs no login:
+
+```bash
+docker pull ghcr.io/vinctor-ai/vinctor-core:0.5.0     # or :latest
+docker run --rm ghcr.io/vinctor-ai/vinctor-core:0.5.0 vinctor --help
+```
+
+The image's default command is `vinctor service serve`, so running it with no
+arguments starts the service — see [Self-Hosting](docs/deployment/self-hosting.md)
+for the `compose.yaml` that gives it a persistent volume, and
+[Operational Runbooks](docs/deployment/operational-runbooks.md) for TLS, backups
+and supervision.
+
+Two things worth knowing before you pull:
+
+- **`linux/amd64` only.** On arm64 (Apple Silicon, Graviton) Docker will fall
+  back to emulation if it can, which is slow — or refuse. Install from PyPI
+  there instead.
+- **Supply-chain attestations are attached to the image**, not published to
+  GitHub's attestation API — the image is built with buildx `provenance: true`
+  and `sbom: true`, so `gh attestation verify` finds nothing and that is
+  expected. Read them with `docker buildx imagetools inspect`, which resolves
+  the OCI index and its attestation manifest.
+
 The base `pip install vinctor-core` / `pipx install vinctor-core` ships the
 `vinctor-mcp-server` command, but running it needs the `[mcp]` extra (the MCP
 SDK). Install `pipx install "vinctor-core[mcp]"` (or
