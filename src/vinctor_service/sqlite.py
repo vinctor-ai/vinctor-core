@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import ClassVar
 
 from vinctor_core import (
     disable_boundary,
@@ -25,6 +26,7 @@ from vinctor_service.audit_chain import (
     row_hash,
 )
 from vinctor_service.audit_export import (
+    AuditExport,
     ExportingAuditWriter,
     NullExport,
     audit_export_from_env,
@@ -1707,10 +1709,20 @@ class SQLiteBoundaryRegistry:
         ]
 
 
+@dataclass(frozen=True)
+class SQLiteServiceSharedState:
+    """Process-local collaborators shared by every pooled SQLite service."""
+
+    auth_failures: AuthFailureAuditThrottle
+    audit_anchor: AuditAnchor
+    audit_export: AuditExport
+
+
 @dataclass
 class SQLiteV1Service:
     conn: sqlite3.Connection
     initialize_schema: bool = True
+    shared_state: SQLiteServiceSharedState | None = None
     grant_repository: SQLiteGrantRepository = field(init=False)
     audit_writer: SQLiteAuditWriter = field(init=False)
     boundary_registry: SQLiteBoundaryRegistry = field(init=False)
@@ -1722,6 +1734,21 @@ class SQLiteV1Service:
         init=False
     )
     _auth_failures: AuthFailureAuditThrottle = field(init=False)
+    _POOL_FIELD_CLASSIFICATIONS: ClassVar[dict[str, str]] = {
+        "conn": "connection",
+        "initialize_schema": "configuration",
+        "shared_state": "process_shared",
+        "grant_repository": "database_backed",
+        "audit_writer": "connection_writer_with_shared_sinks",
+        "boundary_registry": "database_backed",
+        "scope_bounds_repository": "database_backed",
+        "grant_request_repository": "database_backed",
+        "auto_approval_rule_repository": "database_backed",
+        "subject_token_repository": "database_backed",
+        "agent_enforcement_settings_repository": "database_backed",
+        "_auth_failures": "process_shared_alias",
+        "_pop_replay": "database_backed",
+    }
 
     def __post_init__(self) -> None:
         # Every repository shares this one connection across the threaded HTTP
@@ -1735,16 +1762,23 @@ class SQLiteV1Service:
             init_sqlite_schema(self.conn)
         self.grant_repository = SQLiteGrantRepository(self.conn)
         import os
+        if self.shared_state is None:
+            self.shared_state = SQLiteServiceSharedState(
+                auth_failures=AuthFailureAuditThrottle(),
+                audit_anchor=anchor_from_env(dict(os.environ)),
+                audit_export=audit_export_from_env(dict(os.environ)),
+            )
+        shared_state = self.shared_state
         self.audit_writer = SQLiteAuditWriter(
-            self.conn, anchor=anchor_from_env(dict(os.environ))
+            self.conn, anchor=shared_state.audit_anchor
         )
         # Opt-in SIEM/OTel export (VINCTOR_AUDIT_EXPORT): when unset the writer
         # above is used as-is; when set it is wrapped so each persisted event is
         # ALSO streamed, fail-open, after the durable write.
-        export = audit_export_from_env(dict(os.environ))
+        export = shared_state.audit_export
         if not isinstance(export, NullExport):
             self.audit_writer = ExportingAuditWriter(self.audit_writer, export)
-        self._auth_failures = AuthFailureAuditThrottle()
+        self._auth_failures = shared_state.auth_failures
         self.boundary_registry = SQLiteBoundaryRegistry(self.conn)
         self.scope_bounds_repository = SQLiteAgentIssuableScopeBoundsRepository(self.conn)
         self.grant_request_repository = SQLiteGrantRequestRepository(self.conn)
@@ -1754,6 +1788,18 @@ class SQLiteV1Service:
             self.conn
         )
         self._pop_replay = SQLiteReplayStore(self.conn)
+
+    def assert_pool_state_contract(self) -> None:
+        """Fail when new service instance state lacks an explicit pool policy."""
+        expected = set(self._POOL_FIELD_CLASSIFICATIONS)
+        actual = set(vars(self))
+        if actual != expected:
+            undeclared = sorted(actual - expected)
+            missing = sorted(expected - actual)
+            raise RuntimeError(
+                "SQLiteV1Service pooled-state contract drifted: "
+                f"undeclared={undeclared}, missing={missing}"
+            )
 
     def insert_grant(self, grant: Grant) -> None:
         insert_grant(self.conn, grant)

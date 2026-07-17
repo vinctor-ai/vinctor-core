@@ -218,9 +218,19 @@ def connect_sqlite(
         timeout_seconds = float(kwargs.get("timeout", DEFAULT_BUSY_TIMEOUT_MS / 1_000))
         busy_timeout_ms = max(1, int(timeout_seconds * 1_000))
         connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
-        mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
-        if mode not in {"wal", "memory"}:
-            raise RuntimeError(f"SQLite WAL mode could not be enabled (got {mode!r})")
+        try:
+            mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+        except sqlite3.Error as exc:
+            sys.stderr.write(
+                "vinctor: SQLite WAL mode could not be enabled; "
+                f"continuing with the filesystem default: {exc}\n"
+            )
+        else:
+            if mode not in {"wal", "memory"}:
+                sys.stderr.write(
+                    "vinctor: SQLite WAL mode could not be enabled "
+                    f"(got {mode!r}); continuing with that journal mode\n"
+                )
         return SerializedSQLiteConnection(connection)
     except BaseException:
         connection.close()

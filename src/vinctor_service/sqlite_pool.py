@@ -46,6 +46,7 @@ class SQLiteServicePool:
     ) -> None:
         if size < 1:
             raise ValueError("SQLite service pool size must be at least 1")
+        primary_service.assert_pool_state_contract()
 
         primary = SQLiteRequestContext(
             connection=primary_connection,
@@ -65,10 +66,12 @@ class SQLiteServicePool:
             for _ in range(size - 1):
                 connection = connect_sqlite(database, check_same_thread=False)
                 try:
-                    service = SQLiteV1Service(connection, initialize_schema=False)
-                    # Authentication failures are deliberately process-local and
-                    # throttled. All pooled services must see one shared window.
-                    service._auth_failures = primary_service._auth_failures
+                    service = SQLiteV1Service(
+                        connection,
+                        initialize_schema=False,
+                        shared_state=primary_service.shared_state,
+                    )
+                    service.assert_pool_state_contract()
                     key_repository = SQLiteLocalKeyRepository(connection)
                 except BaseException:
                     connection.close()
@@ -112,13 +115,13 @@ class SQLiteServicePool:
         if self._closed:
             return
         self._closed = True
+        audit_writer = self._contexts[0].service.audit_writer
+        close_export = getattr(audit_writer, "close_export", None)
+        if callable(close_export):
+            close_export()
         self._close_contexts(self._contexts)
 
     @staticmethod
     def _close_contexts(contexts: list[SQLiteRequestContext]) -> None:
         for context in contexts:
-            audit_writer = getattr(context.service, "audit_writer", None)
-            close_export = getattr(audit_writer, "close_export", None)
-            if callable(close_export):
-                close_export()
             context.connection.close()

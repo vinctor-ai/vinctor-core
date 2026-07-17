@@ -10,6 +10,7 @@ from vinctor_service.models import GrantIssueRequest
 from vinctor_service.sqlite import SQLiteV1Service
 from vinctor_service.sqlite_txn import connect_sqlite
 from vinctor_service.storage_ops import (
+    _atomic_replace_sqlite,
     backup_sqlite,
     migrate_sqlite,
     read_schema_versions,
@@ -18,6 +19,26 @@ from vinctor_service.storage_ops import (
 )
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
+
+
+def _sidecars(db_path: Path) -> tuple[Path, Path]:
+    return (Path(f"{db_path}-wal"), Path(f"{db_path}-shm"))
+
+
+def _plant_stale_sidecars(db_path: Path) -> None:
+    wal_path, shm_path = _sidecars(db_path)
+    wal_path.write_bytes(b"stale WAL from the database that will be replaced")
+    shm_path.write_bytes(b"stale SHM from the database that will be replaced")
+
+
+def _hold_live_wal(db_path: Path):
+    conn = connect_sqlite(db_path)
+    conn.execute("PRAGMA wal_autocheckpoint = 0")
+    conn.execute("CREATE TABLE IF NOT EXISTS stale_writer (value INTEGER)")
+    conn.execute("INSERT INTO stale_writer VALUES (1)")
+    conn.commit()
+    assert _sidecars(db_path)[0].exists()
+    return conn
 
 
 def _seed_db(db_path: Path) -> None:
@@ -89,6 +110,29 @@ def test_backup_missing_source_raises(tmp_path: Path) -> None:
         backup_sqlite(tmp_path / "missing.sqlite", tmp_path / "out.sqlite")
 
 
+def test_backup_force_removes_stale_output_sidecars(tmp_path: Path) -> None:
+    source = tmp_path / "source.sqlite"
+    output = tmp_path / "backup.sqlite"
+    _seed_db(source)
+    reset_sqlite(output)
+    stale_connection = _hold_live_wal(output)
+
+    try:
+        backup_sqlite(source, output, force=True)
+        assert all(not path.exists() for path in _sidecars(output))
+    finally:
+        stale_connection.close()
+
+    conn = connect_sqlite(output)
+    try:
+        grant = SQLiteV1Service(
+            conn, initialize_schema=False
+        ).grant_repository.get_by_ref("grt_seed")
+    finally:
+        conn.close()
+    assert grant is not None
+
+
 def test_reset_clears_data_but_restores_schema(tmp_path: Path) -> None:
     db_path = tmp_path / "vinctor.sqlite"
     _seed_db(db_path)
@@ -101,6 +145,29 @@ def test_reset_clears_data_but_restores_schema(tmp_path: Path) -> None:
         service = SQLiteV1Service(conn, initialize_schema=False)
         assert service.grant_repository.get_by_ref("grt_seed") is None
         assert SQLiteLocalKeyRepository(conn).list_for_workspace("ws_demo") == ()
+    finally:
+        conn.close()
+
+
+def test_reset_removes_stale_destination_wal_sidecars(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_db(db_path)
+    stale_connection = _hold_live_wal(db_path)
+
+    try:
+        reset_sqlite(db_path)
+        assert all(not path.exists() for path in _sidecars(db_path))
+    finally:
+        stale_connection.close()
+
+    conn = connect_sqlite(db_path)
+    try:
+        assert (
+            SQLiteV1Service(
+                conn, initialize_schema=False
+            ).grant_repository.get_by_ref("grt_seed")
+            is None
+        )
     finally:
         conn.close()
 
@@ -150,6 +217,46 @@ def test_restore_replaces_db_from_snapshot(tmp_path: Path) -> None:
     finally:
         conn.close()
     assert grant is not None
+
+
+def test_restore_removes_stale_destination_wal_sidecars(tmp_path: Path) -> None:
+    source = tmp_path / "source.sqlite"
+    target = tmp_path / "vinctor.sqlite"
+    _seed_db(source)
+    reset_sqlite(target)
+    stale_connection = _hold_live_wal(target)
+
+    try:
+        restore_sqlite(target, source)
+        assert all(not path.exists() for path in _sidecars(target))
+    finally:
+        stale_connection.close()
+
+    conn = connect_sqlite(target)
+    try:
+        grant = SQLiteV1Service(
+            conn, initialize_schema=False
+        ).grant_repository.get_by_ref("grt_seed")
+    finally:
+        conn.close()
+    assert grant is not None
+
+
+def test_atomic_replace_cleans_temp_sidecars_when_build_fails(tmp_path: Path) -> None:
+    target = tmp_path / "vinctor.sqlite"
+    created: list[Path] = []
+
+    def failing_build(tmp_db: Path) -> tuple[int, ...]:
+        created.append(tmp_db)
+        _plant_stale_sidecars(tmp_db)
+        raise RuntimeError("build failed")
+
+    with pytest.raises(RuntimeError, match="build failed"):
+        _atomic_replace_sqlite(target, failing_build)
+
+    assert len(created) == 1
+    assert not created[0].exists()
+    assert all(not path.exists() for path in _sidecars(created[0]))
 
 
 def test_restore_overwrites_existing_target(tmp_path: Path) -> None:
