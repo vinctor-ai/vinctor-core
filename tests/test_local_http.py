@@ -1794,10 +1794,15 @@ def test_local_http_untrusted_peer_cannot_forge_xff(
     "forwarded_for",
     ["", ",", "not-an-ip", "198.51.100.1,not-an-ip", "x" * 5000],
 )
-def test_local_http_malformed_xff_fails_open_without_500(
+def test_local_http_malformed_xff_falls_back_to_the_peer_bucket(
     monkeypatch: pytest.MonkeyPatch,
     forwarded_for: str,
 ) -> None:
+    # Unparseable forwarding data must degrade the limiter, not disable it.
+    # Raising here would reach _check_rate_limit's catch-all, which answers
+    # "allow" — so a client behind a proxy that forwards its X-Forwarded-For
+    # unchanged could buy an unlimited budget by sending garbage. Falling back
+    # to the peer keeps limiting on a key the socket proves.
     monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "1")
     monkeypatch.setenv("VINCTOR_TRUSTED_PROXIES", "127.0.0.0/8")
     svc = service()
@@ -1809,9 +1814,14 @@ def test_local_http_malformed_xff_fails_open_without_500(
     with running_server(svc) as server:
         first = post_json(server, headers=headers)[0]
         second = post_json(server, headers=headers)[0]
+        third_status, third_body = post_json(server, headers=headers)
 
     assert first == 200
-    assert second == 200
+    # The limit is 1/minute and both requests landed in the same peer bucket.
+    assert second == 429
+    assert third_status == 429
+    # No 500 anywhere, and the 429 body stays generic (no-disclosure).
+    assert third_body == {"error": "rate_limited"}
 
 
 def test_local_http_trusted_proxy_config_is_parsed_once(

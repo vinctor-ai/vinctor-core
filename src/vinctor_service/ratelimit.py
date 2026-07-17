@@ -47,7 +47,13 @@ def resolve_rate_limit_source(
     With no configured trusted proxies, this returns the socket peer verbatim.
     Otherwise X-Forwarded-For is considered only when that immediate peer is
     trusted, then walked right-to-left to select the rightmost non-proxy hop.
-    Malformed forwarding data raises for the HTTP layer's fail-open guard.
+
+    Malformed forwarding data falls back to the peer rather than raising. The
+    caller's guard turns an exception into "allow", which would mean unparseable
+    input *disables* the limiter — and this input is attacker-influenced, so
+    that would hand anyone able to reach a misconfigured proxy an unlimited
+    budget. Degrading to the peer's bucket keeps limiting on a key we know is
+    real; the caller's guard stays for genuinely unexpected failures.
     """
     if not trusted_proxies:
         return peer
@@ -58,10 +64,15 @@ def resolve_rate_limit_source(
     if forwarded_for is None:
         return peer
     if len(forwarded_for) > MAX_X_FORWARDED_FOR_LENGTH:
-        raise ValueError("X-Forwarded-For is too long")
+        return peer
 
     for entry in reversed(forwarded_for.split(",")):
-        candidate = ip_address(entry.strip())
+        try:
+            candidate = ip_address(entry.strip())
+        except ValueError:
+            # Nothing left of an unparseable hop can be trusted either — the
+            # chain is only meaningful read right-to-left from a known-good end.
+            return peer
         if not _is_trusted(candidate, trusted_proxies):
             return str(candidate)
 
