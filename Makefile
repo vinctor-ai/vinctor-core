@@ -26,6 +26,7 @@ build:
 	$(PYTHON) -m build
 
 # Release pre-flight: the public snapshot must be a verbatim copy of what we
-# tag. Run after re-syncing the snapshot, before pushing the tag.
+# tag. Compares the snapshot against HEAD — the commit being tagged. Run after
+# re-syncing the snapshot, before pushing the tag.
 check-public-snapshot:
 	tools/check-public-snapshot.sh

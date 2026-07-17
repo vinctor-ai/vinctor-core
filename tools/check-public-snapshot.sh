@@ -11,28 +11,37 @@
 # Run it after re-syncing the snapshot and before pushing the tag, so the one
 # manual step in the release is verified rather than remembered.
 #
-#   tools/check-public-snapshot.sh          # compare against origin/main
-#   tools/check-public-snapshot.sh HEAD     # or any other ref
+#   tools/check-public-snapshot.sh          # compare against HEAD
+#   tools/check-public-snapshot.sh <ref>    # or any other ref
+#
+# The default is HEAD — the commit you are about to tag — and the public side
+# is always fetched fresh. Do not default to a remote-tracking ref like
+# origin/main: it is only as new as your last fetch, so a stale local ref that
+# happens to match the snapshot reports "in sync" while the commit actually
+# being tagged does not. If you compare against origin/main explicitly, fetch
+# first.
 #
 # Override the public remote with VINCTOR_PUBLIC_REMOTE.
 set -euo pipefail
 
 remote="${VINCTOR_PUBLIC_REMOTE:-https://github.com/vinctor-ai/vinctor-core.git}"
-ref="${1:-origin/main}"
+ref="${1:-HEAD}"
 
 git fetch --quiet "$remote" main
+snapshot_commit="$(git rev-parse FETCH_HEAD)"
 snapshot_tree="$(git rev-parse FETCH_HEAD^{tree})"
+local_commit="$(git rev-parse "${ref}^{commit}")"
 local_tree="$(git rev-parse "${ref}^{tree}")"
 
 if [ "$snapshot_tree" = "$local_tree" ]; then
-  echo "in sync — the public snapshot's tree matches ${ref} (${local_tree})"
+  echo "in sync — the public snapshot's tree matches ${ref} (commit ${local_commit}, tree ${local_tree})"
   exit 0
 fi
 
 {
   echo "DRIFT — the public snapshot is not a copy of ${ref}."
-  echo "  snapshot tree: ${snapshot_tree}"
-  echo "  ${ref} tree:   ${local_tree}"
+  echo "  public snapshot: commit ${snapshot_commit}, tree ${snapshot_tree}"
+  echo "  ${ref}: commit ${local_commit}, tree ${local_tree}"
   echo
   echo "Paths that differ:"
   git diff --stat FETCH_HEAD "$ref" || true

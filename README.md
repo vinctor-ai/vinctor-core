@@ -114,7 +114,9 @@ service state to `.vinctor-local.sqlite`.
 
 ### Docker
 
-The released image is public on GHCR and runs as a non-root user:
+The released image runs as a non-root user and is pushed to GHCR. The package
+is set to public visibility in GHCR (a registry-side setting this repo's
+workflow does not control), so pulling needs no login:
 
 ```bash
 docker pull ghcr.io/vinctor-ai/vinctor-core:0.5.0     # or :latest
