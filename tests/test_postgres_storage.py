@@ -1337,3 +1337,58 @@ def test_postgres_key_rotation_is_atomic_when_revocation_fails() -> None:
     ]
     assert [record.key_id for record in active_workspace] == [old.record.key_id]
     conn.close()
+
+
+def test_postgres_rotation_waits_for_another_threads_transaction() -> None:
+    # A rotation must not be REJECTED because another thread holds a transaction
+    # on the shared connection; it should wait for the connection, then run.
+    # info.transaction_status is connection-global, so reading it before taking
+    # the connection lock mistook a peer's transaction for caller nesting.
+    # Mirrors test_sqlite_concurrency.py's rotation test.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    init_postgres_schema(conn)
+    repository = PostgresLocalKeyRepository(conn)
+    old = repository.create_workspace_key(workspace_id="ws_main", now=NOW)
+    a_inside = threading.Event()
+    rotated = threading.Event()
+    release_a = threading.Event()
+    errors: list[Exception] = []
+
+    def thread_a() -> None:
+        with conn.transaction():
+            a_inside.set()
+            release_a.wait(timeout=2)
+
+    def thread_b() -> None:
+        a_inside.wait(timeout=2)
+        try:
+            rotate_workspace_key(repository, workspace_id="ws_main", now=NOW)
+            rotated.set()
+        except Exception as exc:  # noqa: BLE001 - captured for assertion
+            errors.append(exc)
+
+    ta, tb = threading.Thread(target=thread_a), threading.Thread(target=thread_b)
+    ta.start()
+    tb.start()
+    try:
+        assert a_inside.wait(timeout=2)
+        # B is waiting on the connection lock, NOT rejected with "cannot run
+        # inside an open transaction".
+        assert not rotated.wait(timeout=0.3)
+        assert errors == []
+        release_a.set()
+        assert rotated.wait(timeout=2)
+        assert errors == []
+        # The rotation really ran: the predecessor is no longer active.
+        active_workspace = [
+            record
+            for record in repository.list_for_workspace("ws_main")
+            if record.status == "active" and record.key_type == "workspace"
+        ]
+        assert old.record.key_id not in [record.key_id for record in active_workspace]
+    finally:
+        release_a.set()
+        ta.join(timeout=2)
+        tb.join(timeout=2)
+        conn.close()
