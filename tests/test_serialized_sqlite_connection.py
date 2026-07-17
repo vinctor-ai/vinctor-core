@@ -31,6 +31,50 @@ def test_connect_sqlite_returns_wrapper(tmp_path):
     conn.execute("SELECT 1")
 
 
+def test_connect_sqlite_enables_wal_and_busy_timeout(tmp_path):
+    conn = connect_sqlite(str(tmp_path / "wal.sqlite"))
+    try:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] > 0
+    finally:
+        conn.close()
+
+
+def test_connect_sqlite_preserves_explicit_nonzero_timeout(tmp_path):
+    conn = connect_sqlite(str(tmp_path / "timeout.sqlite"), timeout=0.125)
+    try:
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 125
+    finally:
+        conn.close()
+
+
+def test_connect_sqlite_warns_and_continues_when_wal_is_unavailable(
+    tmp_path, capsys
+):
+    class WalUnavailableResult:
+        def fetchone(self):
+            return ("delete",)
+
+    class WalUnavailableConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if sql == "PRAGMA journal_mode = WAL":
+                return WalUnavailableResult()
+            return super().execute(sql, *args, **kwargs)
+
+    conn = connect_sqlite(
+        str(tmp_path / "no-wal.sqlite"),
+        factory=WalUnavailableConnection,
+    )
+    try:
+        conn.execute("CREATE TABLE usable (value INTEGER)")
+        conn.commit()
+        assert conn.execute("SELECT COUNT(*) FROM usable").fetchone() == (0,)
+    finally:
+        conn.close()
+
+    assert "WAL mode could not be enabled" in capsys.readouterr().err
+
+
 def test_getattr_delegates(tmp_path):
     raw = _raw(tmp_path)
     conn = SerializedSQLiteConnection(raw)

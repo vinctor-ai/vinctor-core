@@ -21,6 +21,7 @@ from vinctor_service.keys import (
 from vinctor_service.local_http import create_v1_http_server
 from vinctor_service.models import GrantIssueRequest
 from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite_pool import SQLiteServicePool
 from vinctor_service.sqlite_txn import connect_sqlite
 
 DEFAULT_SCOPE = "write:repo/feature/*"
@@ -58,9 +59,13 @@ class LocalServiceHandle:
     generated_workspace_key: bool
     generated_agent_key: bool
     boundary: Boundary | None = None
+    sqlite_pool: SQLiteServicePool | None = None
 
     def close(self) -> None:
         self.server.server_close()
+        if self.sqlite_pool is not None:
+            self.sqlite_pool.close()
+            return
         close_export = getattr(self.service.audit_writer, "close_export", None)
         if callable(close_export):
             close_export()
@@ -77,6 +82,7 @@ def prepare_local_service(
     db_path = config.db_path.expanduser()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = connect_sqlite(db_path, check_same_thread=False)
+    sqlite_pool: SQLiteServicePool | None = None
 
     try:
         service = SQLiteV1Service(conn)
@@ -93,29 +99,37 @@ def prepare_local_service(
             config,
             now=timestamp,
         )
-        agent_resolver = key_repository.resolve_agent_identity
-        workspace_resolver = key_repository.resolve_workspace_identity
+        sqlite_pool = SQLiteServicePool(
+            db_path,
+            primary_connection=conn,
+            primary_service=service,
+            primary_key_repository=key_repository,
+        )
+        http_service = sqlite_pool.service
+        http_key_repository = sqlite_pool.key_repository
         server = create_v1_http_server(
             (config.host, config.port),
-            service=service,
+            service=http_service,
             agent_identities={},
             workspace_identities={},
-            agent_identity_resolver=lambda raw_key, used_at: agent_resolver(
-                raw_key,
-                now=used_at,
+            agent_identity_resolver=lambda raw_key, used_at: (
+                http_key_repository.resolve_agent_identity(raw_key, now=used_at)
             ),
-            workspace_identity_resolver=lambda raw_key, used_at: workspace_resolver(
-                raw_key,
-                now=used_at,
+            workspace_identity_resolver=lambda raw_key, used_at: (
+                http_key_repository.resolve_workspace_identity(raw_key, now=used_at)
             ),
-            pep_identity_resolver=lambda raw_key, used_at: key_repository.resolve_pep_identity(
-                raw_key, now=used_at
+            pep_identity_resolver=lambda raw_key, used_at: (
+                http_key_repository.resolve_pep_identity(raw_key, now=used_at)
             ),
             clock=(lambda: timestamp) if now is not None else None,
-            readiness_check=lambda: conn.execute("SELECT 1").fetchone() == (1,),
+            readiness_check=sqlite_pool.is_ready,
+            request_scope=sqlite_pool.request_scope,
         )
     except Exception:
-        conn.close()
+        if sqlite_pool is not None:
+            sqlite_pool.close()
+        else:
+            conn.close()
         raise
 
     host, port = server.server_address
@@ -132,6 +146,7 @@ def prepare_local_service(
         generated_workspace_key=config.workspace_key is None,
         generated_agent_key=config.agent_key is None,
         boundary=boundary,
+        sqlite_pool=sqlite_pool,
     )
 
 

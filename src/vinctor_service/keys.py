@@ -16,7 +16,7 @@ from vinctor_service.v1_http import AgentIdentity, PepIdentity
 
 @contextmanager
 def _key_write_scope(conn: sqlite3.Connection) -> Iterator[None]:
-    """Join an already-open transaction, else run as a standalone commit.
+    """Join an open transaction, else run a standalone BEGIN IMMEDIATE commit.
 
     Lets a single write participate in an outer unit of work (e.g. an atomic
     key rotation) instead of committing on its own, while direct callers keep
@@ -28,8 +28,13 @@ def _key_write_scope(conn: sqlite3.Connection) -> Iterator[None]:
         if conn.in_transaction:
             yield
         else:
-            with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
                 yield
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
 
 KeyType = Literal[
     "workspace", "auditor", "service_operator", "agent", "resource_server"

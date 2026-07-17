@@ -16,6 +16,8 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
+DEFAULT_BUSY_TIMEOUT_MS = 5_000
+
 
 def conn_txn_lock(conn: SerializedSQLiteConnection) -> threading.RLock:
     """Return the re-entrant lock that serializes transaction scopes on ``conn``.
@@ -210,8 +212,29 @@ class SerializedSQLiteConnection:
 def connect_sqlite(
     database: str | os.PathLike[str], **kwargs: object
 ) -> SerializedSQLiteConnection:
-    """Open a sqlite3 connection wrapped for thread-safe serialization."""
-    return SerializedSQLiteConnection(sqlite3.connect(database, **kwargs))
+    """Open a serialized connection configured for bounded writer contention."""
+    connection = sqlite3.connect(database, **kwargs)
+    try:
+        timeout_seconds = float(kwargs.get("timeout", DEFAULT_BUSY_TIMEOUT_MS / 1_000))
+        busy_timeout_ms = max(1, int(timeout_seconds * 1_000))
+        connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
+        try:
+            mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+        except sqlite3.Error as exc:
+            sys.stderr.write(
+                "vinctor: SQLite WAL mode could not be enabled; "
+                f"continuing with the filesystem default: {exc}\n"
+            )
+        else:
+            if mode not in {"wal", "memory"}:
+                sys.stderr.write(
+                    "vinctor: SQLite WAL mode could not be enabled "
+                    f"(got {mode!r}); continuing with that journal mode\n"
+                )
+        return SerializedSQLiteConnection(connection)
+    except BaseException:
+        connection.close()
+        raise
 
 
 def require_serialized(conn: object) -> SerializedSQLiteConnection:

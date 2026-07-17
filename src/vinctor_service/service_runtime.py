@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import errno
-import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,6 +16,7 @@ from vinctor_service.postgres import PostgresV1Service, connect_postgres
 from vinctor_service.postgres_control import PostgresLocalKeyRepository
 from vinctor_service.service_config import ServiceRuntimeConfig
 from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite_pool import SQLiteServicePool
 from vinctor_service.sqlite_txn import connect_sqlite
 
 
@@ -28,9 +28,13 @@ class ServiceRuntimeHandle:
     server: ThreadingHTTPServer
     config: ServiceRuntimeConfig
     endpoint: str
+    sqlite_pool: SQLiteServicePool | None = None
 
     def close(self) -> None:
         self.server.server_close()
+        if self.sqlite_pool is not None:
+            self.sqlite_pool.close()
+            return
         audit_writer = getattr(self.service, "audit_writer", None)
         close_export = getattr(audit_writer, "close_export", None)
         if callable(close_export):
@@ -43,6 +47,7 @@ def prepare_service_runtime(
     *,
     clock: Callable[[], datetime] | None = None,
 ) -> ServiceRuntimeHandle:
+    sqlite_pool: SQLiteServicePool | None = None
     if config.storage_backend == "postgres":
         assert config.postgres_dsn is not None
         conn = connect_postgres(config.postgres_dsn)
@@ -58,31 +63,41 @@ def prepare_service_runtime(
         else:
             service = SQLiteV1Service(conn)
             key_repository = SQLiteLocalKeyRepository(conn)
-            readiness_check = partial(_sqlite_ready, conn)
+            sqlite_pool = SQLiteServicePool(
+                db_path,
+                primary_connection=conn,
+                primary_service=service,
+                primary_key_repository=key_repository,
+            )
+            http_service = sqlite_pool.service
+            http_key_repository = sqlite_pool.key_repository
+            readiness_check = sqlite_pool.is_ready
+        if config.storage_backend == "postgres":
+            http_service = service
+            http_key_repository = key_repository
         metrics = Metrics() if config.metrics else None
         oidc_token_verifier = (
             PyJwtOidcTokenVerifier(config.oidc) if config.oidc is not None else None
         )
         server = create_v1_http_server(
             (config.host, config.port),
-            service=service,
+            service=http_service,
             agent_identities={},
             workspace_identities={},
-            agent_identity_resolver=lambda raw_key, used_at: key_repository.resolve_agent_identity(
-                raw_key,
-                now=used_at,
+            agent_identity_resolver=lambda raw_key, used_at: (
+                http_key_repository.resolve_agent_identity(raw_key, now=used_at)
             ),
             workspace_identity_resolver=lambda raw_key, used_at: (
-                key_repository.resolve_workspace_identity(raw_key, now=used_at)
+                http_key_repository.resolve_workspace_identity(raw_key, now=used_at)
             ),
             auditor_identity_resolver=lambda raw_key, used_at: (
-                key_repository.resolve_auditor_identity(raw_key, now=used_at)
+                http_key_repository.resolve_auditor_identity(raw_key, now=used_at)
             ),
             service_operator_resolver=lambda raw_key, used_at: (
-                key_repository.resolve_service_operator(raw_key, now=used_at)
+                http_key_repository.resolve_service_operator(raw_key, now=used_at)
             ),
-            pep_identity_resolver=lambda raw_key, used_at: key_repository.resolve_pep_identity(
-                raw_key, now=used_at
+            pep_identity_resolver=lambda raw_key, used_at: (
+                http_key_repository.resolve_pep_identity(raw_key, now=used_at)
             ),
             clock=clock,
             service_mode=config.service_mode,
@@ -90,9 +105,13 @@ def prepare_service_runtime(
             access_log=config.access_log,
             readiness_check=readiness_check,
             oidc_token_verifier=oidc_token_verifier,
+            request_scope=sqlite_pool.request_scope if sqlite_pool is not None else None,
         )
     except Exception:
-        conn.close()
+        if sqlite_pool is not None:
+            sqlite_pool.close()
+        else:
+            conn.close()
         raise
 
     host, port = server.server_address
@@ -103,11 +122,8 @@ def prepare_service_runtime(
         server=server,
         config=config,
         endpoint=f"http://{host}:{port}",
+        sqlite_pool=sqlite_pool,
     )
-
-
-def _sqlite_ready(conn: sqlite3.Connection) -> bool:
-    return conn.execute("SELECT 1").fetchone() == (1,)
 
 
 def _postgres_ready(conn: Any) -> bool:

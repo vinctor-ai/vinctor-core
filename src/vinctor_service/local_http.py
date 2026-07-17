@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import os
 import sys
-import threading
 import time
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager, nullcontext
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
@@ -59,6 +59,7 @@ from vinctor_service.v1_http import (
 
 Clock = Callable[[], datetime]
 ReadinessCheck = Callable[[], bool]
+RequestScope = Callable[[], AbstractContextManager[None]]
 
 # All legitimate request bodies are tiny JSON payloads. Cap the read so a hostile
 # (or merely huge) Content-Length cannot pin a worker thread or exhaust memory
@@ -90,6 +91,7 @@ def create_v1_http_server(
     access_log: bool = False,
     readiness_check: ReadinessCheck | None = None,
     oidc_token_verifier: OidcTokenVerifier | None = None,
+    request_scope: RequestScope | None = None,
 ) -> ThreadingHTTPServer:
     handler = create_v1_http_handler(
         service=service,
@@ -109,6 +111,7 @@ def create_v1_http_server(
         access_log=access_log,
         readiness_check=readiness_check,
         oidc_token_verifier=oidc_token_verifier,
+        request_scope=request_scope,
     )
     return ThreadingHTTPServer(address, handler)
 
@@ -132,6 +135,7 @@ def create_v1_http_handler(
     access_log: bool = False,
     readiness_check: ReadinessCheck | None = None,
     oidc_token_verifier: OidcTokenVerifier | None = None,
+    request_scope: RequestScope | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     agent_keys = dict(agent_identities)
     workspace_keys = dict(workspace_identities or {})
@@ -140,6 +144,7 @@ def create_v1_http_handler(
     pep_keys = dict(pep_identities or {})
     now = clock or _utc_now
     is_ready = readiness_check or (lambda: True)
+    open_request_scope = request_scope or nullcontext
 
     def resolve_workspace_identity(raw_key: str, used_at: datetime) -> WorkspaceIdentity | None:
         identity = (
@@ -194,15 +199,6 @@ def create_v1_http_handler(
         else None
     )
 
-    # The single-node prototype shares ONE SQLite connection across all
-    # ThreadingHTTPServer worker threads. sqlite3 (even check_same_thread=False)
-    # is NOT safe for concurrent cursor/transaction use on one connection: a
-    # red-team hammering /v1/enforce with several concurrent clients tripped
-    # "another row available" / "no more rows available" and dropped connections
-    # with no response. Serialize the DB-touching request handling so a request's
-    # cursor is fully consumed before the next thread touches the connection.
-    db_access_lock = threading.Lock()
-
     class V1Handler(BaseHTTPRequestHandler):
         server_version = "VinctorLocalHTTP/0.1"
         # Suppress the default "Python/<x.y.z>" suffix BaseHTTPRequestHandler
@@ -255,8 +251,9 @@ def create_v1_http_handler(
             self._vinctor_decision = None
             self._vinctor_error = None
             try:
-                # Serialize DB access across worker threads (see db_access_lock).
-                with db_access_lock:
+                # SQLite runtimes lease one independent connection/service for
+                # the whole request. Other backends use the no-op default.
+                with open_request_scope():
                     _handle_request(self, method)
             finally:
                 _observe(self, method)

@@ -116,6 +116,7 @@ def backup_sqlite(
                 f"backup output already exists: {output_path}; pass --force to overwrite"
             )
         output_path.unlink()
+    _unlink_sqlite_sidecars(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     source = sqlite3.connect(db_path)
@@ -137,6 +138,27 @@ def backup_sqlite(
     )
 
 
+def _sqlite_sidecars(db_path: Path) -> tuple[Path, Path]:
+    return (Path(f"{db_path}-wal"), Path(f"{db_path}-shm"))
+
+
+def _unlink_sqlite_sidecars(db_path: Path) -> None:
+    for sidecar in _sqlite_sidecars(db_path):
+        sidecar.unlink(missing_ok=True)
+
+
+def _checkpoint_sqlite_wal(db_path: Path) -> None:
+    """Move every committed temp-WAL page into the main file before rename."""
+    conn = sqlite3.connect(db_path)
+    try:
+        checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    finally:
+        conn.close()
+    if checkpoint is not None and checkpoint[0] != 0:
+        raise RuntimeError(f"SQLite WAL checkpoint remained busy for {db_path.name}")
+    _unlink_sqlite_sidecars(db_path)
+
+
 def _atomic_replace_sqlite(
     db_path: Path, build: Callable[[Path], tuple[int, ...]]
 ) -> tuple[int, ...]:
@@ -155,13 +177,21 @@ def _atomic_replace_sqlite(
     os.close(fd)
     tmp_path = Path(tmp_name)
     try:
+        # Every internal builder closes its connection before returning. Run an
+        # explicit final checkpoint as a second line of defence so the fsync and
+        # rename never omit committed pages still resident in the temp WAL.
         versions = build(tmp_path)
+        _checkpoint_sqlite_wal(tmp_path)
         flush_fd = os.open(tmp_path, os.O_RDONLY)
         try:
             os.fsync(flush_fd)
         finally:
             os.close(flush_fd)
         os.replace(tmp_path, db_path)
+        # The destination may have belonged to a live or uncleanly-stopped WAL
+        # database. Its sidecars describe the replaced inode and must never be
+        # replayed against the fresh main file.
+        _unlink_sqlite_sidecars(db_path)
         # fsync the parent directory so the rename itself is durable across a
         # crash immediately after replace (best-effort: not all platforms allow
         # fsync on a directory handle).
@@ -175,6 +205,7 @@ def _atomic_replace_sqlite(
             pass
         return versions
     except BaseException:
+        _unlink_sqlite_sidecars(tmp_path)
         tmp_path.unlink(missing_ok=True)
         raise
 

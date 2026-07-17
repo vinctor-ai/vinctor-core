@@ -13,6 +13,7 @@ from typing import Any, NamedTuple, TextIO
 from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.local_http import create_v1_http_server
 from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite_pool import SQLiteServicePool
 from vinctor_service.sqlite_txn import connect_sqlite
 
 DEFAULT_SCOPES = ("write:repo/design-partner/feature/*", "execute:ci/test")
@@ -56,6 +57,7 @@ class E2EHandle(NamedTuple):
     boundary_type: str | None
     hook_cli: Path | None
     hook_config_path: Path
+    sqlite_pool: SQLiteServicePool
 
 
 def prepare_design_partner_e2e(
@@ -68,6 +70,7 @@ def prepare_design_partner_e2e(
     db_path.parent.mkdir(parents=True, exist_ok=True)
     hook_config_path = _write_hook_config(config, db_path=db_path)
     conn = connect_sqlite(db_path, check_same_thread=False)
+    sqlite_pool: SQLiteServicePool | None = None
     try:
         service = SQLiteV1Service(conn)
         service.set_agent_issuable_scope_bounds(
@@ -79,22 +82,33 @@ def prepare_design_partner_e2e(
         key_repository = SQLiteLocalKeyRepository(conn)
         workspace_key = _workspace_key(key_repository, config, timestamp)
         agent_key = _agent_key(key_repository, config, timestamp)
+        sqlite_pool = SQLiteServicePool(
+            db_path,
+            primary_connection=conn,
+            primary_service=service,
+            primary_key_repository=key_repository,
+        )
+        http_key_repository = sqlite_pool.key_repository
         server = create_v1_http_server(
             (config.host, config.port),
-            service=service,
+            service=sqlite_pool.service,
             agent_identities={},
             workspace_identities={},
             agent_identity_resolver=lambda raw_key, used_at: (
-                key_repository.resolve_agent_identity(raw_key, now=used_at)
+                http_key_repository.resolve_agent_identity(raw_key, now=used_at)
             ),
             workspace_identity_resolver=lambda raw_key, used_at: (
-                key_repository.resolve_workspace_identity(raw_key, now=used_at)
+                http_key_repository.resolve_workspace_identity(raw_key, now=used_at)
             ),
             clock=(lambda: timestamp) if now is not None else None,
             service_mode="local",
+            request_scope=sqlite_pool.request_scope,
         )
     except Exception:
-        conn.close()
+        if sqlite_pool is not None:
+            sqlite_pool.close()
+        else:
+            conn.close()
         raise
 
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -109,7 +123,7 @@ def prepare_design_partner_e2e(
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
-        conn.close()
+        sqlite_pool.close()
         raise
 
     return E2EHandle(
@@ -129,6 +143,7 @@ def prepare_design_partner_e2e(
         boundary_type=_optional_string(boundary.get("boundary_type")),
         hook_cli=config.hook_cli,
         hook_config_path=hook_config_path,
+        sqlite_pool=sqlite_pool,
     )
 
 
@@ -136,7 +151,7 @@ def close_design_partner_e2e(handle: E2EHandle) -> None:
     handle.server.shutdown()
     handle.thread.join(timeout=5)
     handle.server.server_close()
-    handle.conn.close()
+    handle.sqlite_pool.close()
 
 
 def enforce(handle: E2EHandle, *, action: str, resource: str) -> tuple[int, dict[str, Any]]:

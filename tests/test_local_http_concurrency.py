@@ -1,13 +1,8 @@
-"""Concurrency regression for the shared-SQLite local HTTP service.
+"""Concurrency regression for the pooled-SQLite local HTTP service.
 
-Red-team finding (2026-07-12): the single-node prototype shares ONE sqlite3
-connection (check_same_thread=False) across all ThreadingHTTPServer worker
-threads. Under several concurrent clients, cursor/transaction state on that one
-connection clashed ("another row available" / "no more rows available") and the
-server dropped connections with no response (RemoteDisconnected). The fix
-serializes DB-touching request handling with a lock; this test hammers a real
-SQLite-backed service from many threads and asserts every request gets a clean
-permit — no drops, no 5xx.
+Each worker leases one connection/service for its whole request. This test
+hammers a real SQLite-backed service from many threads and asserts every request
+gets a clean permit — no drops, no database-lock errors, and no 5xx.
 """
 
 from __future__ import annotations
@@ -47,6 +42,8 @@ def test_concurrent_enforce_never_drops_a_connection(tmp_path: Path) -> None:
     handle = prepare_local_service(
         LocalLaunchConfig(db_path=tmp_path / "conc.sqlite", port=0, scopes=("read:test/*",))
     )
+    assert handle.sqlite_pool is not None
+    assert handle.sqlite_pool.size >= WORKERS
     thread = Thread(target=handle.server.serve_forever, daemon=True)
     thread.start()
     try:
