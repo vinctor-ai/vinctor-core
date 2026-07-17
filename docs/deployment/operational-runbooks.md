@@ -320,6 +320,26 @@ Use the operator storage commands (see
 consistent snapshots. They produce a database file that holds only key hashes
 and metadata — no raw secrets.
 
+### Why the command, and not `cp`
+
+A Vinctor database is **three files**: `vinctor.sqlite` plus `vinctor.sqlite-wal`
+and `vinctor.sqlite-shm` sidecars. Since 0.5.0 every database runs in WAL mode,
+and the journal mode is a property of the *database file*, not of a connection —
+once converted it stays WAL for every later process, permanently.
+
+That makes copying the database file **silently lossy**. Committed transactions
+can still be resident in the `-wal` sidecar while the main file looks untouched,
+so a `cp` of the main file alone produces a database that opens cleanly, queries
+cleanly, and is quietly missing rows. There is no error at copy time or at read
+time. A dogfood of 0.5.0 lost 164 committed rows this way without a single
+warning.
+
+`operator storage backup` reads through the SQLite backup API, so it captures
+WAL-resident data and writes a single self-contained file. Use it — including
+inside containers, where the instinct to snapshot the volume is strongest. If you
+must move files directly, checkpoint first (`PRAGMA wal_checkpoint(TRUNCATE)`) or
+move all three together.
+
 Scheduled backup with cron (consistent snapshot; safe while the service runs):
 
 ```cron
@@ -336,6 +356,21 @@ vinctor --db /var/lib/vinctor/vinctor.sqlite operator storage restore \
   --input /var/backups/vinctor/vinctor-20260611.sqlite --yes
 sudo systemctl start vinctor.service
 ```
+
+> **Stop the service first — this is not a formality.** `restore` swaps the
+> database file atomically, but a service that is still running holds its own
+> open handle to the *replaced* file. It keeps answering `permit` and writing
+> audit events into an inode nothing will ever read again, and when it exits
+> those records are gone for good. Worse, `operator audit verify` against the
+> restored database then reports **"chain OK"** — a rewind is indistinguishable
+> from "nothing happened", so the loss leaves no trace anywhere. There is no
+> runtime guard for this today beyond `--yes`; the ordering above *is* the
+> control.
+
+The backup → restore path is covered by drill tests
+(`tests/test_cli.py::test_dr_drill_*`) that run these same commands and assert
+the restored audit chain verifies with the backed-up head hash — not merely that
+it verifies, since an empty chain verifies too.
 
 ### Docker volume backup
 
