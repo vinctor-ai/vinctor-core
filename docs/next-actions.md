@@ -1,5 +1,17 @@
 # Next Actions
 
+> **Superseded — historical snapshot, last updated 2026-06-27.**
+>
+> This file is no longer maintained and does not describe the current state of
+> the project. It predates the Postgres control plane, OIDC, the action
+> taxonomy, and the 2026-07 hardening work, so it reads as a live tracker while
+> being materially out of date.
+>
+> - Durable design decisions: [`docs/decisions/`](decisions/README.md)
+> - Shipped and unreleased changes: [`CHANGELOG.md`](../CHANGELOG.md)
+>
+> Kept for historical context only — do not plan work from it.
+
 ## Current Focus
 
 V1 service contract boundary:
