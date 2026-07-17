@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vinctor-core"
-version = "0.4.0"
+version = "0.5.0"
 description = "Deterministic authorization core for mediated AI-agent actions."
 readme = "README.md"
 requires-python = ">=3.11"

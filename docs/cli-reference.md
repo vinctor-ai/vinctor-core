@@ -202,7 +202,7 @@ An agent identity is what a runtime presents when it calls `/v1/enforce`; the
 - **Consumed via** `--agent-key` / `VINCTOR_AGENT_KEY` by all `agent` commands.
 
 For creating multiple agents and the manual end-to-end setup, see the
-[Configure agents and grants guide](https://github.com/pkachuc/vinctor-site/blob/main/docs/getting-started/agents-and-grants.md).
+[Configure agents and grants guide](https://vinctor.dev/docs/getting-started/agents-and-grants).
 
 ---
 
