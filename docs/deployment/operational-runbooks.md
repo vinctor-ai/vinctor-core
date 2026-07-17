@@ -322,23 +322,36 @@ and metadata — no raw secrets.
 
 ### Why the command, and not `cp`
 
-A Vinctor database is **three files**: `vinctor.sqlite` plus `vinctor.sqlite-wal`
-and `vinctor.sqlite-shm` sidecars. Since 0.5.0 every database runs in WAL mode,
-and the journal mode is a property of the *database file*, not of a connection —
-once converted it stays WAL for every later process, permanently.
+Since 0.5.0 Vinctor opens every database connection with
+`PRAGMA journal_mode = WAL`, and WAL — unlike the other journal modes — is a
+property of the *database file*: once a database has been converted, later
+connections and processes come up in WAL as well. Neither half of that is a
+guarantee. If WAL cannot be enabled (some network filesystems cannot support
+it), the service does not fail: it warns on stderr and continues on whatever
+journal mode it got. And the setting persists in the file rather than being
+permanent — a later connection can switch the database to a different journal
+mode.
+
+While a WAL database is in use, it is more than one file on disk: committed
+transactions can be resident in a `vinctor.sqlite-wal` sidecar next to the main
+file, with a `vinctor.sqlite-shm` index beside it. The sidecars come and go —
+a cleanly closed database is typically a single file again — which is exactly
+why they are easy to forget.
 
 That makes copying the database file **silently lossy**. Committed transactions
 can still be resident in the `-wal` sidecar while the main file looks untouched,
 so a `cp` of the main file alone produces a database that opens cleanly, queries
 cleanly, and is quietly missing rows. There is no error at copy time or at read
-time. A dogfood of 0.5.0 lost 164 committed rows this way without a single
-warning.
+time. We watched a dogfood run lose committed rows exactly this way, without a
+single warning.
 
 `operator storage backup` reads through the SQLite backup API, so it captures
 WAL-resident data and writes a single self-contained file. Use it — including
-inside containers, where the instinct to snapshot the volume is strongest. If you
-must move files directly, checkpoint first (`PRAGMA wal_checkpoint(TRUNCATE)`) or
-move all three together.
+inside containers, where the instinct to snapshot the volume is strongest; it is
+safe while the service runs. If you must copy files instead, stop (or otherwise
+quiesce) the service first and checkpoint with
+`PRAGMA wal_checkpoint(TRUNCATE)`, so the main file is complete before you copy
+it. Never copy the files of a live database.
 
 Scheduled backup with cron (consistent snapshot; safe while the service runs):
 
@@ -361,10 +374,14 @@ sudo systemctl start vinctor.service
 > database file atomically, but a service that is still running holds its own
 > open handle to the *replaced* file. It keeps answering `permit` and writing
 > audit events into an inode nothing will ever read again, and when it exits
-> those records are gone for good. Worse, `operator audit verify` against the
-> restored database then reports **"chain OK"** — a rewind is indistinguishable
-> from "nothing happened", so the loss leaves no trace anywhere. There is no
-> runtime guard for this today beyond `--yes`; the ordering above *is* the
+> those records are gone for good. Worse, the restored database's own chain
+> cannot reveal the rewind: `operator audit verify` reports **"chain OK"**,
+> because the snapshot's chain is internally consistent. Only out-of-band
+> records can expose it — every storage op (this restore included) first emits
+> a trace with the pre-op chain head to stderr and to the configured anchor
+> (`VINCTOR_AUDIT_ANCHOR`), and `verify --expected-head` / `--against-anchor`
+> check the live chain against heads recorded outside the database. There is
+> no runtime guard for this today beyond `--yes`; the ordering above *is* the
 > control.
 
 The backup → restore path is covered by drill tests

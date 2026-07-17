@@ -1939,15 +1939,18 @@ def test_vinctor_cli_help_demo_block_and_global_flags(
 
 
 def _grant_ref_present(db_path: Path, grant_ref: str) -> bool:
-    """Read a database directly, tolerating one with no schema at all."""
+    """Read a database directly; an unreadable or schemaless file raises.
+
+    Deliberately no except: if this swallowed sqlite3.DatabaseError as "grant
+    absent", a corrupt copy would satisfy the WAL drill below for a reason that
+    has nothing to do with WAL.
+    """
     conn = sqlite3.connect(db_path)
     try:
         row = conn.execute(
             "SELECT 1 FROM grants WHERE grant_ref = ?", (grant_ref,)
         ).fetchone()
         return row is not None
-    except sqlite3.DatabaseError:
-        return False
     finally:
         conn.close()
 
@@ -1961,7 +1964,9 @@ def test_dr_drill_restored_database_has_a_verifiable_audit_chain(tmp_path: Path)
     backup_path = tmp_path / "vinctor.backup.sqlite"
     _seed_storage_db(db_path)
     common = ["--json", "--db", str(db_path)]
-    verify = ["operator", "audit", "verify", "--workspace-id", "ws_demo"]
+    # No --workspace-id: verify walks the whole audit_events chain; the flag is
+    # accepted globally but ignored by this subcommand.
+    verify = ["operator", "audit", "verify"]
 
     before = _run([*common, *verify])
     _run([*common, "operator", "storage", "backup", "--output", str(backup_path)])
@@ -1970,6 +1975,9 @@ def test_dr_drill_restored_database_has_a_verifiable_audit_chain(tmp_path: Path)
     after = _run([*common, *verify])
 
     assert before["ok"] is True
+    # Vacuity guard: if the seed ever stops writing audit events, the equality
+    # checks below would compare two empty chains and pass.
+    assert before["count"] > 0
     assert after["ok"] is True
     # ok=True alone is a weak assertion: an empty chain verifies too. Pin that the
     # restored chain is *the backed-up chain*, head hash and all.
@@ -1979,18 +1987,24 @@ def test_dr_drill_restored_database_has_a_verifiable_audit_chain(tmp_path: Path)
 
 
 def test_dr_drill_backup_captures_wal_resident_writes(tmp_path: Path) -> None:
-    # Why the runbook says `storage backup` and not `cp`. Every database is WAL
-    # since 0.5.0, so committed rows can sit in the -wal sidecar while the main
-    # file looks untouched. The command reads through the SQLite backup API and
-    # captures them; copying the main file does not. This is the assumption the
-    # whole DR path rests on, so it gets a test rather than a sentence.
+    # Why the runbook says `storage backup` and not `cp`. Databases normally run
+    # in WAL mode (enabled on every open), so committed rows can sit in the -wal
+    # sidecar while the main file looks untouched. The command reads through the
+    # SQLite backup API and captures them; copying the main file does not. This
+    # is the assumption the whole DR path rests on, so it gets a test rather
+    # than a sentence.
     db_path = tmp_path / "vinctor.sqlite"
     backup_path = tmp_path / "vinctor.backup.sqlite"
     naive_copy = tmp_path / "what-an-operator-would-copy.sqlite"
 
+    # Seeds grt_seed; closing the last connection checkpoints it into the main
+    # file, so it is the baseline row a naive copy MUST contain.
     _seed_storage_db(db_path)
     conn = connect_sqlite(db_path)
     try:
+        # Keep the drill independent of SQLite's default checkpoint threshold:
+        # this connection must never checkpoint on its own.
+        conn.execute("PRAGMA wal_autocheckpoint = 0")
         service = SQLiteV1Service(conn, initialize_schema=False)
         service.issue_grant(
             GrantIssueRequest(
@@ -2005,11 +2019,17 @@ def test_dr_drill_backup_captures_wal_resident_writes(tmp_path: Path) -> None:
         # Committed, but still living in the sidecar: nothing has checkpointed.
         assert Path(f"{db_path}-wal").stat().st_size > 0
 
+        # Naive copy first, then the real backup, so both mechanisms are
+        # compared against the same source state.
+        shutil.copyfile(db_path, naive_copy)
         _run(["--json", "--db", str(db_path), "operator", "storage", "backup",
               "--output", str(backup_path)])
-        shutil.copyfile(db_path, naive_copy)
     finally:
         conn.close()
 
     assert _grant_ref_present(backup_path, "grt_wal_resident") is True
+    # The naive copy must be readable and hold the pre-WAL baseline row —
+    # otherwise "WAL grant absent" below could just mean "copy unreadable",
+    # which would prove nothing about WAL.
+    assert _grant_ref_present(naive_copy, "grt_seed") is True
     assert _grant_ref_present(naive_copy, "grt_wal_resident") is False
