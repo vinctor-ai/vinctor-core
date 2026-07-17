@@ -3,7 +3,11 @@ from __future__ import annotations
 import threading
 from ipaddress import ip_network
 
-from vinctor_service.ratelimit import FixedWindowRateLimiter
+from vinctor_service.ratelimit import (
+    FixedWindowRateLimiter,
+    parse_trusted_proxy_cidrs,
+    resolve_rate_limit_source,
+)
 
 
 def test_allows_up_to_max_then_denies_within_window() -> None:
@@ -42,8 +46,6 @@ def test_per_source_isolation() -> None:
 
 
 def test_untrusted_peer_cannot_forge_xff_to_lift_its_limit() -> None:
-    from vinctor_service.ratelimit import resolve_rate_limit_source
-
     limiter = FixedWindowRateLimiter(max_requests=1, window_seconds=60)
     trusted_proxies = (ip_network("10.0.0.0/8"),)
     peer = "198.51.100.20"
@@ -63,6 +65,44 @@ def test_untrusted_peer_cannot_forge_xff_to_lift_its_limit() -> None:
     assert forged_source == peer
     assert limiter.allow(first_source, now=1000.0) is True
     assert limiter.allow(forged_source, now=1000.0) is False
+
+
+def test_no_trusted_proxies_preserves_peer_source_verbatim() -> None:
+    assert (
+        resolve_rate_limit_source(
+            peer="198.51.100.20",
+            forwarded_for="203.0.113.1",
+            trusted_proxies=(),
+        )
+        == "198.51.100.20"
+    )
+
+
+def test_trusted_peer_uses_rightmost_nontrusted_xff_entry() -> None:
+    trusted_proxies = (
+        ip_network("10.0.0.0/8"),
+        ip_network("192.0.2.0/24"),
+    )
+
+    source = resolve_rate_limit_source(
+        peer="10.0.0.5",
+        forwarded_for="203.0.113.99, 198.51.100.7, 192.0.2.20",
+        trusted_proxies=trusted_proxies,
+    )
+
+    assert source == "198.51.100.7"
+
+
+def test_trusted_proxy_config_parses_cidrs_and_normalizes_hosts() -> None:
+    assert parse_trusted_proxy_cidrs(" 10.0.0.4/8, 2001:db8::1/32 ") == (
+        ip_network("10.0.0.0/8"),
+        ip_network("2001:db8::/32"),
+    )
+
+
+def test_empty_trusted_proxy_config_keeps_default_off() -> None:
+    assert parse_trusted_proxy_cidrs(None) == ()
+    assert parse_trusted_proxy_cidrs("  ") == ()
 
 
 def test_memory_bound_fail_open_for_new_source_when_full() -> None:

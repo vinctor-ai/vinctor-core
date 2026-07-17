@@ -11,6 +11,67 @@ var unset there is no limiter and no behavior change.
 from __future__ import annotations
 
 import threading
+from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network, ip_address, ip_network
+
+IpAddress = IPv4Address | IPv6Address
+IpNetwork = IPv4Network | IPv6Network
+
+# Bound request-supplied parsing work. The HTTP layer catches the resulting
+# ValueError and fails open, as it does for every other limiter error.
+MAX_X_FORWARDED_FOR_LENGTH = 4096
+
+
+def parse_trusted_proxy_cidrs(raw: str | None) -> tuple[IpNetwork, ...]:
+    """Parse a comma-separated trusted-proxy CIDR list.
+
+    An unset or whitespace-only value is the secure default: trust no proxy.
+    Invalid entries raise so the configuration boundary can fall back to that
+    same default without partially trusting a malformed list.
+    """
+    if raw is None or not raw.strip():
+        return ()
+    entries = [entry.strip() for entry in raw.split(",")]
+    if any(not entry for entry in entries):
+        raise ValueError("trusted proxy CIDRs must not contain empty entries")
+    return tuple(ip_network(entry, strict=False) for entry in entries)
+
+
+def resolve_rate_limit_source(
+    *,
+    peer: str,
+    forwarded_for: str | None,
+    trusted_proxies: tuple[IpNetwork, ...],
+) -> str:
+    """Resolve a rate-limit key without trusting caller-supplied forwarding data.
+
+    With no configured trusted proxies, this returns the socket peer verbatim.
+    Otherwise X-Forwarded-For is considered only when that immediate peer is
+    trusted, then walked right-to-left to select the rightmost non-proxy hop.
+    Malformed forwarding data raises for the HTTP layer's fail-open guard.
+    """
+    if not trusted_proxies:
+        return peer
+
+    peer_address = ip_address(peer)
+    if not _is_trusted(peer_address, trusted_proxies):
+        return peer
+    if forwarded_for is None:
+        return peer
+    if len(forwarded_for) > MAX_X_FORWARDED_FOR_LENGTH:
+        raise ValueError("X-Forwarded-For is too long")
+
+    for entry in reversed(forwarded_for.split(",")):
+        candidate = ip_address(entry.strip())
+        if not _is_trusted(candidate, trusted_proxies):
+            return str(candidate)
+
+    # A chain containing only trusted proxies has no attributable client hop.
+    # Keep those requests in the immediate peer's bucket.
+    return peer
+
+
+def _is_trusted(address: IpAddress, networks: tuple[IpNetwork, ...]) -> bool:
+    return any(address in network for network in networks)
 
 
 class FixedWindowRateLimiter:

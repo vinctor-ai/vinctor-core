@@ -120,11 +120,20 @@ VINCTOR_RATE_LIMIT_PER_MINUTE=120 vinctor service serve --host 127.0.0.1 --port 
   and a `Retry-After: 60` header — nothing else is disclosed.
 - **Fail-open:** it is an availability tool, not an authz gate. If the limiter is
   disabled, errors, or its source table is full, the request proceeds.
-- **Source = client IP.** Behind a reverse proxy every request appears to come from
-  the proxy's IP and shares a single bucket, so set the limit (or terminate rate
-  limiting) at the proxy in that topology; honoring a trusted `X-Forwarded-For` is a
-  deferred follow-up. The counter is per-process and in-memory (not shared across
-  multiple service instances).
+- **Source = client IP.** By default the socket peer is always the source and
+  `X-Forwarded-For` is ignored. Behind a reverse proxy, set
+  `VINCTOR_TRUSTED_PROXIES` to a comma-separated list of proxy CIDRs. Forwarding
+  data is honored only when the immediate peer is trusted, then walked
+  right-to-left to select the rightmost non-trusted hop:
+
+  ```bash
+  VINCTOR_TRUSTED_PROXIES=127.0.0.0/8,10.0.0.0/8 \
+    VINCTOR_RATE_LIMIT_PER_MINUTE=120 \
+    vinctor service serve --host 127.0.0.1 --port 8765
+  ```
+
+  Never trust a broad CIDR containing direct clients. The counter is per-process
+  and in-memory (not shared across multiple service instances).
 
 **Print the runtime environment bundle:** `vinctor local env` writes the
 `VINCTOR_*` exports from the current or stored values:

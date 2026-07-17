@@ -134,6 +134,26 @@ def post_json(
     return response.status, response_body
 
 
+def post_with_xff_headers(
+    server: ThreadingHTTPServer,
+    forwarded_values: tuple[str, ...],
+) -> tuple[int, dict[str, Any]]:
+    host, port = server.server_address
+    conn = HTTPConnection(host, port, timeout=5)
+    request_body = json.dumps(body()).encode("utf-8")
+    conn.putrequest("POST", "/v1/enforce")
+    conn.putheader("Content-Type", "application/json")
+    conn.putheader("Content-Length", str(len(request_body)))
+    conn.putheader("X-Agent-Key", "agent_key_main")
+    for value in forwarded_values:
+        conn.putheader("X-Forwarded-For", value)
+    conn.endheaders(request_body)
+    response = conn.getresponse()
+    response_body = json.loads(response.read().decode("utf-8"))
+    conn.close()
+    return response.status, response_body
+
+
 def raw_request(
     server: ThreadingHTTPServer,
     *,
@@ -1654,6 +1674,172 @@ def test_local_http_rate_limits_post_over_limit(
     assert third_status == 429
     # Generic body: exactly {"error": "rate_limited"} and nothing else.
     assert third_body == {"error": "rate_limited"}
+
+
+def test_local_http_xff_is_ignored_without_trusted_proxies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "1")
+    monkeypatch.delenv("VINCTOR_TRUSTED_PROXIES", raising=False)
+    svc = service()
+
+    with running_server(svc) as server:
+        first = post_json(
+            server,
+            headers={
+                "X-Agent-Key": "agent_key_main",
+                "X-Forwarded-For": "203.0.113.1",
+            },
+        )[0]
+        second_status, second_body = post_json(
+            server,
+            headers={
+                "X-Agent-Key": "agent_key_main",
+                "X-Forwarded-For": "203.0.113.2",
+            },
+        )
+
+    assert first == 200
+    assert second_status == 429
+    assert second_body == {"error": "rate_limited"}
+
+
+def test_local_http_trusted_proxy_uses_rightmost_nontrusted_hop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "1")
+    monkeypatch.setenv("VINCTOR_TRUSTED_PROXIES", "127.0.0.0/8,10.0.0.0/8")
+    svc = service()
+
+    with running_server(svc) as server:
+        first = post_json(
+            server,
+            headers={
+                "X-Agent-Key": "agent_key_main",
+                "X-Forwarded-For": "203.0.113.1, 198.51.100.7, 10.0.0.9",
+            },
+        )[0]
+        forged_status, forged_body = post_json(
+            server,
+            headers={
+                "X-Agent-Key": "agent_key_main",
+                "X-Forwarded-For": "203.0.113.2, 198.51.100.7, 10.0.0.9",
+            },
+        )
+        other_client = post_json(
+            server,
+            headers={
+                "X-Agent-Key": "agent_key_main",
+                "X-Forwarded-For": "203.0.113.3, 198.51.100.8, 10.0.0.9",
+            },
+        )[0]
+
+    assert first == 200
+    assert forged_status == 429
+    assert forged_body == {"error": "rate_limited"}
+    assert other_client == 200
+
+
+def test_local_http_combines_duplicate_xff_headers_before_right_to_left_walk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "1")
+    monkeypatch.setenv("VINCTOR_TRUSTED_PROXIES", "127.0.0.0/8,10.0.0.0/8")
+    svc = service()
+
+    with running_server(svc) as server:
+        first = post_with_xff_headers(
+            server,
+            ("203.0.113.1", "198.51.100.7, 10.0.0.9"),
+        )[0]
+        forged_status, forged_body = post_with_xff_headers(
+            server,
+            ("203.0.113.2", "198.51.100.7, 10.0.0.9"),
+        )
+
+    assert first == 200
+    assert forged_status == 429
+    assert forged_body == {"error": "rate_limited"}
+
+
+def test_local_http_untrusted_peer_cannot_forge_xff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "1")
+    monkeypatch.setenv("VINCTOR_TRUSTED_PROXIES", "10.0.0.0/8")
+    svc = service()
+
+    with running_server(svc) as server:
+        first = post_json(
+            server,
+            headers={
+                "X-Agent-Key": "agent_key_main",
+                "X-Forwarded-For": "203.0.113.1",
+            },
+        )[0]
+        forged_status, forged_body = post_json(
+            server,
+            headers={
+                "X-Agent-Key": "agent_key_main",
+                "X-Forwarded-For": "203.0.113.2",
+            },
+        )
+
+    assert first == 200
+    assert forged_status == 429
+    assert forged_body == {"error": "rate_limited"}
+
+
+@pytest.mark.parametrize(
+    "forwarded_for",
+    ["", ",", "not-an-ip", "198.51.100.1,not-an-ip", "x" * 5000],
+)
+def test_local_http_malformed_xff_fails_open_without_500(
+    monkeypatch: pytest.MonkeyPatch,
+    forwarded_for: str,
+) -> None:
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "1")
+    monkeypatch.setenv("VINCTOR_TRUSTED_PROXIES", "127.0.0.0/8")
+    svc = service()
+    headers = {
+        "X-Agent-Key": "agent_key_main",
+        "X-Forwarded-For": forwarded_for,
+    }
+
+    with running_server(svc) as server:
+        first = post_json(server, headers=headers)[0]
+        second = post_json(server, headers=headers)[0]
+
+    assert first == 200
+    assert second == 200
+
+
+def test_local_http_trusted_proxy_config_is_parsed_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "1")
+    monkeypatch.delenv("VINCTOR_TRUSTED_PROXIES", raising=False)
+    svc = service()
+
+    with running_server(svc) as server:
+        monkeypatch.setenv("VINCTOR_TRUSTED_PROXIES", "127.0.0.0/8")
+        first = post_json(
+            server,
+            headers={
+                "X-Agent-Key": "agent_key_main",
+                "X-Forwarded-For": "203.0.113.1",
+            },
+        )[0]
+        second = post_json(
+            server,
+            headers={
+                "X-Agent-Key": "agent_key_main",
+                "X-Forwarded-For": "203.0.113.2",
+            },
+        )[0]
+
+    assert first == 200
+    assert second == 429
 
 
 def test_local_http_rate_limit_gates_get_too(
