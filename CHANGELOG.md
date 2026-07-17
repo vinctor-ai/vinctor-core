@@ -10,7 +10,11 @@ GitHub Releases page and the git tags for those.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- Proxy-aware HTTP rate-limit source resolution via opt-in
+  `VINCTOR_TRUSTED_PROXIES`, with right-to-left `X-Forwarded-For` validation and
+  the existing socket-peer behavior unchanged by default.
 
 ## [0.5.0] - 2026-07-17
 

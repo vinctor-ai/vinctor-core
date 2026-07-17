@@ -34,7 +34,12 @@ from vinctor_service.grant_request_http import (
 )
 from vinctor_service.metrics import Metrics
 from vinctor_service.oidc import OidcTokenVerifier
-from vinctor_service.ratelimit import FixedWindowRateLimiter
+from vinctor_service.ratelimit import (
+    FixedWindowRateLimiter,
+    IpNetwork,
+    parse_trusted_proxy_cidrs,
+    resolve_rate_limit_source,
+)
 from vinctor_service.service_config import (
     DEFAULT_SUBJECT_TOKEN_MAX_TTL_SECONDS,
     DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS,
@@ -205,6 +210,7 @@ def create_v1_http_handler(
     # like pop_skew_seconds). None when VINCTOR_RATE_LIMIT_PER_MINUTE is unset /
     # non-positive -> no rate-limit code path is taken at all (default off).
     _rate_limit_per_minute = _resolve_rate_limit()
+    trusted_proxies = _resolve_trusted_proxies()
     rate_limiter = (
         FixedWindowRateLimiter(max_requests=_rate_limit_per_minute, window_seconds=60)
         if _rate_limit_per_minute is not None
@@ -240,7 +246,14 @@ def create_v1_http_handler(
             if rate_limiter is None:
                 return True
             try:
-                ok = rate_limiter.allow(self.client_address[0], time.time())
+                forwarded_values = self.headers.get_all("X-Forwarded-For")
+                forwarded_for = ",".join(forwarded_values) if forwarded_values else None
+                source = resolve_rate_limit_source(
+                    peer=self.client_address[0],
+                    forwarded_for=forwarded_for,
+                    trusted_proxies=trusted_proxies,
+                )
+                ok = rate_limiter.allow(source, time.time())
             except Exception:
                 return True
             if ok:
@@ -852,6 +865,18 @@ def _resolve_rate_limit() -> int | None:
     except (TypeError, ValueError):
         return None
     return value if value > 0 else None
+
+
+def _resolve_trusted_proxies() -> tuple[IpNetwork, ...]:
+    """Parse VINCTOR_TRUSTED_PROXIES once at handler construction.
+
+    Invalid configuration trusts no proxy rather than partially applying the
+    list or failing server construction.
+    """
+    try:
+        return parse_trusted_proxy_cidrs(os.environ.get("VINCTOR_TRUSTED_PROXIES"))
+    except (TypeError, ValueError):
+        return ()
 
 
 def _read_optional_json_body(handler: BaseHTTPRequestHandler) -> object | V1HttpResponse:
