@@ -727,6 +727,7 @@ def test_boundary_report_summarizes_permit_deny_activity() -> None:
         "status": "active",
     }
     assert report["activity"] == {"permit": 1, "deny": 2}
+    assert report["control_changes"] == {"count": 0, "timeline": []}
     assert [e["event_id"] for e in report["recent"]] == [
         "evt_issued",
         "evt_permit",
@@ -738,6 +739,119 @@ def test_boundary_report_summarizes_permit_deny_activity() -> None:
     assert len(client.audit_calls) == 1
     assert client.audit_calls[0]["boundary_id"] == "bnd_x"
     assert client.audit_calls[0]["grant_ref"] is None
+
+
+class ControlMutationReportClient(ReportClient):
+    """A client whose boundary audit feed mixes agent decision events with
+    control-plane mutation rows (ADR 0019: same chain, event_class=control,
+    encoded decision=permit) to pin that boundary_report never counts rule
+    changes as agent permits."""
+
+    def list_audit_events(
+        self,
+        *,
+        limit: int = 20,
+        event_type: str | None = None,
+        grant_ref: str | None = None,
+        boundary_id: str | None = None,
+        request_id: str | None = None,
+        agent_id: str | None = None,
+        reason_code: str | None = None,
+        enforcing_principal: str | None = None,
+        subject_token_verified: bool | None = None,
+    ) -> dict[str, Any]:
+        def control(event_id: str, etype: str) -> dict[str, Any]:
+            return {
+                "event_id": event_id,
+                "event_type": etype,
+                "event_class": "control",
+                "decision": "permit",
+                "reason": etype,
+                "workspace_id": "ws_main",
+                "agent_id": "",
+                "grant_id": "",
+                "grant_ref": "",
+                "action": "register_boundary",
+                "resource": f"boundary/{boundary_id}",
+                "boundary_id": boundary_id,
+                "enforcing_principal": "wsk#1",
+                "created_at": "2026-06-11T11:00:00+00:00",
+                "event_json": {"raw": "hidden"},
+                "raw_command": "register-secret",
+                "raw_key": "wsk_secret",
+                "key_hash": "hash_secret",
+            }
+
+        def decision(event_id: str, etype: str, decision: str) -> dict[str, Any]:
+            return {
+                "event_id": event_id,
+                "event_type": etype,
+                "decision": decision,
+                "reason": etype,
+                "workspace_id": "ws_main",
+                "agent_id": "agent_release",
+                "grant_id": "grnt_main",
+                "grant_ref": "grt_main",
+                "action": "send",
+                "resource": "email/external",
+                "boundary_id": boundary_id,
+                "created_at": "2026-06-11T12:00:00+00:00",
+            }
+
+        return {
+            "audit_events": [
+                control("evt_registered", "boundary_registered"),
+                control("evt_status", "boundary_status_changed"),
+                decision("evt_permit", "action_permitted", "permit"),
+                decision("evt_deny", "action_denied", "deny"),
+            ]
+        }
+
+
+def test_boundary_report_excludes_control_mutations_from_agent_activity() -> None:
+    tools = VinctorReadOnlyTools(ControlMutationReportClient())
+
+    report = tools.boundary_report("bnd_x")
+
+    # Control mutations are permit-encoded on the shared chain but are NOT
+    # agent activity: activity counts decision-class events only.
+    assert report["activity"] == {"permit": 1, "deny": 1}
+    assert report["control_changes"]["count"] == 2
+    assert [e["event_id"] for e in report["control_changes"]["timeline"]] == [
+        "evt_registered",
+        "evt_status",
+    ]
+    assert [e["event_type"] for e in report["control_changes"]["timeline"]] == [
+        "boundary_registered",
+        "boundary_status_changed",
+    ]
+    # The full stream stays intact: ordering between a rule change and an
+    # action is the evidence (ADR 0019).
+    assert [e["event_id"] for e in report["recent"]] == [
+        "evt_registered",
+        "evt_status",
+        "evt_permit",
+        "evt_deny",
+    ]
+
+
+def test_boundary_report_control_timeline_never_leaks_internals() -> None:
+    for mode in ("safe", "diagnostic"):
+        tools = VinctorReadOnlyTools(ControlMutationReportClient(), output_mode=mode)
+
+        report = tools.boundary_report("bnd_x")
+        blob = json.dumps(report)
+
+        assert report["control_changes"]["count"] == 2
+        for forbidden in (
+            "wsk_",
+            "hash_secret",
+            "raw_key",
+            "key_hash",
+            "event_json",
+            "raw_command",
+        ):
+            assert forbidden not in blob
 
 
 def test_boundary_report_never_leaks_raw_keys_hashes_or_internals() -> None:

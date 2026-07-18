@@ -104,6 +104,7 @@ def _evidence(
         "enforced_permit": 0,
         "observed_mapped": 0,
         "observed_unmapped": 0,
+        "blocked_unmapped": 0,
         "simulated_permit": 0,
         "simulated_deny": 0,
     }
@@ -111,6 +112,10 @@ def _evidence(
         "action_permitted": "enforced_permit",
         "action_observed": "observed_mapped",
         "action_unmapped": "observed_unmapped",
+        # F7 PEPs that block unmapped actions emit action_blocked_unmapped;
+        # the rows carry no action/resource, so they are evidence only and
+        # never feed scope proposals.
+        "action_blocked_unmapped": "blocked_unmapped",
         "action_would_permit": "simulated_permit",
         "action_would_deny": "simulated_deny",
     }

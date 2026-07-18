@@ -62,9 +62,12 @@ The MVP is stdio-only and exposes these tools:
 methods and add only fixed string keys plus server-computed integer counts.
 `vinctor_grant_report` returns a grant plus its audit timeline partitioned into
 lifecycle (issued/revoked) and usage (enforcement decisions) events;
-`vinctor_boundary_report` returns a boundary plus a permit/deny summary and its
-recent audit events. They add no service surface and inherit the same
-allowlist shaping as the underlying read tools.
+`vinctor_boundary_report` returns a boundary plus a permit/deny summary of
+agent decisions, a separate `control_changes` block (`count` plus a `timeline`
+of control-plane mutations such as boundary registration and status changes,
+kept out of the agent permit count per ADR 0019), and its recent audit events.
+They add no service surface and inherit the same allowlist shaping as the
+underlying read tools.
 
 The server does not expose approve, reject, revoke, grant issuance, rule
 mutation, rule evaluation, or `/v1/enforce`.

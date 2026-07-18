@@ -147,9 +147,58 @@ def test_infer_reports_evidence_sources_and_simulation_outcomes():
         "enforced_permit": 0,
         "observed_mapped": 1,
         "observed_unmapped": 1,
+        "blocked_unmapped": 0,
         "simulated_permit": 1,
         "simulated_deny": 1,
     }
+
+
+def test_blocked_unmapped_counts_as_evidence_but_never_proposes_scopes():
+    events = [
+        _event(
+            agent_id="a1",
+            action="read",
+            resource="repo/feature/readme",
+            decision="permit",
+            event_type="action_observed",
+            created_at=datetime(2026, 7, 1, tzinfo=UTC),
+        ),
+        _event(
+            agent_id="a1",
+            action="",
+            resource="",
+            decision="deny",
+            event_type="action_blocked_unmapped",
+            created_at=datetime(2026, 7, 2, tzinfo=UTC),
+        ),
+        _event(
+            agent_id="a1",
+            action="",
+            resource="",
+            decision="deny",
+            event_type="action_blocked_unmapped",
+            created_at=datetime(2026, 7, 3, tzinfo=UTC),
+        ),
+        # Another agent's blocked-unmapped event stays out of a1's evidence.
+        _event(
+            agent_id="a2",
+            action="",
+            resource="",
+            decision="deny",
+            event_type="action_blocked_unmapped",
+            created_at=datetime(2026, 7, 3, tzinfo=UTC),
+        ),
+    ]
+
+    doc = infer_policy_document(events, agent_id="a1", include_denied=True)
+
+    assert doc["proposed"]["evidence_summary"]["blocked_unmapped"] == 2
+    # Blocked-unmapped rows carry no action/resource: they must never surface
+    # as proposed scopes nor as candidates_from_denied.
+    assert [s["scope"] for s in doc["proposed"]["scopes"]] == [
+        "read:repo/feature/readme"
+    ]
+    assert doc["proposed"]["candidates_from_denied"] == []
 
 
 def test_infer_warns_only_on_scopes_backed_entirely_by_observed_evidence():
@@ -350,6 +399,46 @@ def test_cli_policy_infer_renders_observed_only_warning(tmp_path: Path):
     assert doc["proposed"]["scopes"][0]["warning"] == (
         "observed-only evidence; unverified agent self-report"
     )
+
+
+def test_cli_policy_infer_surfaces_pep_blocked_unmapped_evidence(tmp_path: Path):
+    """A PEP that blocks unmapped actions (F7) shows up in policy infer evidence."""
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed(
+        db_path,
+        [
+            _event(
+                agent_id="a1",
+                action="read",
+                resource="repo/feature/readme",
+                decision="permit",
+                event_type="action_observed",
+                created_at=datetime(2026, 7, 1, tzinfo=UTC),
+            ),
+            _event(
+                agent_id="a1",
+                action="",
+                resource="",
+                decision="deny",
+                event_type="action_blocked_unmapped",
+                created_at=datetime(2026, 7, 2, tzinfo=UTC),
+            ),
+        ],
+    )
+    stdout = StringIO()
+
+    status = run_vinctor(
+        ["--db", str(db_path), "operator", "policy", "infer", "--agent", "a1"],
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    assert status == 0
+    doc = yaml.safe_load(stdout.getvalue())
+    assert doc["proposed"]["evidence_summary"]["blocked_unmapped"] == 1
+    assert [s["scope"] for s in doc["proposed"]["scopes"]] == [
+        "read:repo/feature/readme"
+    ]
 
 
 def test_cli_policy_infer_generalize_help_recommends_enforced_evidence(

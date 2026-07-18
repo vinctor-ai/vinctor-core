@@ -293,11 +293,17 @@ class VinctorReadOnlyTools:
     def boundary_report(self, boundary_id: str) -> dict[str, Any]:
         boundary = self.get_boundary(boundary_id)
         events = self.list_audit_events(boundary_id=boundary_id)["audit_events"]
-        permit = sum(1 for event in events if event.get("decision") == "permit")
-        deny = sum(1 for event in events if event.get("decision") == "deny")
+        # ADR 0019: control-plane mutations share the chain, permit-encoded.
+        # Agent activity counts decision-class events only; mutations are
+        # reported separately, never folded into permits.
+        decision_events = [e for e in events if _event_class(e) == "decision"]
+        control_events = [e for e in events if _event_class(e) == "control"]
+        permit = sum(1 for event in decision_events if event.get("decision") == "permit")
+        deny = sum(1 for event in decision_events if event.get("decision") == "deny")
         return {
             "boundary": boundary,
             "activity": {"permit": permit, "deny": deny},
+            "control_changes": {"count": len(control_events), "timeline": control_events},
             "recent": events,
         }
 
@@ -476,8 +482,10 @@ def register_read_only_tools(
         name="vinctor_boundary_report",
         description=(
             "Inspect a boundary's authorization activity: returns the boundary plus "
-            "a permit/deny summary and recent audit events for it. Read-only; output "
-            "is allowlist-shaped and omits raw keys, hashes, and service internals."
+            "a permit/deny summary of agent decisions, a separate control-mutation "
+            "timeline (registration/status changes), and recent audit events for it. "
+            "Read-only; output is allowlist-shaped and omits raw keys, hashes, and "
+            "service internals."
         ),
     )(tools.boundary_report)
     mcp.tool(
@@ -778,6 +786,14 @@ def _active_unexpired_grant(grant: dict[str, Any]) -> bool:
     if expiry.tzinfo is None:
         expiry = expiry.replace(tzinfo=UTC)
     return expiry > datetime.now(UTC)
+
+
+def _event_class(event: dict[str, Any]) -> str:
+    # Rows written before event_class existed omit the field and are
+    # decision-class by definition (AuditEvent.to_dict omits "event_class"
+    # when it is "decision", so an absent field means a decision row).
+    value = event.get("event_class")
+    return value if isinstance(value, str) else "decision"
 
 
 def _clamp_audit_limit(limit: int) -> int:
