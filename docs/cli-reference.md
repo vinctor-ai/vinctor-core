@@ -113,9 +113,19 @@ behavior byte-for-byte unchanged.
 VINCTOR_RATE_LIMIT_PER_MINUTE=120 vinctor service serve --host 127.0.0.1 --port 8765
 ```
 
-- **Pre-auth:** the check runs at the top of every `POST`/`GET`, before routing,
-  body read, or auth, so it protects the unauthenticated surface (alongside the
-  request-body cap and handler timeout).
+- **Pre-auth:** the check runs at the dispatch chokepoint for every method the
+  server answers (`GET`, `POST`, `PUT`, `PATCH`, `DELETE` — and any `do_*`
+  handler added later), before routing, body read, auth, or a pooled-connection
+  lease, so it protects the unauthenticated surface (alongside the request-body
+  cap and handler timeout). Over-limit requests are counted in
+  `vinctor_http_requests_total` (status `429`) and the access log like any
+  other rejection.
+- **Liveness is exempt:** `/healthz` always answers and consumes no budget — a
+  `429`'d liveness probe would restart a healthy container under exactly the
+  load the limiter exists to survive. `/readyz` and `/metrics` **are** rate
+  limited like everything else, so set the cap above your probe/scrape rate:
+  readiness probes and scrapes come from a fixed source, and e.g. a 10s
+  readiness interval alone spends 6 requests/minute of that source's budget.
 - **Over-limit response:** `429` with the generic body `{"error": "rate_limited"}`
   and a `Retry-After: 60` header — nothing else is disclosed.
 - **Fail-open:** it is an availability tool, not an authz gate. If the limiter is

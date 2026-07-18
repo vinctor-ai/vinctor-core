@@ -1858,15 +1858,22 @@ def test_local_http_trusted_proxy_config_is_parsed_once(
 def test_local_http_rate_limit_gates_get_too(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The gate sits at the top of do_GET as well, so GET (e.g. /healthz) is
-    # rate limited pre-routing.
+    # The gate covers GET like every other method. Pinned on /readyz
+    # deliberately, twice over: the original version of this test pinned the
+    # gate on /healthz, which encoded a bug — a 429'd liveness probe reads as
+    # a failed liveness probe and restarts a healthy container (see
+    # test_local_http_healthz_is_never_rate_limited). /readyz, by contrast,
+    # STAYS gated: its failure mode is "stop sending me traffic", which under
+    # genuine overload is the correct answer — and it leases a pooled
+    # connection by design (#155), so exempting it would reopen the exact
+    # unauthenticated pool-occupying flood this change closes (PKA-43).
     monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "2")
     svc = service()
 
     with running_server(svc) as server:
-        first = get_text(server, path="/healthz")[0]
-        second = get_text(server, path="/healthz")[0]
-        third_status, third_raw = get_text(server, path="/healthz")
+        first = get_text(server, path="/readyz")[0]
+        second = get_text(server, path="/readyz")[0]
+        third_status, third_raw = get_text(server, path="/readyz")
 
     assert first == 200
     assert second == 200
@@ -1960,3 +1967,205 @@ def test_enforce_still_leases_a_request_scope() -> None:
 
     assert status == 200
     assert leases == ["leased"]
+
+
+def _status_only_request(server: ThreadingHTTPServer, method: str, path: str) -> int:
+    """Send a bare request and return only the status code.
+
+    Unlike raw_request this never parses the response body, so it works for any
+    method — including a future do_HEAD, whose responses carry no body.
+    """
+    host, port = server.server_address
+    conn = HTTPConnection(host, port, timeout=5)
+    conn.request(method, path)
+    response = conn.getresponse()
+    response.read()
+    conn.close()
+    return response.status
+
+
+@pytest.mark.parametrize("method", ["PUT", "PATCH", "DELETE"])
+def test_local_http_rate_limit_gates_put_patch_delete_too(
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+) -> None:
+    # PKA-43: the pre-auth volume gate covered POST and GET only, so an
+    # unauthenticated PUT/PATCH/DELETE flood sailed straight past
+    # VINCTOR_RATE_LIMIT_PER_MINUTE. Every method must hit the same gate.
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "1")
+    svc = service()
+
+    with running_server(svc) as server:
+        first_status, _ = raw_request(server, method=method)
+        over_status, over_body = raw_request(server, method=method)
+
+    # Within budget the request is routed and refused by the route (405);
+    # beyond it the gate answers 429 with the generic no-disclosure body.
+    assert first_status == 405
+    assert over_status == 429
+    assert over_body == {"error": "rate_limited"}
+
+
+def test_local_http_rate_limit_gates_every_do_method(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # PKA-43 regression guard. The hole existed because the gate was opt-in per
+    # do_* method, so this test enumerates the do_* methods off the served
+    # handler class instead of hardcoding today's list: a future do_HEAD /
+    # do_OPTIONS that skips the gated dispatch chokepoint fails here by
+    # construction, not by someone remembering to extend a list.
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "1")
+    svc = service()
+
+    with running_server(svc) as server:
+        methods = sorted(
+            name.removeprefix("do_")
+            for name in dir(server.RequestHandlerClass)
+            if name.startswith("do_")
+        )
+        # Sanity: introspection really found the surface this server answers.
+        assert set(methods) >= {"DELETE", "GET", "PATCH", "POST", "PUT"}
+
+        # One allowed request burns the whole 1/minute budget for 127.0.0.1
+        # (/readyz, not /healthz: the liveness path is exempt and consumes no
+        # budget)...
+        assert _status_only_request(server, "GET", "/readyz") == 200
+        # ...after which every dispatchable method must be turned away.
+        over_limit = {
+            method: _status_only_request(server, method, "/v1/enforce")
+            for method in methods
+        }
+
+    assert over_limit == {method: 429 for method in methods}
+
+
+def test_local_http_rate_limited_request_does_not_lease_a_request_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # PKA-43, second half: an un-gated PUT to a database path leased one of the
+    # pool's 8 connections just to be told 405, so the flood the limiter exists
+    # to stop also occupied the pool. An over-limit request must be turned away
+    # before the request scope opens.
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "1")
+    leases, scope = _scope_recorder()
+
+    with running_server(service(), request_scope=scope) as server:
+        first_status, _ = raw_request(server, method="PUT")
+        over_status, over_body = raw_request(server, method="PUT")
+
+    # Within budget: routed as before, which leases (and 405s) — unchanged.
+    assert first_status == 405
+    # Over budget: 429 without ever touching the pool.
+    assert over_status == 429
+    assert over_body == {"error": "rate_limited"}
+    assert leases == ["leased"]
+
+
+def test_local_http_rate_limited_requests_are_observed_in_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Deliberate (PKA-43): 429s are recorded in metrics and the access log like
+    # every other pre-auth rejection (401/404/405/413). An availability control
+    # you cannot see firing is operationally useless during the exact flood it
+    # exists for. The counters are read off the Metrics object directly — a
+    # GET /metrics over the wire would itself be over the limit here.
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "1")
+    metrics = Metrics()
+    svc = service()
+
+    with running_server(svc, metrics=metrics) as server:
+        first = post_json(server)[0]
+        over = post_json(server)[0]
+
+    assert first == 200
+    assert over == 429
+    rendered = metrics.render()
+    assert (
+        'vinctor_http_requests_total{method="POST",path="/v1/enforce",status="429"} 1'
+        in rendered
+    )
+
+
+def test_local_http_healthz_is_never_rate_limited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Liveness must answer even when a source's budget is exhausted. A 429'd
+    # /healthz reads as a FAILED liveness probe, and the restart it triggers
+    # removes capacity under exactly the load the limiter exists to survive —
+    # the same restart-loop failure mode #155 closed for the connection pool.
+    # docs/api-contract.md is explicit: "/healthz ... remains successful while
+    # the HTTP process is running." The first revision of this change gated
+    # /healthz (and test_local_http_rate_limit_gates_get_too pinned it); that
+    # was wrong, and this test pins the correction.
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "1")
+    svc = service()
+
+    with running_server(svc) as server:
+        burn = get_text(server, path="/readyz")[0]
+        exhausted = get_text(server, path="/readyz")[0]
+        healthz_statuses = [get_text(server, path="/healthz")[0] for _ in range(5)]
+        healthz_body = json.loads(get_text(server, path="/healthz")[1])
+
+    assert burn == 200
+    # Control: the budget really is exhausted for this source...
+    assert exhausted == 429
+    # ...yet liveness keeps answering, and with the full health body.
+    assert healthz_statuses == [200, 200, 200, 200, 200]
+    assert healthz_body["status"] == "ok"
+
+
+def test_local_http_healthz_non_get_is_rate_limited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only the liveness GET is exempt from the volume gate. A non-GET
+    # /healthz has no liveness meaning — it previously slipped through the
+    # exemption for free (the exemption was by path alone, for any method),
+    # silently reopening an unauthenticated path around the pre-auth gate.
+    # Once a source's budget is exhausted, POST/PUT/PATCH/DELETE to /healthz
+    # must be gated exactly like any other route; plain GET must keep
+    # answering regardless.
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "1")
+    svc = service()
+
+    with running_server(svc) as server:
+        burn = raw_request(server, method="POST", path="/healthz")[0]
+        exhausted_post = raw_request(server, method="POST", path="/healthz")[0]
+        exhausted_put = raw_request(server, method="PUT", path="/healthz")[0]
+        exhausted_patch = raw_request(server, method="PATCH", path="/healthz")[0]
+        exhausted_delete = raw_request(server, method="DELETE", path="/healthz")[0]
+        get_still_answers = get_text(server, path="/healthz")[0]
+
+    # First non-GET request still consumes budget (it is not exempt) and
+    # reaches the health handler's method_not_allowed arm.
+    assert burn == 405
+    # Control: the budget really is exhausted for this source, and non-GET
+    # /healthz is gated like everything else — no free pass.
+    assert exhausted_post == 429
+    assert exhausted_put == 429
+    assert exhausted_patch == 429
+    assert exhausted_delete == 429
+    # ...yet the actual liveness probe (GET) still keeps answering.
+    assert get_still_answers == 200
+
+
+def test_local_http_metrics_stays_rate_limited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Deliberate (PKA-43 revision): /metrics KEEPS the volume gate. It is an
+    # operator-facing endpoint, not a probe — a 429'd scrape is a missed
+    # sample, not a container restart — and the limiter is per-source, so an
+    # attacker cannot spend the scraper's budget. Exemptions from a pre-auth
+    # gate need a failure-mode justification like /healthz's; /metrics has
+    # none, and render() takes the same lock every request's counter
+    # increment needs, so unlimited unauthenticated scraping is free
+    # contention.
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "1")
+    svc = service()
+
+    with running_server(svc, metrics=Metrics()) as server:
+        first = get_text(server, path="/metrics")[0]
+        second_status, second_raw = get_text(server, path="/metrics")
+
+    assert first == 200
+    assert second_status == 429
+    assert json.loads(second_raw) == {"error": "rate_limited"}

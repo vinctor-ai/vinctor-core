@@ -78,6 +78,26 @@ DATABASE_FREE_PATHS = frozenset({"/healthz", "/metrics"})
 def _needs_database(raw_path: str) -> bool:
     return urlsplit(raw_path).path not in DATABASE_FREE_PATHS
 
+
+# The liveness path is additionally exempt from the pre-auth volume gate
+# (PKA-43 revision). A 429'd /healthz reads as a FAILED liveness probe, and the
+# restart it triggers removes capacity under exactly the load the limiter
+# exists to survive — the same restart-loop failure mode the request-scope
+# exemption above closed (#155) — and docs/api-contract.md promises /healthz
+# "remains successful while the HTTP process is running". The two exemptions
+# are separate questions, hence separate sets. /readyz and /metrics stay gated
+# on purpose: readiness's failure mode is "stop sending me traffic" (correct
+# under genuine overload, self-healing, no restart) and it leases a pooled
+# connection by design, so exempting it would reopen the unauthenticated
+# pool-occupying flood this fix closes; metrics is operator-facing, not a
+# probe, and per-source budgets keep an attacker from spending the scraper's.
+# Exemption is GET-only: only the liveness probe itself needs to always
+# answer. A non-GET /healthz has no liveness meaning, lands on the health
+# route's 405 arm regardless, and must consume budget like any other request —
+# otherwise POST/PUT/PATCH/DELETE to /healthz becomes an unauthenticated path
+# around the volume gate.
+RATE_LIMIT_EXEMPT_PATHS = frozenset({"/healthz"})
+
 # All legitimate request bodies are tiny JSON payloads. Cap the read so a hostile
 # (or merely huge) Content-Length cannot pin a worker thread or exhaust memory
 # before authentication. Applied by every body-accepting route.
@@ -226,26 +246,35 @@ def create_v1_http_handler(
         timeout = HANDLER_TIMEOUT_SECONDS
 
         def do_POST(self) -> None:
-            if not self._check_rate_limit():
-                return
             self._dispatch("POST")
 
         def do_GET(self) -> None:
-            if not self._check_rate_limit():
-                return
             self._dispatch("GET")
 
-        def _check_rate_limit(self) -> bool:
+        def _check_rate_limit(self, method: str) -> bool:
             """Pre-auth volume gate. Returns True when the request may proceed.
+
+            Called once, from _dispatch, so every do_* method is covered without
+            opting in — PKA-43 happened because the call sat at the top of
+            do_POST/do_GET only and PUT/PATCH/DELETE never opted in.
+
+            The liveness path is exempt and consumes no budget, but only for
+            GET: liveness must answer (see RATE_LIMIT_EXEMPT_PATHS). A non-GET
+            /healthz has no liveness meaning and is gated like everything else,
+            so the exemption can never be bent into an un-gated path to the
+            connection pool.
 
             Fail-OPEN: a None limiter, or any exception from allow(), lets the
             request through — this is an availability tool, never an authz gate,
             so it must not become its own DoS. On a real over-limit it writes a
-            429 with a generic body and returns False (no routing, no body read).
+            429 with a generic body and returns False (no routing, no body read,
+            no request-scope lease).
             """
             if rate_limiter is None:
                 return True
             try:
+                if method == "GET" and urlsplit(self.path).path in RATE_LIMIT_EXEMPT_PATHS:
+                    return True
                 forwarded_values = self.headers.get_all("X-Forwarded-For")
                 forwarded_for = ",".join(forwarded_values) if forwarded_values else None
                 source = resolve_rate_limit_source(
@@ -276,6 +305,15 @@ def create_v1_http_handler(
             self._vinctor_decision = None
             self._vinctor_error = None
             try:
+                # Pre-auth volume gate at the single dispatch chokepoint. It
+                # runs BEFORE the request scope: an over-limit request must be
+                # refused without leasing a pooled connection, or the flood the
+                # limiter exists to stop would occupy the pool (PKA-43). It sits
+                # INSIDE the try/finally deliberately: a 429 is observed in
+                # metrics and the access log like every other pre-auth
+                # rejection.
+                if not self._check_rate_limit(method):
+                    return
                 if _needs_database(self.path):
                     # SQLite runtimes lease one independent connection/service
                     # for the whole request. Other backends use the no-op
