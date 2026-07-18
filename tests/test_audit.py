@@ -235,7 +235,7 @@ def test_audit_event_records_enforcing_principal_when_set() -> None:
     assert event.to_dict()["enforcing_principal"] == "pep_git_host"
 
 
-def test_audit_event_identity_proven_defaults_absent_from_to_dict() -> None:
+def test_audit_event_subject_token_verified_defaults_absent_from_to_dict() -> None:
     decision = evaluate_enforce(
         EnforceInput(
             grant=active_grant(),
@@ -247,13 +247,13 @@ def test_audit_event_identity_proven_defaults_absent_from_to_dict() -> None:
 
     event = build_audit_event(AuditEventInput(decision=decision))
 
-    assert event.identity_proven is False
+    assert event.subject_token_verified is False
     assert event.token_id is None
-    assert "identity_proven" not in event.to_dict()
+    assert "subject_token_verified" not in event.to_dict()
     assert "token_id" not in event.to_dict()
 
 
-def test_audit_event_records_identity_proven_and_token_id() -> None:
+def test_audit_event_records_subject_token_verified_and_token_id() -> None:
     decision = evaluate_enforce(
         EnforceInput(
             grant=active_grant(),
@@ -264,11 +264,11 @@ def test_audit_event_records_identity_proven_and_token_id() -> None:
     )
 
     event = build_audit_event(
-        AuditEventInput(decision=decision, identity_proven=True, token_id="vtk_x")
+        AuditEventInput(decision=decision, subject_token_verified=True, token_id="vtk_x")
     )
 
-    assert event.identity_proven is True
-    assert event.to_dict()["identity_proven"] is True
+    assert event.subject_token_verified is True
+    assert event.to_dict()["subject_token_verified"] is True
     assert event.to_dict()["token_id"] == "vtk_x"
 
 

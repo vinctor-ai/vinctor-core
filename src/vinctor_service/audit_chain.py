@@ -9,10 +9,12 @@ so "\n" is a safe separator), and the previous row's hash.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 GENESIS_PREV_HASH = "0" * 64
+LEGACY_SUBJECT_TOKEN_VERIFIED_FIELD = "identity_proven"
 
 
 def row_hash(seq: int, event_json: str, prev_hash: str) -> str:
@@ -27,7 +29,23 @@ def row_hash(seq: int, event_json: str, prev_hash: str) -> str:
 # differences (SQLite ISO TEXT / 0-1 vs Postgres TIMESTAMPTZ / BOOLEAN) never
 # produce false breaks on a healthy chain.
 _DATETIME_CROSSCHECK_FIELDS = frozenset({"created_at", "first_seen_at", "last_seen_at"})
-_BOOLEAN_CROSSCHECK_FIELDS = frozenset({"identity_proven"})
+_BOOLEAN_CROSSCHECK_FIELDS = frozenset({"subject_token_verified"})
+
+
+def event_json_value(data: Mapping[str, object], field: str) -> object:
+    """Read a canonical audit field, including the pre-rename legacy key.
+
+    Legacy event_json must remain byte-for-byte unchanged because it is part of
+    row_hash. Readers and materialized-column crosschecks therefore translate
+    only while reading; newly emitted JSON always uses the current field name.
+    """
+    if field == "subject_token_verified" and field not in data:
+        return data.get(LEGACY_SUBJECT_TOKEN_VERIFIED_FIELD)
+    return data.get(field)
+
+
+def subject_token_verified_from_json(data: Mapping[str, object]) -> bool:
+    return bool(event_json_value(data, "subject_token_verified"))
 
 
 def _canonical_instant(value: object) -> object:
@@ -51,7 +69,7 @@ def crosscheck_values_match(column: str, json_value: object, column_value: objec
     - datetimes (created_at, first_seen_at, last_seen_at): compared as UTC
       instants, whether stored as ISO-8601 TEXT (SQLite) or returned as a
       tz-aware datetime in the session timezone (Postgres TIMESTAMPTZ).
-    - booleans (identity_proven): compared as Python bools; AuditEvent.to_dict
+    - booleans (subject_token_verified): compared as Python bools; AuditEvent.to_dict
       omits the JSON key when False, and backends store 0/1 or BOOLEAN.
     - event_class: AuditEvent.to_dict omits the key when "decision" (and
       pre-event_class rows never carried it), so an absent JSON field equals a

@@ -29,7 +29,9 @@ from vinctor_service.audit_chain import (
     AnchorVerification,
     ChainVerification,
     crosscheck_values_match,
+    event_json_value,
     row_hash,
+    subject_token_verified_from_json,
 )
 from vinctor_service.audit_export import (
     ExportingAuditWriter,
@@ -233,7 +235,7 @@ def init_postgres_schema(conn: Any) -> None:
             occurrence_count INTEGER,
             first_seen_at TIMESTAMPTZ,
             last_seen_at TIMESTAMPTZ,
-            identity_proven BOOLEAN NOT NULL DEFAULT FALSE,
+            subject_token_verified BOOLEAN NOT NULL DEFAULT FALSE,
             token_id TEXT,
             event_class TEXT NOT NULL DEFAULT 'decision',
             event_json TEXT NOT NULL,
@@ -245,6 +247,10 @@ def init_postgres_schema(conn: Any) -> None:
         """
         ALTER TABLE audit_events
         ADD COLUMN IF NOT EXISTS event_class TEXT NOT NULL DEFAULT 'decision'
+        """,
+        """
+        ALTER TABLE audit_events
+        ADD COLUMN IF NOT EXISTS subject_token_verified BOOLEAN NOT NULL DEFAULT FALSE
         """,
         """
         CREATE INDEX IF NOT EXISTS idx_postgres_audit_workspace_seq
@@ -419,6 +425,17 @@ def init_postgres_schema(conn: Any) -> None:
         """,
     )
     with conn.transaction():
+        legacy_subject_token_verified = _postgres_column_exists(
+            conn, "audit_events", "identity_proven"
+        )
+        current_subject_token_verified = _postgres_column_exists(
+            conn, "audit_events", "subject_token_verified"
+        )
+        if legacy_subject_token_verified and not current_subject_token_verified:
+            conn.execute(
+                "ALTER TABLE audit_events RENAME COLUMN identity_proven "
+                "TO subject_token_verified"
+            )
         subject_token_set_missing = not _postgres_column_exists(
             conn, "agent_enforcement_settings", "require_subject_token_set"
         )
@@ -463,7 +480,7 @@ def init_postgres_schema(conn: Any) -> None:
                 SET require_boundary_set = require_boundary
                 """
             )
-        for version in (1, 2, 3, 4, 5, 6):
+        for version in (1, 2, 3, 4, 5, 6, 7):
             conn.execute(
                 """
                 INSERT INTO schema_migrations (version, applied_at)
@@ -994,7 +1011,7 @@ class PostgresAuditWriter:
                     action, resource, scope_attempted, scope_matched,
                     boundary_id, runtime, boundary_type, created_at,
                     enforcing_principal, reason_code, occurrence_count,
-                    first_seen_at, last_seen_at, identity_proven, token_id,
+                    first_seen_at, last_seen_at, subject_token_verified, token_id,
                     event_class, event_json, seq, prev_hash, row_hash
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s,
@@ -1024,7 +1041,7 @@ class PostgresAuditWriter:
                     event.occurrence_count,
                     event.first_seen_at,
                     event.last_seen_at,
-                    event.identity_proven,
+                    event.subject_token_verified,
                     event.token_id,
                     event.event_class,
                     event_json,
@@ -1046,18 +1063,18 @@ class PostgresAuditWriter:
         "event_id", "event_type", "decision", "reason", "workspace_id", "agent_id",
         "grant_id", "grant_ref", "action", "resource", "scope_attempted",
         "scope_matched", "boundary_id", "runtime", "boundary_type", "created_at",
-        "event_class",
+        "subject_token_verified", "event_class",
     )
 
     # Postgres additionally materializes these event_json fields as dedicated
     # columns that list_filtered reads directly (SQLite keeps them JSON-only and
     # filters via json_extract, so it has no such columns to tamper with). Every
     # one of them is cross-checked too: an attacker who edits e.g. reason_code or
-    # identity_proven without touching the hashed event_json must not pass
+    # one of these without touching the hashed event_json must not pass
     # verification. Guarded by tests/test_audit_hash_chain_sqlite.py.
     _PG_ONLY_CROSSCHECK_COLUMNS = (
         "enforcing_principal", "reason_code", "occurrence_count",
-        "first_seen_at", "last_seen_at", "identity_proven", "token_id",
+        "first_seen_at", "last_seen_at", "token_id",
     )
 
     def verify_chain(self) -> ChainVerification:
@@ -1097,7 +1114,7 @@ class PostgresAuditWriter:
                 )
             data = json.loads(event_json)
             for name, value in zip(crosscheck_columns, cols, strict=False):
-                if not crosscheck_values_match(name, data.get(name), value):
+                if not crosscheck_values_match(name, event_json_value(data, name), value):
                     return ChainVerification(
                         False, len(rows), head_seq, head_hash,
                         break_seq=seq, break_event_id=event_id,
@@ -1175,7 +1192,7 @@ class PostgresAuditWriter:
         request_id: str | None = None,
         reason_code: str | None = None,
         enforcing_principal: str | None = None,
-        identity_proven: bool | None = None,
+        subject_token_verified: bool | None = None,
         limit: int | None = None,
     ) -> tuple[AuditEvent, ...]:
         clauses = ["workspace_id = %s"]
@@ -1187,7 +1204,7 @@ class PostgresAuditWriter:
             ("agent_id", agent_id),
             ("reason_code", reason_code),
             ("enforcing_principal", enforcing_principal),
-            ("identity_proven", identity_proven),
+            ("subject_token_verified", subject_token_verified),
         )
         for column, value in filters:
             if value is not None:
@@ -1646,7 +1663,7 @@ def _audit_event_from_json(value: str) -> AuditEvent:
         occurrence_count=data.get("occurrence_count"),
         first_seen_at=_optional_datetime(data.get("first_seen_at")),
         last_seen_at=_optional_datetime(data.get("last_seen_at")),
-        identity_proven=data.get("identity_proven", False),
+        subject_token_verified=subject_token_verified_from_json(data),
         token_id=data.get("token_id"),
         event_class=data.get("event_class", "decision"),
     )

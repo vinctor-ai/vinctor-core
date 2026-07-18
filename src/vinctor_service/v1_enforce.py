@@ -245,7 +245,7 @@ def delegated_enforce_v1_contract(
     # This block runs only after the grant is resolved and owned by the asserted
     # subject. Its lookup has its own try/except returning 403 -- never 503, and
     # it never falls back to the legacy asserted (unproven) path on error.
-    identity_proven = False
+    subject_token_verified = False
     proven_token_id = None
     if request.subject_token is not None:
         try:
@@ -365,7 +365,7 @@ def delegated_enforce_v1_contract(
             return _pre_audit_error(
                 403, "forbidden", "subject token must be proof-of-possession bound"
             )
-        identity_proven = True
+        subject_token_verified = True
         proven_token_id = token.token_id
 
     require_boundary = (
@@ -384,7 +384,7 @@ def delegated_enforce_v1_contract(
         audit_writer=audit_writer,
         boundary_registry=boundary_registry,
         enforcing_principal=request.pep_id,
-        identity_proven=identity_proven,
+        subject_token_verified=subject_token_verified,
         token_id=proven_token_id,
         require_boundary=require_boundary,
     )
@@ -400,7 +400,7 @@ def _evaluate_and_record(
     audit_writer: AuditWriter,
     boundary_registry: BoundaryLookup | None,
     enforcing_principal: str | None = None,
-    identity_proven: bool = False,
+    subject_token_verified: bool = False,
     token_id: str | None = None,
     require_boundary: bool = False,
 ) -> V1EnforceResponse:
@@ -434,7 +434,7 @@ def _evaluate_and_record(
             decision=decision,
             created_at=now,
             enforcing_principal=enforcing_principal,
-            identity_proven=identity_proven,
+            subject_token_verified=subject_token_verified,
             token_id=token_id,
         )
     )

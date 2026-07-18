@@ -28,7 +28,7 @@ class AuditReadService(Protocol):
         request_id: str | None = None,
         reason_code: str | None = None,
         enforcing_principal: str | None = None,
-        identity_proven: bool | None = None,
+        subject_token_verified: bool | None = None,
         limit: int | None = None,
     ) -> tuple[AuditEvent, ...]: ...
 
@@ -49,7 +49,7 @@ class AuditEventFilters:
     reason_code: str | None = None
     enforcing_principal: str | None = None
     # Tri-state: None = no filter, True/False = match that value.
-    identity_proven: bool | None = None
+    subject_token_verified: bool | None = None
     limit: int = 20
 
 
@@ -96,7 +96,7 @@ def handle_v1_audit_events_http(
             request_id=filters.request_id,
             reason_code=filters.reason_code,
             enforcing_principal=filters.enforcing_principal,
-            identity_proven=filters.identity_proven,
+            subject_token_verified=filters.subject_token_verified,
             limit=filters.limit,
         )
         return V1HttpResponse(
@@ -202,7 +202,7 @@ def _parse_filters(query_string: str) -> AuditEventFilters | V1HttpResponse:
         "request_id",
         "reason_code",
         "enforcing_principal",
-        "identity_proven",
+        "subject_token_verified",
         "limit",
     }
     extra = sorted(set(params) - allowed)
@@ -228,15 +228,15 @@ def _parse_filters(query_string: str) -> AuditEventFilters | V1HttpResponse:
         if limit <= 0 or limit > 100:
             return _error(400, "invalid_request", "limit must be between 1 and 100")
 
-    identity_proven: bool | None = None
-    if values["identity_proven"] is not None:
-        normalized = values["identity_proven"].strip().lower()
+    subject_token_verified: bool | None = None
+    if values["subject_token_verified"] is not None:
+        normalized = values["subject_token_verified"].strip().lower()
         if normalized == "true":
-            identity_proven = True
+            subject_token_verified = True
         elif normalized == "false":
-            identity_proven = False
+            subject_token_verified = False
         else:
-            return _error(400, "invalid_request", "identity_proven must be true or false")
+            return _error(400, "invalid_request", "subject_token_verified must be true or false")
 
     return AuditEventFilters(
         agent_id=values["agent_id"],
@@ -246,7 +246,7 @@ def _parse_filters(query_string: str) -> AuditEventFilters | V1HttpResponse:
         request_id=values["request_id"],
         reason_code=values["reason_code"],
         enforcing_principal=values["enforcing_principal"],
-        identity_proven=identity_proven,
+        subject_token_verified=subject_token_verified,
         limit=limit,
     )
 
@@ -278,7 +278,7 @@ def _audit_event_body(event: AuditEvent) -> dict[str, str | bool | int | None]:
         "last_seen_at": (
             event.last_seen_at.isoformat() if event.last_seen_at is not None else None
         ),
-        "identity_proven": event.identity_proven,
+        "subject_token_verified": event.subject_token_verified,
         "token_id": event.token_id,
         "event_class": event.event_class,
     }

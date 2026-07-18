@@ -97,7 +97,7 @@ schema_migrations row + SQLiteAgentEnforcementSettingsRepository methods),
   path if the existing PoP tests use one):
   - require_pop ON + subject token WITHOUT `pop_secret` (non-PoP token, valid
     otherwise) → deny `403`, external `error == "forbidden"`, audited with
-    `reason_code == "pop_required"`, `identity_proven` NOT set true.
+    `reason_code == "pop_required"`, `subject_token_verified` NOT set true.
   - require_pop ON + subject token WITH `pop_secret` + valid proof → permit
     (unchanged).
   - require_pop OFF (default) + non-PoP token → unchanged (permit on grant scope).
@@ -113,7 +113,7 @@ schema_migrations row + SQLiteAgentEnforcementSettingsRepository methods),
   agent_enforcement_settings_repository is not None else False` (mirror the
   `is_subject_token_required` / `require_boundary` reads; use `trusted_ws`).
 - [ ] **Step 5 — deny slot:** inside the `if request.subject_token is not None:`
-  block, AFTER the existing PoP-proof block and BEFORE `identity_proven = True`, add:
+  block, AFTER the existing PoP-proof block and BEFORE `subject_token_verified = True`, add:
   if `is_pop_required and token.pop_secret is None:` → record the rejection
   (`reason_code=REASON_POP_REQUIRED`) and return `_pre_audit_error(403,
   "forbidden", "subject token must be proof-of-possession bound")` — matching the

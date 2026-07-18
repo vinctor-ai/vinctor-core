@@ -264,7 +264,7 @@ follow-up ADR + plan.
 - Implemented ADR 0007 Model 2 identity proof: Vinctor-issued, grant-bound,
   audience-scoped, short-lived subject tokens (`vat_`) via `POST /v1/tokens` +
   `vinctor agent token mint`, plus an additive optional `X-Subject-Token` on
-  `/v1/enforce/delegated` that proves the subject (audited `identity_proven` +
+  `/v1/enforce/delegated` that proves the subject (audited `subject_token_verified` +
   `token_id`), fails closed on any token failure, and never leaks the raw token;
   PEP resolver wired into both `serve` and `local start`. Schema v3 (`#58`).
 - Implemented ADR 0009-B per-agent `require_boundary`: an opt-in

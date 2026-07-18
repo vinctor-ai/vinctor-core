@@ -132,7 +132,7 @@ def test_pop_valid_proof_permits_and_proves_identity() -> None:
         pep_workspace_id="ws_main",
     )
     assert r.decision == "permit"
-    assert svc.audit_events[-1].identity_proven is True
+    assert svc.audit_events[-1].subject_token_verified is True
 
 
 def test_pop_token_without_proof_denies() -> None:

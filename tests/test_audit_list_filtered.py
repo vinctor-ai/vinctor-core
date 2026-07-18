@@ -78,7 +78,7 @@ def _both_services(tmp_path: Path) -> list[object]:
 def test_schema_versions_include_audit_index_migration_10(tmp_path: Path) -> None:
     conn = connect_sqlite(tmp_path / "vinctor.sqlite")
     init_sqlite_schema(conn)
-    assert get_sqlite_schema_versions(conn) == tuple(range(1, 16))
+    assert get_sqlite_schema_versions(conn) == tuple(range(1, 17))
 
 
 def test_audit_events_workspace_index_exists(tmp_path: Path) -> None:
@@ -345,7 +345,7 @@ def test_sqlite_list_filtered_uses_parameterized_sql(tmp_path: Path) -> None:
 
 # ---------------------------------------------------------------------------
 # Security-field filters (additive): reason_code, enforcing_principal,
-# identity_proven. Absent filter = unchanged behavior; each narrows to the
+# subject_token_verified. Absent filter = unchanged behavior; each narrows to the
 # matching subset on BOTH backends.
 # ---------------------------------------------------------------------------
 
@@ -391,22 +391,22 @@ def test_list_filtered_by_enforcing_principal(tmp_path: Path) -> None:
         ]
 
 
-def test_list_filtered_by_identity_proven_true_and_false(tmp_path: Path) -> None:
+def test_list_filtered_by_subject_token_verified_true_and_false(tmp_path: Path) -> None:
     for svc in _both_services(tmp_path / "proven"):
         svc.audit_writer.write(
             replace(
                 _event(event_id="evt_proven"),
-                identity_proven=True,
+                subject_token_verified=True,
                 token_id="tok_1",
             )
         )
         svc.audit_writer.write(_event(event_id="evt_unproven"))
 
         assert [
-            e.event_id for e in svc.list_filtered("ws_main", identity_proven=True)
+            e.event_id for e in svc.list_filtered("ws_main", subject_token_verified=True)
         ] == ["evt_proven"]
         assert [
-            e.event_id for e in svc.list_filtered("ws_main", identity_proven=False)
+            e.event_id for e in svc.list_filtered("ws_main", subject_token_verified=False)
         ] == ["evt_unproven"]
         # Tri-state: None (absent) applies no identity filter.
         assert [e.event_id for e in svc.list_filtered("ws_main")] == [
@@ -421,7 +421,7 @@ def test_list_filtered_security_filters_combine_with_and(tmp_path: Path) -> None
             replace(
                 _event(event_id="evt_match"),
                 enforcing_principal="pep_git_host",
-                identity_proven=True,
+                subject_token_verified=True,
             )
         )
         svc.audit_writer.write(
@@ -429,7 +429,7 @@ def test_list_filtered_security_filters_combine_with_and(tmp_path: Path) -> None
         )
 
         result = svc.list_filtered(
-            "ws_main", enforcing_principal="pep_git_host", identity_proven=True
+            "ws_main", enforcing_principal="pep_git_host", subject_token_verified=True
         )
 
         assert [e.event_id for e in result] == ["evt_match"]
@@ -446,7 +446,7 @@ def test_sqlite_security_filters_use_parameterized_sql(tmp_path: Path) -> None:
         "ws_main",
         reason_code="'; DROP TABLE audit_events; --",
         enforcing_principal="'; DROP TABLE audit_events; --",
-        identity_proven=True,
+        subject_token_verified=True,
     )
 
     select_calls = [

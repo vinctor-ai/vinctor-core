@@ -4,7 +4,7 @@
 
 **Goal:** Prove the on-behalf-of subject on `/v1/enforce/delegated` by requiring a Vinctor-issued, grant-bound, audience-scoped, short-lived token (`vat_`), minted by an agent for one of its own grants and presented by the PEP.
 
-**Architecture:** A new `subject_tokens` store (hash-only, mirroring the key store) + a mint endpoint (`POST /v1/tokens`, agent-key auth) + an additive optional `X-Subject-Token` header on the existing delegated path. When the header is present, the subject (agent_id/workspace_id/grant_ref) is proven from the token and must equal both the asserted body and the resolved grant; failures fail closed. The decision is audited `identity_proven=true` with the `token_id`. The legacy no-token path is unchanged.
+**Architecture:** A new `subject_tokens` store (hash-only, mirroring the key store) + a mint endpoint (`POST /v1/tokens`, agent-key auth) + an additive optional `X-Subject-Token` header on the existing delegated path. When the header is present, the subject (agent_id/workspace_id/grant_ref) is proven from the token and must equal both the asserted body and the resolved grant; failures fail closed. The decision is audited `subject_token_verified=true` with the `token_id`. The legacy no-token path is unchanged.
 
 **Tech Stack:** Python 3.11, stdlib `http.server`, sqlite3, dataclasses; pytest; `ruff check` (the repo does NOT enforce `ruff format`).
 
@@ -272,7 +272,7 @@ git commit -m "feat(tokens): add SubjectToken record + repository + schema v3"
 
 ---
 
-### Task 2: Audit fields `identity_proven` / `token_id` + new constants
+### Task 2: Audit fields `subject_token_verified` / `token_id` + new constants
 
 **Files:**
 - Modify: `src/vinctor_core/models.py` (`AuditEvent` fields + `to_dict`)
@@ -285,26 +285,26 @@ git commit -m "feat(tokens): add SubjectToken record + repository + schema v3"
 Add to `tests/test_audit.py` (mirror the existing `enforcing_principal` tests):
 
 ```python
-def test_audit_event_identity_proven_defaults_absent_from_to_dict() -> None:
+def test_audit_event_subject_token_verified_defaults_absent_from_to_dict() -> None:
     from vinctor_core.audit import AuditEventInput, build_audit_event
     from tests.helpers_audit import permit_decision  # use the same DecisionResult factory the file already uses
 
     event = build_audit_event(AuditEventInput(decision=permit_decision()))
-    assert event.identity_proven is False
+    assert event.subject_token_verified is False
     assert event.token_id is None
-    assert "identity_proven" not in event.to_dict()
+    assert "subject_token_verified" not in event.to_dict()
     assert "token_id" not in event.to_dict()
 
 
-def test_audit_event_records_identity_proven_and_token_id() -> None:
+def test_audit_event_records_subject_token_verified_and_token_id() -> None:
     from vinctor_core.audit import AuditEventInput, build_audit_event
     from tests.helpers_audit import permit_decision
 
     event = build_audit_event(
-        AuditEventInput(decision=permit_decision(), identity_proven=True, token_id="vtk_x")
+        AuditEventInput(decision=permit_decision(), subject_token_verified=True, token_id="vtk_x")
     )
-    assert event.identity_proven is True
-    assert event.to_dict()["identity_proven"] is True
+    assert event.subject_token_verified is True
+    assert event.to_dict()["subject_token_verified"] is True
     assert event.to_dict()["token_id"] == "vtk_x"
 ```
 
@@ -312,8 +312,8 @@ NB: use whatever `DecisionResult` factory `tests/test_audit.py` already uses for
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `.venv/bin/python -m pytest tests/test_audit.py -k identity_proven -q`
-Expected: FAIL — `TypeError: AuditEventInput.__init__() got an unexpected keyword argument 'identity_proven'`.
+Run: `.venv/bin/python -m pytest tests/test_audit.py -k subject_token_verified -q`
+Expected: FAIL — `TypeError: AuditEventInput.__init__() got an unexpected keyword argument 'subject_token_verified'`.
 
 - [ ] **Step 3: Add the two `AuditEvent` fields + conditional emit**
 
@@ -321,15 +321,15 @@ In `src/vinctor_core/models.py`, append to the `AuditEvent` optional fields (aft
 
 ```python
     # ADR 0007 Model 2 identity-proof (set only on a proven delegated decision).
-    identity_proven: bool = False
+    subject_token_verified: bool = False
     token_id: str | None = None
 ```
 
-In `to_dict`, before `return event` (line 170-171), add — note `identity_proven` guards on truthiness (default False must stay absent), `token_id` on `is not None`:
+In `to_dict`, before `return event` (line 170-171), add — note `subject_token_verified` guards on truthiness (default False must stay absent), `token_id` on `is not None`:
 
 ```python
-        if self.identity_proven:
-            event["identity_proven"] = True
+        if self.subject_token_verified:
+            event["subject_token_verified"] = True
         if self.token_id is not None:
             event["token_id"] = self.token_id
 ```
@@ -339,14 +339,14 @@ In `to_dict`, before `return event` (line 170-171), add — note `identity_prove
 In `src/vinctor_core/audit.py`, add to `AuditEventInput`:
 
 ```python
-    identity_proven: bool = False
+    subject_token_verified: bool = False
     token_id: str | None = None
 ```
 
 In `build_audit_event`, add to the `AuditEvent(...)` construction (after `enforcing_principal=audit_input.enforcing_principal,`):
 
 ```python
-        identity_proven=audit_input.identity_proven,
+        subject_token_verified=audit_input.subject_token_verified,
         token_id=audit_input.token_id,
 ```
 
@@ -362,13 +362,13 @@ REASON_SUBJECT_TOKEN_INVALID = "subject_token_invalid"
 In `src/vinctor_service/sqlite.py` `_audit_event_from_json` (the tail, mirroring the `enforcing_principal=data.get(...)` line ~1179):
 
 ```python
-        identity_proven=data.get("identity_proven", False),
+        subject_token_verified=data.get("subject_token_verified", False),
         token_id=data.get("token_id"),
 ```
 
 - [ ] **Step 6: Add the SQLite round-trip test**
 
-Add to `tests/test_sqlite_v1_service.py` a test mirroring the `enforcing_principal` persistence test (~lines 248-275): write an `AuditEvent` with `identity_proven=True, token_id="vtk_x"` through the service's audit writer (or via a delegated permit once Task 5 lands — for now, write directly via `SQLiteAuditWriter`), fetch it back, and assert `persisted.identity_proven is True and persisted.token_id == "vtk_x"`. If writing directly is awkward this early, defer this specific test to Task 5's proven-path round-trip and note it here; the `_audit_event_from_json` change is still required now.
+Add to `tests/test_sqlite_v1_service.py` a test mirroring the `enforcing_principal` persistence test (~lines 248-275): write an `AuditEvent` with `subject_token_verified=True, token_id="vtk_x"` through the service's audit writer (or via a delegated permit once Task 5 lands — for now, write directly via `SQLiteAuditWriter`), fetch it back, and assert `persisted.subject_token_verified is True and persisted.token_id == "vtk_x"`. If writing directly is awkward this early, defer this specific test to Task 5's proven-path round-trip and note it here; the `_audit_event_from_json` change is still required now.
 
 - [ ] **Step 7: Run tests + ruff, then commit**
 
@@ -377,7 +377,7 @@ Expected: PASS, ruff clean.
 
 ```bash
 git add src/vinctor_core/models.py src/vinctor_core/audit.py src/vinctor_service/sqlite.py tests/test_audit.py tests/test_sqlite_v1_service.py
-git commit -m "feat(audit): add identity_proven/token_id fields + subject-token constants"
+git commit -m "feat(audit): add subject_token_verified/token_id fields + subject-token constants"
 ```
 
 ---
@@ -869,7 +869,7 @@ def _raw_and_repo(*, audience="pep_git_host", workspace_id="ws_main",
     return raw, token, repo
 
 
-def test_proven_path_permits_and_marks_identity_proven() -> None:
+def test_proven_path_permits_and_marks_subject_token_verified() -> None:
     audit = InMemoryAuditWriter()
     raw, token, repo = _raw_and_repo()
     response = delegated_enforce_v1_contract(
@@ -877,7 +877,7 @@ def test_proven_path_permits_and_marks_identity_proven() -> None:
         now=NOW, audit_writer=audit, subject_token_repository=repo,
     )
     assert response.decision == "permit"
-    assert audit.events[0].identity_proven is True
+    assert audit.events[0].subject_token_verified is True
     assert audit.events[0].token_id == token.token_id
 
 
@@ -933,8 +933,8 @@ def test_no_token_legacy_path_unchanged() -> None:
         now=NOW, audit_writer=audit, subject_token_repository=InMemorySubjectTokenRepository(),
     )
     assert response.decision == "permit"
-    assert audit.events[0].identity_proven is False
-    assert "identity_proven" not in audit.events[0].to_dict()
+    assert audit.events[0].subject_token_verified is False
+    assert "subject_token_verified" not in audit.events[0].to_dict()
 ```
 
 NB: add a `subject_token: str | None = None` param to the test's local `request(...)` helper so these compile; mirror how it already sets `pep_workspace_id`. Confirm `response.error`/`response.status_code` attribute names against the existing tests in this file and adjust.
@@ -956,13 +956,13 @@ In `src/vinctor_service/models.py` `V1DelegatedEnforceRequest` (frozen dataclass
 
 In `src/vinctor_service/v1_enforce.py`:
 - Add the keyword param `subject_token_repository: SubjectTokenRepository | None = None` to `delegated_enforce_v1_contract`.
-- Add `identity_proven: bool = False` and `token_id: str | None = None` params to `_evaluate_and_record`, and forward them into its `AuditEventInput(...)`.
+- Add `subject_token_verified: bool = False` and `token_id: str | None = None` params to `_evaluate_and_record`, and forward them into its `AuditEventInput(...)`.
 - After the existing grant resolution + the grant-ownership equality (line ~155), but on the token-present path, insert the proven checks **before** calling `_evaluate_and_record`, computing `proven` flags to pass through. Implementation:
 
 ```python
     # ADR 0007 Model 2: proven-identity path. The token (if present) must agree
     # with the asserted body AND the resolved grant; any failure fails closed.
-    identity_proven = False
+    subject_token_verified = False
     proven_token_id = None
     if request.subject_token is not None:
         try:
@@ -1005,11 +1005,11 @@ In `src/vinctor_service/v1_enforce.py`:
                 enforcing_principal=request.pep_id,
             )
             return _pre_audit_error(403, "forbidden", "subject token is not valid")
-        identity_proven = True
+        subject_token_verified = True
         proven_token_id = token.token_id
 ```
 
-Then pass `identity_proven=identity_proven, token_id=proven_token_id` into the existing `_evaluate_and_record(...)` call on the delegated path. Add the imports `from vinctor_core.audit import REASON_SUBJECT_TOKEN_INVALID` and `from vinctor_service.keys import _hash_key` and `from vinctor_service.repositories import SubjectTokenRepository` (TYPE_CHECKING is fine for the last).
+Then pass `subject_token_verified=subject_token_verified, token_id=proven_token_id` into the existing `_evaluate_and_record(...)` call on the delegated path. Add the imports `from vinctor_core.audit import REASON_SUBJECT_TOKEN_INVALID` and `from vinctor_service.keys import _hash_key` and `from vinctor_service.repositories import SubjectTokenRepository` (TYPE_CHECKING is fine for the last).
 
 IMPORTANT (fail-closed): this token block must run AFTER the grant is resolved (so `grant` exists) and must NOT be reached through the existing `except Exception -> 503` grant branch. The token lookup has its own `try/except` returning 403 — never 503.
 
@@ -1053,13 +1053,13 @@ def _mint_raw(svc, *, audience="pep_git_host"):
     return result.token, result.token_id
 
 
-def test_http_proven_permit_records_identity_proven() -> None:
+def test_http_proven_permit_records_subject_token_verified() -> None:
     svc = service()
     raw, token_id = _mint_raw(svc)
     response = call(svc, headers={"X-PEP-Key": "pep_key_main", "X-Subject-Token": raw})
     assert response.status_code == 200
     proven = next(e for e in svc.audit_events if e.event_type != "subject_token_minted")
-    assert proven.identity_proven is True
+    assert proven.subject_token_verified is True
     assert proven.token_id == token_id
     assert raw not in str(response.body)
 
@@ -1082,13 +1082,13 @@ def test_http_no_token_is_unproven_regression() -> None:
     svc = service()
     response = call(svc, headers={"X-PEP-Key": "pep_key_main"})
     assert response.status_code == 200
-    assert svc.audit_events[0].identity_proven is False
+    assert svc.audit_events[0].subject_token_verified is False
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
 
 Run: `.venv/bin/python -m pytest tests/test_delegated_enforce_http_contract.py -k "proven or audience or token or regression" -q`
-Expected: FAIL — proven assertions fail because `X-Subject-Token` is not read yet (`identity_proven` is False).
+Expected: FAIL — proven assertions fail because `X-Subject-Token` is not read yet (`subject_token_verified` is False).
 
 - [ ] **Step 3: Read the header and thread it**
 
@@ -1107,7 +1107,7 @@ Expected: PASS.
 
 - [ ] **Step 5: SQLite proven round-trip test**
 
-Add to `tests/test_sqlite_v1_service.py` (mirror the `enforcing_principal` round-trip ~248-275): build a `SQLiteV1Service`, mint a token, run a delegated proven enforce, fetch the decision audit via `service.get_audit_event(response.audit_event_id)`, assert `persisted.identity_proven is True and persisted.token_id == <vtk_ id>`.
+Add to `tests/test_sqlite_v1_service.py` (mirror the `enforcing_principal` round-trip ~248-275): build a `SQLiteV1Service`, mint a token, run a delegated proven enforce, fetch the decision audit via `service.get_audit_event(response.audit_event_id)`, assert `persisted.subject_token_verified is True and persisted.token_id == <vtk_ id>`.
 
 Run: `.venv/bin/python -m pytest tests/test_sqlite_v1_service.py -q`
 Expected: PASS.
@@ -1246,5 +1246,5 @@ gh pr create --base main --head feat/adr0007-subject-tokens \
 - **Fail-closed is the load-bearing invariant:** the subject-token lookup must return 403 on not-found AND on any exception — never 503, never fall through to the legacy asserted path. This is the opposite of the existing grant-lookup 503 behavior; do not copy that branch.
 - **`status=='active'` ≠ valid:** the codebase never flips grant status to `expired`; mint must check `expires_at > now` explicitly (Task 3 has a dedicated test).
 - **Two prefixes, never confused:** raw `vat_` (secret, returned once), id `vtk_` (public, audited). The raw token must never appear in any audit row or response except the one-time mint body.
-- **Do not overload `reason_code`** for proven decisions — `identity_proven`/`token_id` are dedicated fields; `reason_code=subject_token_invalid` is only on the rejection path.
+- **Do not overload `reason_code`** for proven decisions — `subject_token_verified`/`token_id` are dedicated fields; `reason_code=subject_token_invalid` is only on the rejection path.
 - The repo does NOT enforce `ruff format`; only run `ruff check`. Only format files your edits dirtied that were clean on main.

@@ -126,7 +126,7 @@ parity); tests `tests/test_require_subject_token.py` + `tests/test_cli.py`.
   - hardened subject (`require_subject_token` set) + **no** `X-Subject-Token` → 403
     `forbidden` + a `subject_token_required` rejection audit.
   - hardened subject + **empty/whitespace** token → same deny (empty == absent).
-  - hardened subject + a **valid** token → permit (`identity_proven=true`).
+  - hardened subject + a **valid** token → permit (`subject_token_verified=true`).
   - unhardened subject + no token → legacy permit (regression).
 
 - [ ] **Step 2 — run, expect FAIL.**

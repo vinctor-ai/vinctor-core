@@ -140,7 +140,7 @@ class AuditEvent:
     first_seen_at: datetime | None = None
     last_seen_at: datetime | None = None
     # ADR 0007 Model 2 identity-proof (set only on a proven delegated decision).
-    identity_proven: bool = False
+    subject_token_verified: bool = False
     token_id: str | None = None
     # ADR 0019: event category on the shared chain — "decision" (what an agent
     # did or asked for) or "control" (an operator changed the rules). Enables
@@ -176,11 +176,11 @@ class AuditEvent:
             event["first_seen_at"] = self.first_seen_at.isoformat()
         if self.last_seen_at is not None:
             event["last_seen_at"] = self.last_seen_at.isoformat()
-        if self.identity_proven:
-            event["identity_proven"] = True
+        if self.subject_token_verified:
+            event["subject_token_verified"] = True
         if self.token_id is not None:
             event["token_id"] = self.token_id
-        # Omit-when-default (like identity_proven): an absent key reads as
+        # Omit-when-default (like subject_token_verified): an absent key reads as
         # "decision", so pre-event_class rows and new decision rows share one
         # canonical form and decision-event JSON stays byte-identical.
         if self.event_class != "decision":

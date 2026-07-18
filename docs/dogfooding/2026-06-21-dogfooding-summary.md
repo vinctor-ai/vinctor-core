@@ -80,7 +80,7 @@ the rejection-audit decision fires through the approval path too). No findings.
 ### 7 — ADR 0007 proven path (live, 2026-06-21)
 Live end-to-end against `local start` (:8821) and `service serve` (:8822) on a
 throwaway DB, real wall clock. **10/10 PASS, no defect:** proven permit +
-`identity_proven=true`/`token_id` audit; CLI `agent token mint` output; no-token
+`subject_token_verified=true`/`token_id` audit; CLI `agent token mint` output; no-token
 legacy path unchanged; wrong-audience / subject-mismatch / garbage-token all 403;
 expired token (real `--ttl 1` + elapsed time) → 403; **no-leak** — 12 raw secrets
 absent from audit (list + export) and from the SQLite binary, only `vtk_` ids

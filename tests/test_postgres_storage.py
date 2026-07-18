@@ -16,7 +16,7 @@ from vinctor_core import (
 )
 from vinctor_core.models import AuditEvent, Grant
 from vinctor_service.audit_anchor import NullAnchor
-from vinctor_service.audit_chain import GENESIS_PREV_HASH, AnchorRecord
+from vinctor_service.audit_chain import GENESIS_PREV_HASH, AnchorRecord, row_hash
 from vinctor_service.audit_export import ExportingAuditWriter
 from vinctor_service.control_audit import ControlPlaneAuditor
 from vinctor_service.key_ops import rotate_workspace_key
@@ -1118,7 +1118,7 @@ def _pg_full_audit_event(event_id: str) -> AuditEvent:
         occurrence_count=4,
         first_seen_at=NOW - timedelta(minutes=30),
         last_seen_at=NOW - timedelta(minutes=1),
-        identity_proven=True,
+        subject_token_verified=True,
         token_id="stk_1",
     )
 
@@ -1134,7 +1134,7 @@ def _seed_pg_chain_with_full_event(conn) -> PostgresAuditWriter:
 def test_postgres_audit_verify_ok_with_all_optional_columns_populated() -> None:
     # Positive normalization guard: a healthy chain whose row has every
     # materialized column populated (datetimes come back as tz-aware datetimes,
-    # identity_proven as BOOLEAN, occurrence_count as INTEGER) must still verify.
+    # subject_token_verified as BOOLEAN, occurrence_count as INTEGER) must still verify.
     assert DSN is not None
     conn = connect_postgres(DSN)
     writer = _seed_pg_chain_with_full_event(conn)
@@ -1152,7 +1152,7 @@ def test_postgres_audit_verify_ok_with_all_optional_columns_populated() -> None:
         ("occurrence_count", 999),
         ("first_seen_at", NOW - timedelta(days=2)),
         ("last_seen_at", NOW + timedelta(days=2)),
-        ("identity_proven", False),
+        ("subject_token_verified", False),
         ("token_id", "stk_forged"),
     ],
 )
@@ -1754,10 +1754,62 @@ def test_postgres_v5_rows_migrate_to_decision_class_and_still_verify() -> None:
                 "SELECT event_class FROM audit_events ORDER BY seq"
             ).fetchall()
         ]
-    assert versions == [1, 2, 3, 4, 5, 6]
+    assert versions == [1, 2, 3, 4, 5, 6, 7]
     assert classes == ["decision", "decision"]
     assert writer.verify_chain().ok is True
     assert [e.event_class for e in writer.list_all()] == ["decision", "decision"]
+    conn.close()
+
+
+def test_postgres_v6_legacy_identity_key_and_column_migrate_and_still_verify() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    writer = PostgresAuditWriter(conn)
+    writer.write(_pg_full_audit_event("evt_v6"))
+
+    current_json = conn.execute(
+        "SELECT event_json FROM audit_events WHERE seq = 1"
+    ).fetchone()[0]
+    legacy_data = json.loads(current_json)
+    legacy_data["identity_proven"] = legacy_data.pop("subject_token_verified")
+    legacy_json = json.dumps(legacy_data, sort_keys=True)
+    legacy_hash = row_hash(1, legacy_json, GENESIS_PREV_HASH)
+    with conn.transaction():
+        conn.execute(
+            "UPDATE audit_events SET event_json = %s, row_hash = %s WHERE seq = 1",
+            (legacy_json, legacy_hash),
+        )
+        conn.execute(
+            "ALTER TABLE audit_events RENAME COLUMN subject_token_verified "
+            "TO identity_proven"
+        )
+        conn.execute("DELETE FROM schema_migrations WHERE version = 7")
+
+    init_postgres_schema(conn)
+
+    with conn.transaction():
+        versions = [
+            row[0]
+            for row in conn.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            ).fetchall()
+        ]
+        columns = {
+            row[0]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = 'audit_events'"
+            ).fetchall()
+        }
+        stored_json = conn.execute(
+            "SELECT event_json FROM audit_events WHERE seq = 1"
+        ).fetchone()[0]
+    assert versions == [1, 2, 3, 4, 5, 6, 7]
+    assert "subject_token_verified" in columns
+    assert "identity_proven" not in columns
+    assert stored_json == legacy_json
+    assert writer.verify_chain().ok is True
+    assert writer.list_all()[0].subject_token_verified is True
     conn.close()
 
 

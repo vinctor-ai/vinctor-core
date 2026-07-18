@@ -39,7 +39,7 @@ def main() -> None:
         # Safe metadata, no secrets.
         info = _run([*common, "operator", "service", "info"])
         assert info["mode"] == "local"
-        assert info["schema_version"] == 2
+        assert info["schema_version"] == 16
         assert info["key_storage_mode"] == "sqlite_hashes"
         serialized = json.dumps(info)
         assert "wsk_" not in serialized
@@ -47,7 +47,7 @@ def main() -> None:
 
         # Explicit schema migrate is idempotent and preserves data.
         migrate = _run([*common, "operator", "storage", "migrate"])
-        assert migrate["schema_versions"] == [1, 2]
+        assert migrate["schema_versions"] == list(range(1, 17))
         assert _grant_exists(db_path, "grt_demo")
 
         # Keys list never exposes raw keys or hashes.
@@ -73,7 +73,7 @@ def main() -> None:
         # Snapshot, wipe, and restore the database.
         backup = _run([*common, "operator", "storage", "backup", "--output", str(backup_path)])
         assert backup["bytes"] > 0
-        assert backup["schema_versions"] == [1, 2]
+        assert backup["schema_versions"] == list(range(1, 17))
         assert _grant_exists(backup_path, "grt_demo")
 
         reset = _run([*common, "operator", "storage", "reset", "--yes"])

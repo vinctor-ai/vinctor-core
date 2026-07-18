@@ -112,7 +112,7 @@ earlier.
   default (no `pop`) → no secret, not pop-required; CLI `--pop` once-shown output.
 - **Verify (contract-level, compute a real HMAC in the test):**
   - valid proof (fresh ts, correct mac, matching action/resource) → permit,
-    `identity_proven=true`.
+    `subject_token_verified=true`.
   - pop-required token + **no** proof → fail closed `subject_token_invalid`.
   - bad mac (wrong secret) → fail closed.
   - stale ts (now-ts > skew) → fail closed; future ts beyond skew → fail closed.
@@ -195,7 +195,7 @@ These refine/override the design above; the plan implements these.
    case.
 9. **Exact insertion point:** a block guarded by `if token.pop_secret is not None:`
    placed immediately **after the C2 bound-check failure return** and **before**
-   `identity_proven = True`. Every PoP failure reuses the existing
+   `subject_token_verified = True`. Every PoP failure reuses the existing
    `_record_rejection(REASON_SUBJECT_TOKEN_INVALID, …)` + `_pre_audit_error(403,
    "forbidden", "subject token is not valid")` — no new reason, no leak. Gate
    strictly on `is not None` (never truthiness).

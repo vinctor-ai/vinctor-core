@@ -1061,7 +1061,7 @@ def test_local_http_workspace_lists_audit_events_with_allowlisted_fields() -> No
         "occurrence_count": None,
         "first_seen_at": None,
         "last_seen_at": None,
-        "identity_proven": False,
+        "subject_token_verified": False,
         "token_id": None,
         "event_class": "decision",
     }
@@ -1107,7 +1107,7 @@ def test_local_http_audit_events_surface_proven_delegated_identity() -> None:
     assert len(listed["audit_events"]) == 1
     event = listed["audit_events"][0]
     assert event["enforcing_principal"] == "pep_git_host"
-    assert event["identity_proven"] is True
+    assert event["subject_token_verified"] is True
     assert event["token_id"] == minted.token_id
 
 
@@ -1286,7 +1286,7 @@ def security_audit_event(
     *,
     reason_code: str | None = None,
     enforcing_principal: str | None = None,
-    identity_proven: bool = False,
+    subject_token_verified: bool = False,
 ) -> AuditEvent:
     return AuditEvent(
         event_id=event_id,
@@ -1307,7 +1307,7 @@ def security_audit_event(
         created_at=NOW,
         enforcing_principal=enforcing_principal,
         reason_code=reason_code,
-        identity_proven=identity_proven,
+        subject_token_verified=subject_token_verified,
     )
 
 
@@ -1368,22 +1368,22 @@ def test_local_http_audit_events_filter_by_enforcing_principal() -> None:
     assert [event["event_id"] for event in response["audit_events"]] == ["evt_pep"]
 
 
-def test_local_http_audit_events_filter_by_identity_proven() -> None:
+def test_local_http_audit_events_filter_by_subject_token_verified() -> None:
     svc = service()
-    svc.audit_writer.write(security_audit_event("evt_proven", identity_proven=True))
+    svc.audit_writer.write(security_audit_event("evt_proven", subject_token_verified=True))
     svc.audit_writer.write(security_audit_event("evt_unproven"))
 
     with running_server(svc, workspace_keys=workspace_identities()) as server:
         true_status, true_response = raw_request(
             server,
             method="GET",
-            path="/v1/audit-events?identity_proven=true",
+            path="/v1/audit-events?subject_token_verified=true",
             headers={"X-Workspace-Key": "workspace_key_main"},
         )
         false_status, false_response = raw_request(
             server,
             method="GET",
-            path="/v1/audit-events?identity_proven=false",
+            path="/v1/audit-events?subject_token_verified=false",
             headers={"X-Workspace-Key": "workspace_key_main"},
         )
 
@@ -1397,20 +1397,20 @@ def test_local_http_audit_events_filter_by_identity_proven() -> None:
     ]
 
 
-def test_local_http_audit_events_rejects_invalid_identity_proven() -> None:
+def test_local_http_audit_events_rejects_invalid_subject_token_verified() -> None:
     svc = service()
 
     with running_server(svc, workspace_keys=workspace_identities()) as server:
         status, response = raw_request(
             server,
             method="GET",
-            path="/v1/audit-events?identity_proven=maybe",
+            path="/v1/audit-events?subject_token_verified=maybe",
             headers={"X-Workspace-Key": "workspace_key_main"},
         )
 
     assert status == 400
     assert response["error"] == "invalid_request"
-    assert response["reason"] == "identity_proven must be true or false"
+    assert response["reason"] == "subject_token_verified must be true or false"
 
 
 def test_local_http_workspace_manages_auto_approval_rules() -> None:

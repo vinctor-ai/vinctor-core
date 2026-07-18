@@ -79,7 +79,7 @@ def test_backup_sqlite_creates_queryable_copy(tmp_path: Path) -> None:
 
     assert result.output_path == output_path
     assert result.bytes > 0
-    assert result.schema_versions == tuple(range(1, 16))
+    assert result.schema_versions == tuple(range(1, 17))
 
     conn = connect_sqlite(output_path)
     try:
@@ -139,7 +139,7 @@ def test_reset_clears_data_but_restores_schema(tmp_path: Path) -> None:
 
     result = reset_sqlite(db_path)
 
-    assert result.schema_versions == tuple(range(1, 16))
+    assert result.schema_versions == tuple(range(1, 17))
     conn = connect_sqlite(db_path)
     try:
         service = SQLiteV1Service(conn, initialize_schema=False)
@@ -178,7 +178,7 @@ def test_reset_recreates_missing_db(tmp_path: Path) -> None:
     result = reset_sqlite(db_path)
 
     assert db_path.exists()
-    assert result.schema_versions == tuple(range(1, 16))
+    assert result.schema_versions == tuple(range(1, 17))
 
 
 def test_read_schema_versions_missing_db_returns_none(tmp_path: Path) -> None:
@@ -189,7 +189,7 @@ def test_read_schema_versions_existing_db(tmp_path: Path) -> None:
     db_path = tmp_path / "vinctor.sqlite"
     _seed_db(db_path)
 
-    assert read_schema_versions(db_path) == tuple(range(1, 16))
+    assert read_schema_versions(db_path) == tuple(range(1, 17))
 
 
 def test_read_schema_versions_does_not_create_db(tmp_path: Path) -> None:
@@ -208,7 +208,7 @@ def test_restore_replaces_db_from_snapshot(tmp_path: Path) -> None:
     result = restore_sqlite(target, source)
 
     assert result.input_path == source
-    assert result.schema_versions == tuple(range(1, 16))
+    assert result.schema_versions == tuple(range(1, 17))
     conn = connect_sqlite(target)
     try:
         grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(
@@ -267,7 +267,7 @@ def test_restore_overwrites_existing_target(tmp_path: Path) -> None:
 
     restore_sqlite(target, source)
 
-    assert read_schema_versions(target) == tuple(range(1, 16))
+    assert read_schema_versions(target) == tuple(range(1, 17))
 
 
 def test_restore_missing_input_raises(tmp_path: Path) -> None:
@@ -284,7 +284,7 @@ def test_restore_invalid_snapshot_raises_and_keeps_target(tmp_path: Path) -> Non
     with pytest.raises(ValueError):
         restore_sqlite(target, source)
 
-    assert read_schema_versions(target) == tuple(range(1, 16))
+    assert read_schema_versions(target) == tuple(range(1, 17))
 
 
 def test_migrate_initializes_and_reports_versions(tmp_path: Path) -> None:
@@ -293,7 +293,7 @@ def test_migrate_initializes_and_reports_versions(tmp_path: Path) -> None:
     result = migrate_sqlite(db_path)
 
     assert db_path.exists()
-    assert result.schema_versions == tuple(range(1, 16))
+    assert result.schema_versions == tuple(range(1, 17))
 
 
 def test_migrate_is_idempotent_and_preserves_data(tmp_path: Path) -> None:
@@ -302,7 +302,7 @@ def test_migrate_is_idempotent_and_preserves_data(tmp_path: Path) -> None:
 
     result = migrate_sqlite(db_path)
 
-    assert result.schema_versions == tuple(range(1, 16))
+    assert result.schema_versions == tuple(range(1, 17))
     conn = connect_sqlite(db_path)
     try:
         grant = SQLiteV1Service(conn, initialize_schema=False).grant_repository.get_by_ref(

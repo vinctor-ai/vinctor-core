@@ -139,6 +139,7 @@ class FakeClient:
                     "runtime": None,
                     "boundary_type": None,
                     "created_at": "2026-06-11T12:00:00+00:00",
+                    "subject_token_verified": True,
                     "event_json": {"raw": "hidden"},
                     "raw_command": "send-secret",
                     "key_hash": "hash_secret",
@@ -371,6 +372,7 @@ def test_audit_tools_use_safe_fields_by_default() -> None:
         "runtime": None,
         "boundary_type": None,
         "created_at": "2026-06-11T12:00:00+00:00",
+        "subject_token_verified": True,
     }
     assert "scope_attempted" not in event
     assert "scope_matched" not in event

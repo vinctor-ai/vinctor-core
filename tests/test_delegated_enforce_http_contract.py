@@ -161,13 +161,13 @@ def _mint_raw(svc, *, audience="pep_git_host"):
     return result.token, result.token_id
 
 
-def test_http_proven_permit_records_identity_proven() -> None:
+def test_http_proven_permit_records_subject_token_verified() -> None:
     svc = service()
     raw, token_id = _mint_raw(svc)
     response = call(svc, headers={"X-PEP-Key": "pep_key_main", "X-Subject-Token": raw})
     assert response.status_code == 200
     proven = next(e for e in svc.audit_events if e.event_type != "subject_token_minted")
-    assert proven.identity_proven is True
+    assert proven.subject_token_verified is True
     assert proven.token_id == token_id
     assert raw not in str(response.body)
 
@@ -190,4 +190,4 @@ def test_http_no_token_is_unproven_regression() -> None:
     svc = service()
     response = call(svc, headers={"X-PEP-Key": "pep_key_main"})
     assert response.status_code == 200
-    assert svc.audit_events[0].identity_proven is False
+    assert svc.audit_events[0].subject_token_verified is False

@@ -8,7 +8,7 @@ work. TDD: each task lands its failing test first, then the minimal code.
 
 - `AuditEvent` gains `event_class: str = "decision"`. `to_dict()` emits the key
   only when it is not `"decision"` (same omit-when-default convention as
-  `identity_proven`), so every existing decision row — old or new — reads
+  `subject_token_verified`), so every existing decision row — old or new — reads
   uniformly as "absent = decision" and decision-event canonical JSON stays
   byte-identical.
 - `audit_events` gains a materialized `event_class TEXT NOT NULL DEFAULT

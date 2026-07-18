@@ -77,7 +77,7 @@ tests `tests/test_subject_token_repository.py` + schema-version asserts.
     stores `bound_action`/`bound_resource`; mint with only one of them → error
     (both-or-neither).
   - **delegated enforce:** a token bound to `(write, repo/x/y)` presented for that
-    exact action/resource → permit (`identity_proven=true`); the SAME token
+    exact action/resource → permit (`subject_token_verified=true`); the SAME token
     presented for a DIFFERENT action or resource (still within the grant) → 403
     `forbidden` + `subject_token_invalid`; an **unbound** token → unchanged (works
     for any action/resource the grant covers).

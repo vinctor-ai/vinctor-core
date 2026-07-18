@@ -13,7 +13,7 @@ class AuditEventInput:
     event_id: str | None = None
     created_at: datetime | None = None
     enforcing_principal: str | None = None
-    identity_proven: bool = False
+    subject_token_verified: bool = False
     token_id: str | None = None
 
 
@@ -40,7 +40,7 @@ def build_audit_event(audit_input: AuditEventInput) -> AuditEvent:
         boundary_type=boundary.boundary_type if boundary else None,
         created_at=audit_input.created_at or datetime.now(UTC),
         enforcing_principal=audit_input.enforcing_principal,
-        identity_proven=audit_input.identity_proven,
+        subject_token_verified=audit_input.subject_token_verified,
         token_id=audit_input.token_id,
     )
 

@@ -92,7 +92,7 @@ def test_bound_token_for_exact_action_resource_permits() -> None:
         subject_token_repository=repo,
     )
     assert response.decision == "permit"
-    assert audit.events[0].identity_proven is True
+    assert audit.events[0].subject_token_verified is True
 
 
 def test_bound_token_for_different_action_denies_invalid_no_leak() -> None:

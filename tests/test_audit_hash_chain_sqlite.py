@@ -183,7 +183,7 @@ def _full_event(event_id: str) -> AuditEvent:
         occurrence_count=4,
         first_seen_at=NOW - timedelta(minutes=30),
         last_seen_at=NOW - timedelta(minutes=1),
-        identity_proven=True,
+        subject_token_verified=True,
         token_id="stk_1",
     )
 
@@ -334,16 +334,14 @@ def test_crosscheck_covers_every_sqlite_materialized_event_json_column(tmp_path)
 
 def test_postgres_crosschecks_every_pg_only_materialized_column() -> None:
     # Postgres additionally materializes these event_json fields as dedicated
-    # columns that list_filtered reads directly (SQLite filters them via
-    # json_extract over the hash-protected event_json and has no such columns
-    # to tamper with). Each one must be cross-checked during verify_chain, or an
-    # attacker could hide/re-classify events for Postgres readers — e.g. flip
-    # reason_code or identity_proven — while verification still passes.
+    # columns that SQLite does not have. Each one must be cross-checked during
+    # verify_chain, or an attacker could hide/re-classify events for Postgres
+    # readers — e.g. flip reason_code — while verification still passes.
     from vinctor_service.postgres import PostgresAuditWriter
 
     assert PostgresAuditWriter._PG_ONLY_CROSSCHECK_COLUMNS == (
         "enforcing_principal", "reason_code", "occurrence_count",
-        "first_seen_at", "last_seen_at", "identity_proven", "token_id",
+        "first_seen_at", "last_seen_at", "token_id",
     )
     assert set(PostgresAuditWriter._PG_ONLY_CROSSCHECK_COLUMNS).isdisjoint(
         PostgresAuditWriter._CROSSCHECK_COLUMNS
@@ -538,10 +536,20 @@ def test_migration_adds_event_class_column_and_registers_v15(tmp_path) -> None:
     assert 15 in get_sqlite_schema_versions(conn)
 
 
-def test_v14_rows_migrate_to_decision_class_and_still_verify(tmp_path) -> None:
+def test_migration_adds_subject_token_verified_column_and_registers_v16(
+    tmp_path,
+) -> None:
+    conn = connect_sqlite(tmp_path / "stv.sqlite")
+    init_sqlite_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(audit_events)").fetchall()}
+    assert "subject_token_verified" in cols
+    assert 16 in get_sqlite_schema_versions(conn)
+
+
+def test_v14_rows_with_legacy_identity_key_migrate_and_still_verify(tmp_path) -> None:
     """Chain-affecting migration care: a v14-era DB (hash chain present, no
-    event_class) migrates with every existing row reading as class "decision",
-    and the chain still verifies — the stored event_json is untouched."""
+    event_class or subject-token-verification column) migrates without changing
+    the legacy event_json bytes, and the chain still verifies."""
     conn = connect_sqlite(tmp_path / "v14.sqlite")
     conn.executescript(
         "CREATE TABLE audit_events (event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL,"
@@ -562,7 +570,11 @@ def test_v14_rows_migrate_to_decision_class_and_still_verify(tmp_path) -> None:
     prev = GENESIS_PREV_HASH
     for seq in (1, 2):
         ev = _event(f"evt_{seq}")
-        ej = json.dumps(ev.to_dict(), sort_keys=True)
+        event_data = ev.to_dict()
+        if seq == 1:
+            event_data["identity_proven"] = True
+            event_data["token_id"] = "stk_legacy"
+        ej = json.dumps(event_data, sort_keys=True)
         rh = row_hash(seq, ej, prev)
         conn.execute(
             "INSERT INTO audit_events (event_id,event_type,decision,reason,workspace_id,"
@@ -577,16 +589,27 @@ def test_v14_rows_migrate_to_decision_class_and_still_verify(tmp_path) -> None:
         prev = rh
     conn.commit()
 
-    init_sqlite_schema(conn)  # v14 -> v15: adds event_class
+    legacy_json = conn.execute(
+        "SELECT event_json FROM audit_events WHERE seq = 1"
+    ).fetchone()[0]
+    init_sqlite_schema(conn)  # v14 -> v16
 
-    assert 15 in get_sqlite_schema_versions(conn)
+    assert get_sqlite_schema_versions(conn) == tuple(range(1, 17))
     classes = [r[0] for r in conn.execute(
         "SELECT event_class FROM audit_events ORDER BY seq").fetchall()]
     assert classes == ["decision", "decision"]
+    verified = [r[0] for r in conn.execute(
+        "SELECT subject_token_verified FROM audit_events ORDER BY seq"
+    ).fetchall()]
+    assert verified == [1, 0]
+    assert conn.execute(
+        "SELECT event_json FROM audit_events WHERE seq = 1"
+    ).fetchone()[0] == legacy_json
     w = SQLiteAuditWriter(conn)
     assert w.verify_chain().ok is True
     events = w.list_all()
     assert [e.event_class for e in events] == ["decision", "decision"]
+    assert [e.subject_token_verified for e in events] == [True, False]
 
 
 def test_mixed_decision_and_control_chain_verifies(tmp_path) -> None:

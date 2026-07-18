@@ -5,6 +5,7 @@ import importlib.metadata
 import json
 import shutil
 import sqlite3
+from dataclasses import replace
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
@@ -687,8 +688,8 @@ auto_approval_rules:
         "rules_updated": 0,
         "workspace_id": "ws_demo",
     }
-    assert service_info["schema_versions"] == list(range(1, 16))
-    assert service_info["schema_version"] == 15
+    assert service_info["schema_versions"] == list(range(1, 17))
+    assert service_info["schema_version"] == 16
     assert exported["agent_bounds"] == 1
     assert exported["auto_approval_rules"] == 1
     assert bounds == ("execute:ci/test", "write:repo/vinctor-core/*")
@@ -853,11 +854,11 @@ def test_vinctor_cli_storage_backup_and_reset(tmp_path: Path) -> None:
 
     assert backup["output_path"] == str(backup_path)
     assert backup["bytes"] > 0
-    assert backup["schema_versions"] == list(range(1, 16))
+    assert backup["schema_versions"] == list(range(1, 17))
     assert reset == {
         "db_path": str(db_path),
         "reset": True,
-        "schema_versions": list(range(1, 16)),
+        "schema_versions": list(range(1, 17)),
     }
 
     backup_conn = connect_sqlite(backup_path)
@@ -929,8 +930,8 @@ def test_vinctor_cli_service_info_reports_schema(tmp_path: Path) -> None:
 
     assert info["mode"] == "local"
     assert info["db_path"] == str(db_path)
-    assert info["schema_version"] == 15
-    assert info["schema_versions"] == list(range(1, 16))
+    assert info["schema_version"] == 16
+    assert info["schema_versions"] == list(range(1, 17))
     assert info["key_storage_mode"] == "sqlite_hashes"
     assert "host" in info
     assert "port" in info
@@ -966,7 +967,7 @@ def test_vinctor_cli_storage_restore_roundtrip(tmp_path: Path) -> None:
         "db_path": str(db_path),
         "input_path": str(backup_path),
         "restored": True,
-        "schema_versions": list(range(1, 16)),
+        "schema_versions": list(range(1, 17)),
     }
     conn = connect_sqlite(db_path)
     try:
@@ -1046,7 +1047,7 @@ def test_vinctor_cli_storage_migrate_reports_versions(tmp_path: Path) -> None:
 
     assert migrate == {
         "db_path": str(db_path),
-        "schema_versions": list(range(1, 16)),
+        "schema_versions": list(range(1, 17)),
     }
     conn = connect_sqlite(db_path)
     try:
@@ -1669,9 +1670,16 @@ def test_vinctor_cli_audit_list_filters_by_reason(tmp_path) -> None:
     try:
         writer = SQLiteV1Service(conn).audit_writer
         writer.write(
-            build_rejection_audit_event(
-                reason_code="pop_required", workspace_id="ws_demo", agent_id="agent_a",
-                action="write", resource="repo/x", created_at=NOW,
+            replace(
+                build_rejection_audit_event(
+                    reason_code="pop_required",
+                    workspace_id="ws_demo",
+                    agent_id="agent_a",
+                    action="write",
+                    resource="repo/x",
+                    created_at=NOW,
+                ),
+                subject_token_verified=True,
             )
         )
         writer.write(
@@ -1690,6 +1698,8 @@ def test_vinctor_cli_audit_list_filters_by_reason(tmp_path) -> None:
     assert len(everything["audit_events"]) == 2
     assert len(filtered["audit_events"]) == 1
     assert filtered["audit_events"][0]["reason_code"] == "pop_required"
+    assert filtered["audit_events"][0]["subject_token_verified"] is True
+    assert "identity_proven" not in filtered["audit_events"][0]
 
 
 def test_vinctor_cli_workspace_id_default_survives_after_subcommand_output_flag(

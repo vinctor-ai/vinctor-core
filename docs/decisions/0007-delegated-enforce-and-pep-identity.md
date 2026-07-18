@@ -24,7 +24,7 @@ it via the additive optional `X-Subject-Token` header on `/v1/enforce/delegated`
 When present and valid (token resolves by hash, not expired, audience = the
 authenticated PEP, and the token/body/grant agree on the full
 `(agent_id, workspace_id, grant_ref)` tuple), the decision is audited
-`identity_proven=true` with the `token_id`; any failure fails closed (403, never
+`subject_token_verified=true` with the `token_id`; any failure fails closed (403, never
 503, never a fall-through to the unproven path). The legacy no-token path is
 unchanged and still makes no proof claim. Models 1 and 3 are not pursued.
 mTLS/DPoP proof-of-possession remains the intended hardening (a forward-compatible

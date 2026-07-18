@@ -187,7 +187,7 @@ it must be tested, not assumed.
 
 ## Audit & redaction invariants
 
-- Add two **dedicated additive fields** to `AuditEvent`: `identity_proven: bool =
+- Add two **dedicated additive fields** to `AuditEvent`: `subject_token_verified: bool =
   False` and `token_id: str | None = None`. Emit them in `to_dict()` only when set
   (mirroring `enforcing_principal`), and read them back in
   `_audit_event_from_json`. Add the corresponding params to `build_audit_event` /
@@ -248,7 +248,7 @@ touchpoints so the plan does not miss one:
 
 **Delegated + token:**
 - valid token, matching audience + identity tuple, in-bounds action → permit;
-  audit `identity_proven=true`, `token_id` recorded; raw token absent everywhere.
+  audit `subject_token_verified=true`, `token_id` recorded; raw token absent everywhere.
 - expired token → fail closed `forbidden` + rejection audit `subject_token_invalid`.
 - token store raises during lookup → fail closed `forbidden` (NOT 503, NOT legacy
   fallback).
@@ -263,8 +263,8 @@ touchpoints so the plan does not miss one:
 - **grant revoked after mint, before enforce → enforce denies** (proves the "token
   validity ≠ access" invariant / safe deferred-revocation non-goal).
 - **no token → legacy asserted path unchanged** (regression guard,
-  `identity_proven` false/absent).
-- round-trip: `identity_proven` / `token_id` survive SQLite persistence (the
+  `subject_token_verified` false/absent).
+- round-trip: `subject_token_verified` / `token_id` survive SQLite persistence (the
   `enforcing_principal` round-trip is the precedent).
 
 ## Risks / open notes

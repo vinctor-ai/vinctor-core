@@ -108,7 +108,7 @@ Optional headers:
 
 - `X-Subject-Token`: a raw subject token (`vat_...`). When present, it must
   agree with the asserted body and the resolved grant; on success the recorded
-  audit event sets `identity_proven`. Any mismatch fails closed.
+  audit event sets `subject_token_verified`. Any mismatch fails closed.
 - `X-Subject-Token-Proof`: required when the presented subject token is
   proof-of-possession bound.
 

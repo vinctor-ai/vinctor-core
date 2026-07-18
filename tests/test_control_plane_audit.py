@@ -36,7 +36,7 @@ def test_audit_event_defaults_to_decision_class() -> None:
 def test_decision_events_omit_event_class_from_canonical_json() -> None:
     # Decision-event canonical JSON stays byte-identical to the pre-PKA-44
     # format: absent key == "decision", for old and new rows uniformly (same
-    # omit-when-default convention as identity_proven).
+    # omit-when-default convention as subject_token_verified).
     assert "event_class" not in _decision_event().to_dict()
 
 

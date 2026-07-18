@@ -27,7 +27,9 @@ from vinctor_service.audit_chain import (
     AnchorVerification,
     ChainVerification,
     crosscheck_values_match,
+    event_json_value,
     row_hash,
+    subject_token_verified_from_json,
 )
 from vinctor_service.audit_export import (
     AuditExport,
@@ -302,6 +304,7 @@ def _apply_sqlite_schema(conn: sqlite3.Connection) -> None:
     _ensure_agent_enforcement_require_pop_set_column(conn)
     _ensure_audit_events_hashchain_columns(conn)
     _ensure_audit_events_event_class_column(conn)
+    _ensure_audit_events_subject_token_verified_column(conn)
     _realign_agent_enforcement_require_boundary_set(conn)
     conn.execute(
         """
@@ -407,6 +410,13 @@ def _apply_sqlite_schema(conn: sqlite3.Connection) -> None:
         VALUES (?, ?)
         """,
         (15, datetime.now(UTC).isoformat()),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (16, datetime.now(UTC).isoformat()),
     )
     conn.commit()
 
@@ -674,6 +684,38 @@ def _ensure_audit_events_event_class_column(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE audit_events "
             "ADD COLUMN event_class TEXT NOT NULL DEFAULT 'decision'"
+        )
+
+
+def _ensure_audit_events_subject_token_verified_column(
+    conn: sqlite3.Connection,
+) -> None:
+    """Schema v16: materialize the renamed audit field without rehashing JSON."""
+    cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(audit_events)").fetchall()
+    }
+    if "identity_proven" in cols and "subject_token_verified" not in cols:
+        conn.execute(
+            "ALTER TABLE audit_events RENAME COLUMN identity_proven "
+            "TO subject_token_verified"
+        )
+    elif "subject_token_verified" not in cols:
+        conn.execute(
+            "ALTER TABLE audit_events ADD COLUMN "
+            "subject_token_verified INTEGER NOT NULL DEFAULT 0"
+        )
+        # SQLite historically kept this field JSON-only. Backfill the new
+        # crosscheck column from either JSON spelling while leaving event_json
+        # and its row_hash bytes untouched.
+        conn.execute(
+            """
+            UPDATE audit_events
+            SET subject_token_verified = COALESCE(
+                json_extract(event_json, '$.subject_token_verified'),
+                json_extract(event_json, '$.identity_proven'),
+                0
+            )
+            """
         )
 
 
@@ -1492,9 +1534,10 @@ class SQLiteAuditWriter:
                     event_id, event_type, decision, reason,
                     workspace_id, agent_id, grant_id, grant_ref,
                     action, resource, scope_attempted, scope_matched,
-                    boundary_id, runtime, boundary_type, created_at, event_class,
-                    event_json, seq, prev_hash, row_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    boundary_id, runtime, boundary_type, created_at,
+                    subject_token_verified, event_class, event_json,
+                    seq, prev_hash, row_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.event_id,
@@ -1513,6 +1556,7 @@ class SQLiteAuditWriter:
                     event.runtime,
                     event.boundary_type,
                     event.created_at.isoformat(),
+                    event.subject_token_verified,
                     event.event_class,
                     event_json,
                     seq,
@@ -1579,7 +1623,7 @@ class SQLiteAuditWriter:
         request_id: str | None = None,
         reason_code: str | None = None,
         enforcing_principal: str | None = None,
-        identity_proven: bool | None = None,
+        subject_token_verified: bool | None = None,
         limit: int | None = None,
     ) -> tuple[AuditEvent, ...]:
         """Workspace-scoped, SQL-pushed audit filter.
@@ -1594,12 +1638,12 @@ class SQLiteAuditWriter:
         ``seq`` (hashed into row_hash), not the unprotected rowid.
         ``limit=None`` returns every matching row.
 
-        ``reason_code``/``enforcing_principal``/``identity_proven`` have no
-        dedicated columns; they are filtered via ``json_extract`` over the
+        ``reason_code``/``enforcing_principal`` have no dedicated columns; they
+        are filtered via ``json_extract`` over the
         canonical ``event_json`` (JSON paths are literals, values are bound
         parameters). ``AuditEvent.to_dict`` omits these keys when unset, so an
-        absent key reads as SQL NULL: it never matches a string filter and
-        counts as ``identity_proven=False``.
+        absent key reads as SQL NULL and never matches a string filter.
+        ``subject_token_verified`` uses its v16 materialized column.
 
         Workspace scoping is mandatory: results never cross tenants. Every value
         travels as a bound parameter (no string interpolation into SQL).
@@ -1628,12 +1672,9 @@ class SQLiteAuditWriter:
         if enforcing_principal is not None:
             clauses.append("json_extract(event_json, '$.enforcing_principal') = ?")
             params.append(enforcing_principal)
-        if identity_proven is not None:
-            # JSON true -> 1; the key is omitted when False, so NULL -> 0.
-            clauses.append(
-                "COALESCE(json_extract(event_json, '$.identity_proven'), 0) = ?"
-            )
-            params.append(1 if identity_proven else 0)
+        if subject_token_verified is not None:
+            clauses.append("subject_token_verified = ?")
+            params.append(1 if subject_token_verified else 0)
 
         sql = (
             "SELECT event_json FROM audit_events "
@@ -1658,7 +1699,7 @@ class SQLiteAuditWriter:
         "event_id", "event_type", "decision", "reason", "workspace_id", "agent_id",
         "grant_id", "grant_ref", "action", "resource", "scope_attempted",
         "scope_matched", "boundary_id", "runtime", "boundary_type", "created_at",
-        "event_class",
+        "subject_token_verified", "event_class",
     )
 
     def verify_chain(self) -> ChainVerification:
@@ -1691,7 +1732,7 @@ class SQLiteAuditWriter:
                 )
             data = json.loads(event_json)
             for name, value in zip(self._CROSSCHECK_COLUMNS, cols, strict=False):
-                if not crosscheck_values_match(name, data.get(name), value):
+                if not crosscheck_values_match(name, event_json_value(data, name), value):
                     return ChainVerification(
                         False, len(rows), head_seq, head_hash,
                         break_seq=seq, break_event_id=event_id,
@@ -2136,7 +2177,7 @@ class SQLiteV1Service:
         request_id: str | None = None,
         reason_code: str | None = None,
         enforcing_principal: str | None = None,
-        identity_proven: bool | None = None,
+        subject_token_verified: bool | None = None,
         limit: int | None = None,
     ) -> tuple[AuditEvent, ...]:
         return self.audit_writer.list_filtered(
@@ -2148,7 +2189,7 @@ class SQLiteV1Service:
             request_id=request_id,
             reason_code=reason_code,
             enforcing_principal=enforcing_principal,
-            identity_proven=identity_proven,
+            subject_token_verified=subject_token_verified,
             limit=limit,
         )
 
@@ -2435,7 +2476,7 @@ def _audit_event_from_json(value: str) -> AuditEvent:
         occurrence_count=data.get("occurrence_count"),
         first_seen_at=_optional_datetime(data.get("first_seen_at")),
         last_seen_at=_optional_datetime(data.get("last_seen_at")),
-        identity_proven=data.get("identity_proven", False),
+        subject_token_verified=subject_token_verified_from_json(data),
         token_id=data.get("token_id"),
         event_class=data.get("event_class", "decision"),
     )

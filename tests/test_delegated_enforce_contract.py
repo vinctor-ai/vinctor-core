@@ -382,7 +382,7 @@ def _raw_and_repo(
     return raw, token, repo
 
 
-def test_proven_path_permits_and_marks_identity_proven() -> None:
+def test_proven_path_permits_and_marks_subject_token_verified() -> None:
     audit = InMemoryAuditWriter()
     raw, token, repo = _raw_and_repo()
     response = delegated_enforce_v1_contract(
@@ -394,7 +394,7 @@ def test_proven_path_permits_and_marks_identity_proven() -> None:
         subject_token_repository=repo,
     )
     assert response.decision == "permit"
-    assert audit.events[0].identity_proven is True
+    assert audit.events[0].subject_token_verified is True
     assert audit.events[0].token_id == token.token_id
 
 
@@ -472,8 +472,8 @@ def test_no_token_legacy_path_unchanged() -> None:
         subject_token_repository=InMemorySubjectTokenRepository(),
     )
     assert response.decision == "permit"
-    assert audit.events[0].identity_proven is False
-    assert "identity_proven" not in audit.events[0].to_dict()
+    assert audit.events[0].subject_token_verified is False
+    assert "subject_token_verified" not in audit.events[0].to_dict()
 
 
 # ---- require_pop mandate ---------------------------------------------------
@@ -514,7 +514,7 @@ def test_require_pop_denies_presented_non_pop_token() -> None:
         response.reason or ""
     ).lower()
     # identity was never proven on a denied non-PoP token.
-    assert audit.events[-1].identity_proven is not True
+    assert audit.events[-1].subject_token_verified is not True
 
 
 def test_require_pop_permits_pop_token_with_valid_proof() -> None:
@@ -553,7 +553,7 @@ def test_require_pop_permits_pop_token_with_valid_proof() -> None:
     )
     r = svc.delegated_enforce(pop_request, now=NOW, pep_workspace_id="ws_main")
     assert r.decision == "permit"
-    assert svc.audit_events[-1].identity_proven is True
+    assert svc.audit_events[-1].subject_token_verified is True
 
 
 def test_require_pop_off_permits_non_pop_token() -> None:
@@ -570,7 +570,7 @@ def test_require_pop_off_permits_non_pop_token() -> None:
         agent_enforcement_settings_repository=InMemoryAgentEnforcementSettingsRepository(),
     )
     assert response.decision == "permit"
-    assert audit.events[-1].identity_proven is True
+    assert audit.events[-1].subject_token_verified is True
     assert audit.events[-1].token_id == token.token_id
 
 
@@ -593,7 +593,7 @@ def test_require_pop_alone_denies_missing_token() -> None:
     assert response.error == "forbidden"
     assert response.decision is None
     assert audit.events[-1].reason_code == REASON_POP_REQUIRED
-    assert audit.events[-1].identity_proven is not True
+    assert audit.events[-1].subject_token_verified is not True
 
 
 def test_require_pop_alone_denies_blank_token() -> None:

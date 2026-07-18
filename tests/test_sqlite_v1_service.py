@@ -371,12 +371,12 @@ def test_sqlite_v1_service_delegated_enforce_persists_proven_identity(
     # The proven-identity flags round-trip through JSON-persisted audit storage.
     persisted = service.get_audit_event(response.audit_event_id or "")
     assert persisted is not None
-    assert persisted.identity_proven is True
+    assert persisted.subject_token_verified is True
     assert persisted.token_id == minted.token_id
     conn.close()
 
 
-def test_sqlite_audit_writer_round_trips_identity_proven_and_token_id(
+def test_sqlite_audit_writer_round_trips_subject_token_verified_and_token_id(
     tmp_path: Path,
 ) -> None:
     from vinctor_core.models import AuditEvent
@@ -402,14 +402,14 @@ def test_sqlite_audit_writer_round_trips_identity_proven_and_token_id(
         runtime=None,
         boundary_type=None,
         created_at=NOW,
-        identity_proven=True,
+        subject_token_verified=True,
         token_id="vtk_x",
     )
     writer.write(event)
 
     persisted = writer.get("evt_proven")
     assert persisted is not None
-    assert persisted.identity_proven is True
+    assert persisted.subject_token_verified is True
     assert persisted.token_id == "vtk_x"
     conn.close()
 

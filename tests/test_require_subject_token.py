@@ -114,7 +114,7 @@ def test_hardened_subject_with_valid_token_permits() -> None:
         agent_enforcement_settings_repository=_hardened_settings(),
     )
     assert response.decision == "permit"
-    assert audit.events[0].identity_proven is True
+    assert audit.events[0].subject_token_verified is True
 
 
 def test_unhardened_subject_without_token_permits() -> None:

@@ -32,6 +32,7 @@ AUDIT_EVENT_SAFE_FIELDS = (
     "runtime",
     "boundary_type",
     "created_at",
+    "subject_token_verified",
 )
 AUDIT_EVENT_DIAGNOSTIC_FIELDS = ("scope_attempted", "scope_matched")
 GRANT_REQUEST_SAFE_FIELDS = (
@@ -65,6 +66,7 @@ AUTO_APPROVAL_RULE_SAFE_FIELDS = (
 AUTO_APPROVAL_RULE_DIAGNOSTIC_FIELDS = ("allowed_scopes",)
 LIST_OF_STRING_FIELDS = frozenset({"allowed_scopes", "requested_scopes", "scopes"})
 INTEGER_FIELDS = frozenset({"max_ttl_seconds", "requested_ttl_seconds"})
+BOOLEAN_FIELDS = frozenset({"subject_token_verified"})
 
 
 def fields_for_mode(
@@ -100,6 +102,8 @@ def _allowlisted_value(field: str, value: Any) -> Any:
         if isinstance(value, bool) or not isinstance(value, int):
             return _DROP
         return value
+    if field in BOOLEAN_FIELDS:
+        return value if isinstance(value, bool) else _DROP
     if value is None or isinstance(value, str):
         return value
     return _DROP
