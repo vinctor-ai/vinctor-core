@@ -33,14 +33,20 @@ AUDIT_EVENT_SAFE_FIELDS = (
     "boundary_type",
     "created_at",
     "subject_token_verified",
+    "enforcing_principal",
+    "reason_code",
+    "occurrence_count",
+    "first_seen_at",
+    "last_seen_at",
 )
-AUDIT_EVENT_DIAGNOSTIC_FIELDS = ("scope_attempted", "scope_matched")
+AUDIT_EVENT_DIAGNOSTIC_FIELDS = ("scope_attempted", "scope_matched", "token_id")
 GRANT_REQUEST_SAFE_FIELDS = (
     "request_id",
     "workspace_id",
     "requester_agent_id",
     "target_agent_id",
     "requested_ttl_seconds",
+    "reason",
     "status",
     "created_at",
     "decided_at",
@@ -60,12 +66,17 @@ AUTO_APPROVAL_RULE_SAFE_FIELDS = (
     "target_agent_id",
     "max_ttl_seconds",
     "status",
+    "created_by",
     "created_at",
+    "updated_by",
     "updated_at",
 )
 AUTO_APPROVAL_RULE_DIAGNOSTIC_FIELDS = ("allowed_scopes",)
+AUTO_APPROVAL_EVALUATION_FIELDS = ("decision", "reason", "rule_id")
 LIST_OF_STRING_FIELDS = frozenset({"allowed_scopes", "requested_scopes", "scopes"})
-INTEGER_FIELDS = frozenset({"max_ttl_seconds", "requested_ttl_seconds"})
+INTEGER_FIELDS = frozenset(
+    {"max_ttl_seconds", "occurrence_count", "requested_ttl_seconds"}
+)
 BOOLEAN_FIELDS = frozenset({"subject_token_verified"})
 
 
@@ -103,7 +114,9 @@ def _allowlisted_value(field: str, value: Any) -> Any:
             return _DROP
         return value
     if field in BOOLEAN_FIELDS:
-        return value if isinstance(value, bool) else _DROP
+        if not isinstance(value, bool):
+            return _DROP
+        return value
     if value is None or isinstance(value, str):
         return value
     return _DROP

@@ -119,6 +119,9 @@ class FakeClient:
         boundary_id: str | None = None,
         request_id: str | None = None,
         agent_id: str | None = None,
+        reason_code: str | None = None,
+        enforcing_principal: str | None = None,
+        subject_token_verified: bool | None = None,
     ) -> dict[str, Any]:
         return {
             "audit_events": [
@@ -139,7 +142,17 @@ class FakeClient:
                     "runtime": None,
                     "boundary_type": None,
                     "created_at": "2026-06-11T12:00:00+00:00",
-                    "subject_token_verified": True,
+                    "enforcing_principal": enforcing_principal or "pep_git_host",
+                    "reason_code": reason_code or "agent_grant_mismatch",
+                    "occurrence_count": 3,
+                    "first_seen_at": "2026-06-11T11:58:00+00:00",
+                    "last_seen_at": "2026-06-11T12:00:00+00:00",
+                    "subject_token_verified": (
+                        subject_token_verified
+                        if subject_token_verified is not None
+                        else True
+                    ),
+                    "token_id": "vtk_secret_detail",
                     "event_json": {"raw": "hidden"},
                     "raw_command": "send-secret",
                     "key_hash": "hash_secret",
@@ -168,6 +181,13 @@ class FakeClient:
             "runtime": "codex",
             "boundary_type": "pretooluse",
             "created_at": "2026-06-11T12:00:00+00:00",
+            "enforcing_principal": "pep_git_host",
+            "reason_code": "agent_grant_mismatch",
+            "occurrence_count": 3,
+            "first_seen_at": "2026-06-11T11:58:00+00:00",
+            "last_seen_at": "2026-06-11T12:00:00+00:00",
+            "subject_token_verified": True,
+            "token_id": "vtk_secret_detail",
             "raw_tool_input": {"secret": "hidden"},
         }
 
@@ -228,6 +248,26 @@ class FakeClient:
             ]
         }
 
+    def list_service_auth_failures(self, *, limit: int = 20) -> dict[str, Any]:
+        return {
+            "auth_failures": [
+                {
+                    "event_id": "evt_auth",
+                    "event_type": "auth_failed",
+                    "event_class": "security",
+                    "reason_code": "auth_failed",
+                    "occurrence_count": 4,
+                    "first_seen_at": "2026-06-11T11:55:00+00:00",
+                    "last_seen_at": "2026-06-11T12:00:00+00:00",
+                    "subject_token_verified": False,
+                    "token_id": "vtk_hidden",
+                    "created_at": "2026-06-11T12:00:00+00:00",
+                    "raw_key": "sok_secret",
+                    "limit_seen": limit,
+                }
+            ]
+        }
+
 
 class FakeMcp:
     def __init__(self) -> None:
@@ -256,6 +296,9 @@ class RecordingAuditClient(FakeClient):
         boundary_id: str | None = None,
         request_id: str | None = None,
         agent_id: str | None = None,
+        reason_code: str | None = None,
+        enforcing_principal: str | None = None,
+        subject_token_verified: bool | None = None,
     ) -> dict[str, Any]:
         self.seen_limits.append(limit)
         return super().list_audit_events(
@@ -265,6 +308,9 @@ class RecordingAuditClient(FakeClient):
             boundary_id=boundary_id,
             request_id=request_id,
             agent_id=agent_id,
+            reason_code=reason_code,
+            enforcing_principal=enforcing_principal,
+            subject_token_verified=subject_token_verified,
         )
 
 
@@ -348,6 +394,7 @@ def test_diagnostic_mode_returns_scope_fields() -> None:
     assert listed_grant["scopes"] == ["send:email/*"]
     assert event["scope_attempted"] == "send:email/external"
     assert event["scope_matched"] is None
+    assert event["token_id"] == "vtk_secret_detail"
     assert request["requested_scopes"] == ["write:repo/feature/*"]
     assert rule["allowed_scopes"] == ["write:repo/feature/*"]
 
@@ -372,10 +419,16 @@ def test_audit_tools_use_safe_fields_by_default() -> None:
         "runtime": None,
         "boundary_type": None,
         "created_at": "2026-06-11T12:00:00+00:00",
+        "enforcing_principal": "pep_git_host",
+        "reason_code": "agent_grant_mismatch",
+        "occurrence_count": 3,
+        "first_seen_at": "2026-06-11T11:58:00+00:00",
+        "last_seen_at": "2026-06-11T12:00:00+00:00",
         "subject_token_verified": True,
     }
     assert "scope_attempted" not in event
     assert "scope_matched" not in event
+    assert "token_id" not in event
     assert "event_json" not in event
     assert "raw_command" not in event
     assert "key_hash" not in event
@@ -409,6 +462,9 @@ def test_list_audit_events_passes_agent_id_filter() -> None:
             boundary_id: str | None = None,
             request_id: str | None = None,
             agent_id: str | None = None,
+            reason_code: str | None = None,
+            enforcing_principal: str | None = None,
+            subject_token_verified: bool | None = None,
         ) -> dict[str, Any]:
             self.seen_agent_id = agent_id
             return super().list_audit_events(
@@ -418,6 +474,9 @@ def test_list_audit_events_passes_agent_id_filter() -> None:
                 boundary_id=boundary_id,
                 request_id=request_id,
                 agent_id=agent_id,
+                reason_code=reason_code,
+                enforcing_principal=enforcing_principal,
+                subject_token_verified=subject_token_verified,
             )
 
     client = RecordingClient()
@@ -426,6 +485,48 @@ def test_list_audit_events_passes_agent_id_filter() -> None:
     tools.list_audit_events(agent_id="agent_release")
 
     assert client.seen_agent_id == "agent_release"
+
+
+def test_list_audit_events_passes_security_filters() -> None:
+    class RecordingClient(FakeClient):
+        def __init__(self) -> None:
+            self.seen: tuple[str | None, str | None, bool | None] | None = None
+
+        def list_audit_events(
+            self,
+            *,
+            limit: int = 20,
+            event_type: str | None = None,
+            grant_ref: str | None = None,
+            boundary_id: str | None = None,
+            request_id: str | None = None,
+            agent_id: str | None = None,
+            reason_code: str | None = None,
+            enforcing_principal: str | None = None,
+            subject_token_verified: bool | None = None,
+        ) -> dict[str, Any]:
+            self.seen = (reason_code, enforcing_principal, subject_token_verified)
+            return super().list_audit_events(
+                limit=limit,
+                event_type=event_type,
+                grant_ref=grant_ref,
+                boundary_id=boundary_id,
+                request_id=request_id,
+                agent_id=agent_id,
+                reason_code=reason_code,
+                enforcing_principal=enforcing_principal,
+                subject_token_verified=subject_token_verified,
+            )
+
+    client = RecordingClient()
+
+    VinctorReadOnlyTools(client).list_audit_events(
+        reason_code="agent_key_invalid",
+        enforcing_principal="pep_git_host",
+        subject_token_verified=False,
+    )
+
+    assert client.seen == ("agent_key_invalid", "pep_git_host", False)
 
 
 def test_explain_denial_uses_safe_fields_by_default() -> None:
@@ -509,6 +610,9 @@ class ReportClient(FakeClient):
         boundary_id: str | None = None,
         request_id: str | None = None,
         agent_id: str | None = None,
+        reason_code: str | None = None,
+        enforcing_principal: str | None = None,
+        subject_token_verified: bool | None = None,
     ) -> dict[str, Any]:
         self.audit_calls.append(
             {
@@ -518,6 +622,9 @@ class ReportClient(FakeClient):
                 "boundary_id": boundary_id,
                 "request_id": request_id,
                 "agent_id": agent_id,
+                "reason_code": reason_code,
+                "enforcing_principal": enforcing_principal,
+                "subject_token_verified": subject_token_verified,
             }
         )
 
@@ -659,6 +766,7 @@ def test_report_tools_registered_as_read_tools_when_write_disabled() -> None:
 
     assert "vinctor_grant_report" in mcp.tools
     assert "vinctor_boundary_report" in mcp.tools
+    assert "vinctor_grant_request_report" in mcp.tools
 
 
 def test_grant_request_tools_return_allowlisted_fields() -> None:
@@ -673,6 +781,7 @@ def test_grant_request_tools_return_allowlisted_fields() -> None:
         "requester_agent_id": "agent_release",
         "target_agent_id": "agent_release",
         "requested_ttl_seconds": 300,
+        "reason": "operator-visible raw free text",
         "status": "pending",
         "created_at": "2026-06-11T12:00:00+00:00",
         "decided_at": None,
@@ -686,13 +795,58 @@ def test_grant_request_tools_return_allowlisted_fields() -> None:
     }
     assert tools.get_grant_request("grq_other")["request_id"] == "grq_other"
     assert "requested_scopes" not in request
-    assert "reason" not in request
     assert "task_id" not in request
     assert "session_id" not in request
     assert "repo" not in request
     assert "worktree" not in request
     assert "decided_by" not in request
     assert "raw_tool_input" not in request
+
+
+def test_list_grant_requests_filters_status_locally() -> None:
+    class MixedStatusClient(FakeClient):
+        def list_grant_requests(self) -> dict[str, Any]:
+            pending = super().list_grant_requests()["grant_requests"][0]
+            return {
+                "grant_requests": [
+                    pending,
+                    {**pending, "request_id": "grq_approved", "status": "approved"},
+                ]
+            }
+
+    listed = VinctorReadOnlyTools(MixedStatusClient()).list_grant_requests(
+        status="approved"
+    )
+
+    assert [request["request_id"] for request in listed["grant_requests"]] == [
+        "grq_approved"
+    ]
+
+
+def test_grant_request_report_correlates_request_and_issued_grant_audit() -> None:
+    class GrantRequestReportClient(ReportClient):
+        def get_grant_request(self, request_id: str) -> dict[str, Any]:
+            request = super().get_grant_request(request_id)
+            request["issued_grant_ref"] = "grt_issued"
+            return request
+
+    client = GrantRequestReportClient()
+
+    report = VinctorReadOnlyTools(client).grant_request_report("grq_main")
+
+    assert report["grant_request"]["request_id"] == "grq_main"
+    assert report["grant"]["grant_ref"] == "grt_issued"
+    assert [event["event_id"] for event in report["timeline"]] == [
+        "evt_issued",
+        "evt_permit",
+        "evt_deny",
+        "evt_reject",
+        "evt_revoked",
+    ]
+    assert [call["request_id"] for call in client.audit_calls] == ["grq_main", None]
+    assert [call["grant_ref"] for call in client.audit_calls] == [None, "grt_issued"]
+    for forbidden in ("wsk_", "raw_tool_input", "key_hash", "event_json"):
+        assert forbidden not in json.dumps(report)
 
 
 def test_auto_approval_rule_tool_returns_allowlisted_fields() -> None:
@@ -708,14 +862,34 @@ def test_auto_approval_rule_tool_returns_allowlisted_fields() -> None:
         "target_agent_id": "agent_release",
         "max_ttl_seconds": 3600,
         "status": "active",
+        "created_by": "workspace:ws_main",
         "created_at": "2026-06-11T12:00:00+00:00",
+        "updated_by": "workspace:ws_main",
         "updated_at": None,
     }
     assert "allowed_scopes" not in rule
-    assert "created_by" not in rule
-    assert "updated_by" not in rule
     assert "raw_command" not in rule
     assert "key_hash" not in rule
+
+
+def test_service_auth_failures_use_audit_allowlist_and_limit_cap() -> None:
+    tools = VinctorReadOnlyTools(FakeClient())
+
+    event = tools.list_service_auth_failures(limit=500)["auth_failures"][0]
+
+    assert event == {
+        "event_id": "evt_auth",
+        "event_type": "auth_failed",
+        "event_class": "security",
+        "reason_code": "auth_failed",
+        "occurrence_count": 4,
+        "first_seen_at": "2026-06-11T11:55:00+00:00",
+        "last_seen_at": "2026-06-11T12:00:00+00:00",
+        "subject_token_verified": False,
+        "created_at": "2026-06-11T12:00:00+00:00",
+    }
+    assert "token_id" not in event
+    assert "raw_key" not in event
 
 
 class NestedLeakClient(FakeClient):
@@ -836,11 +1010,13 @@ def test_registers_only_read_only_mvp_tools() -> None:
         "vinctor_get_grant",
         "vinctor_get_grant_request",
         "vinctor_grant_report",
+        "vinctor_grant_request_report",
         "vinctor_list_audit_events",
         "vinctor_list_auto_approval_rules",
         "vinctor_list_boundaries",
         "vinctor_list_grant_requests",
         "vinctor_list_grants",
+        "vinctor_list_service_auth_failures",
         "vinctor_status",
     ]
     assert not any("approve" in name for name in mcp.tools)
@@ -865,9 +1041,15 @@ class FakeDecisionClient(FakeClient):
 
     def __init__(self) -> None:
         self.approved: list[tuple[str, str | None]] = []
+        self.auto_approved: list[str] = []
         self.rejected: list[tuple[str, str | None]] = []
         self.revoked: list[str] = []
         self.issued: list[tuple[str, list[str], int]] = []
+        self.created_boundaries: list[tuple[str, str, str, str]] = []
+        self.enabled_boundaries: list[str] = []
+        self.disabled_boundaries: list[str] = []
+        self.created_rules: list[tuple[str, str, list[str], int]] = []
+        self.disabled_rules: list[str] = []
 
     def _decision_response(self, request_id: str, status: str) -> dict[str, Any]:
         return {
@@ -922,6 +1104,17 @@ class FakeDecisionClient(FakeClient):
         self.rejected.append((request_id, reason))
         return self._decision_response(request_id, "rejected")
 
+    def auto_approve_grant_request(self, request_id: str) -> dict[str, Any]:
+        self.auto_approved.append(request_id)
+        body = self._decision_response(request_id, "approved")
+        body["auto_approval"] = {
+            "decision": "approved",
+            "reason": "matched",
+            "rule_id": "apr_main",
+            "raw_key": "wsk_hidden",
+        }
+        return body
+
     def revoke_grant(self, grant_ref: str) -> dict[str, Any]:
         self.revoked.append(grant_ref)
         return {
@@ -954,6 +1147,81 @@ class FakeDecisionClient(FakeClient):
             "raw_key": "wsk_secret",
             "key_hash": "hash_secret",
             "raw_tool_input": {"secret": "hidden"},
+        }
+
+    def create_boundary(
+        self,
+        *,
+        name: str,
+        runtime: str,
+        boundary_type: str,
+        mode: str,
+    ) -> dict[str, Any]:
+        self.created_boundaries.append((name, runtime, boundary_type, mode))
+        return {
+            "boundary_id": "bnd_created",
+            "name": name,
+            "runtime": runtime,
+            "boundary_type": boundary_type,
+            "mode": mode,
+            "status": "active",
+            "raw_key": "wsk_hidden",
+        }
+
+    def enable_boundary(self, boundary_id: str) -> dict[str, Any]:
+        self.enabled_boundaries.append(boundary_id)
+        return {**self.create_boundary(
+            name="codex-local",
+            runtime="codex",
+            boundary_type="pretooluse",
+            mode="fail_closed",
+        ), "boundary_id": boundary_id}
+
+    def disable_boundary(self, boundary_id: str) -> dict[str, Any]:
+        self.disabled_boundaries.append(boundary_id)
+        return {
+            **self.enable_boundary(boundary_id),
+            "status": "disabled",
+        }
+
+    def create_auto_approval_rule(
+        self,
+        *,
+        name: str,
+        target_agent_id: str,
+        allowed_scopes: list[str],
+        max_ttl_seconds: int,
+    ) -> dict[str, Any]:
+        self.created_rules.append(
+            (name, target_agent_id, list(allowed_scopes), max_ttl_seconds)
+        )
+        return {
+            "rule_id": "apr_created",
+            "workspace_id": "ws_main",
+            "name": name,
+            "target_agent_id": target_agent_id,
+            "allowed_scopes": list(allowed_scopes),
+            "max_ttl_seconds": max_ttl_seconds,
+            "status": "active",
+            "created_by": "workspace:ws_main",
+            "created_at": "2026-06-11T12:00:00+00:00",
+            "updated_by": None,
+            "updated_at": None,
+            "key_hash": "hidden",
+        }
+
+    def disable_auto_approval_rule(self, rule_id: str) -> dict[str, Any]:
+        self.disabled_rules.append(rule_id)
+        return {
+            **self.create_auto_approval_rule(
+                name="CI",
+                target_agent_id="agent_ci",
+                allowed_scopes=["execute:ci/*"],
+                max_ttl_seconds=900,
+            ),
+            "rule_id": rule_id,
+            "status": "disabled",
+            "updated_by": "workspace:ws_main",
         }
 
 
@@ -1001,6 +1269,60 @@ def test_reject_grant_request_proxies_client_and_returns_allowlisted_fields() ->
     assert client.rejected == [("grq_x", "out of policy")]
     assert result["status"] == "rejected"
     assert result["audit_event_id"] == "evt_decision"
+
+
+def test_auto_approve_grant_request_returns_allowlisted_evaluation() -> None:
+    client = FakeDecisionClient()
+
+    result = VinctorWriteTools(client).auto_approve_grant_request("grq_x")
+
+    assert client.auto_approved == ["grq_x"]
+    assert result["status"] == "approved"
+    assert result["auto_approval"] == {
+        "decision": "approved",
+        "reason": "matched",
+        "rule_id": "apr_main",
+    }
+    assert "raw_key" not in json.dumps(result)
+
+
+def test_boundary_write_tools_proxy_and_allowlist_outputs() -> None:
+    client = FakeDecisionClient()
+    tools = VinctorWriteTools(client)
+
+    created = tools.create_boundary(
+        "codex-local", "codex", "pretooluse", "fail_closed"
+    )
+    enabled = tools.enable_boundary("bnd_x")
+    disabled = tools.disable_boundary("bnd_x")
+
+    assert client.created_boundaries[0] == (
+        "codex-local",
+        "codex",
+        "pretooluse",
+        "fail_closed",
+    )
+    assert enabled["boundary_id"] == "bnd_x"
+    assert disabled["status"] == "disabled"
+    assert "raw_key" not in json.dumps([created, enabled, disabled])
+
+
+def test_auto_approval_rule_write_tools_proxy_and_follow_output_mode() -> None:
+    client = FakeDecisionClient()
+    safe_tools = VinctorWriteTools(client)
+    diagnostic_tools = VinctorWriteTools(client, output_mode="diagnostic")
+
+    created = safe_tools.create_auto_approval_rule(
+        "CI", "agent_ci", ["execute:ci/*"], 900
+    )
+    disabled = diagnostic_tools.disable_auto_approval_rule("apr_x")
+
+    assert client.created_rules[0] == ("CI", "agent_ci", ["execute:ci/*"], 900)
+    assert created["created_by"] == "workspace:ws_main"
+    assert "allowed_scopes" not in created
+    assert disabled["status"] == "disabled"
+    assert disabled["allowed_scopes"] == ["execute:ci/*"]
+    assert "key_hash" not in json.dumps([created, disabled])
 
 
 def test_revoke_grant_proxies_client_and_returns_allowlisted_fields() -> None:
@@ -1115,13 +1437,19 @@ def test_decision_omits_grant_when_service_returns_none() -> None:
     assert "grant" not in result
 
 
-def test_register_write_tools_adds_approve_and_reject() -> None:
+def test_register_write_tools_adds_operator_mutations() -> None:
     mcp = FakeMcp()
 
     register_write_tools(mcp, FakeDecisionClient())
 
     assert sorted(mcp.tools) == [
         "vinctor_approve_grant_request",
+        "vinctor_auto_approve_grant_request",
+        "vinctor_create_auto_approval_rule",
+        "vinctor_create_boundary",
+        "vinctor_disable_auto_approval_rule",
+        "vinctor_disable_boundary",
+        "vinctor_enable_boundary",
         "vinctor_issue_grant",
         "vinctor_reject_grant_request",
         "vinctor_revoke_grant",

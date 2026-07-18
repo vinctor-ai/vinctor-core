@@ -11,6 +11,7 @@ from vinctor_mcp_server.output_policy import OutputMode
 class VinctorMcpConfig:
     endpoint: str
     workspace_key: str
+    service_operator_key: str | None = None
     timeout: int = 5
     output_mode: OutputMode = "safe"
     write_enabled: bool = False
@@ -20,6 +21,7 @@ def load_config(env: Mapping[str, str] | None = None) -> VinctorMcpConfig:
     values = env or os.environ
     endpoint = values.get("VINCTOR_MCP_ENDPOINT")
     workspace_key = values.get("VINCTOR_MCP_WORKSPACE_KEY")
+    service_operator_key = values.get("VINCTOR_MCP_SERVICE_OPERATOR_KEY") or None
     if endpoint is None or endpoint == "":
         raise ValueError("VINCTOR_MCP_ENDPOINT is required")
     if workspace_key is None or workspace_key == "":
@@ -27,6 +29,7 @@ def load_config(env: Mapping[str, str] | None = None) -> VinctorMcpConfig:
     return VinctorMcpConfig(
         endpoint=endpoint,
         workspace_key=workspace_key,
+        service_operator_key=service_operator_key,
         timeout=_parse_timeout(values.get("VINCTOR_MCP_TIMEOUT", "5")),
         output_mode=_parse_output_mode(values.get("VINCTOR_MCP_OUTPUT_MODE", "safe")),
         write_enabled=_parse_truthy(values.get("VINCTOR_MCP_WRITE", "")),

@@ -57,11 +57,14 @@ class FakeConnection:
 
 def make_client(
     response: FakeResponse,
+    *,
+    service_operator_key: str | None = None,
 ) -> tuple[VinctorServiceClient, FakeConnection]:
     conn = FakeConnection([response])
     client = VinctorServiceClient(
         endpoint="http://127.0.0.1:8765",
         workspace_key="wsk_demo",
+        service_operator_key=service_operator_key,
         connection_factory=lambda host, port, timeout: conn,
     )
     return client, conn
@@ -120,6 +123,9 @@ def test_client_lists_audit_events_with_read_only_filters() -> None:
         event_type="action_denied",
         request_id="grq_demo",
         agent_id="agent_release",
+        reason_code="agent_key_invalid",
+        enforcing_principal="pep_git_host",
+        subject_token_verified=False,
     )
 
     assert body == {"audit_events": []}
@@ -131,9 +137,38 @@ def test_client_lists_audit_events_with_read_only_filters() -> None:
     assert parse_qs(parsed.query) == {
         "agent_id": ["agent_release"],
         "event_type": ["action_denied"],
+        "enforcing_principal": ["pep_git_host"],
+        "subject_token_verified": ["false"],
         "limit": ["5"],
+        "reason_code": ["agent_key_invalid"],
         "request_id": ["grq_demo"],
     }
+
+
+def test_client_reads_service_auth_failures_with_dedicated_key() -> None:
+    client, conn = make_client(
+        FakeResponse(200, {"auth_failures": []}),
+        service_operator_key="sok_demo",
+    )
+
+    body = client.list_service_auth_failures(limit=17)
+
+    assert body == {"auth_failures": []}
+    assert conn.requests[0] == {
+        "method": "GET",
+        "path": "/v1/service/audit/auth-failures?limit=17",
+        "body": None,
+        "headers": {"X-Service-Operator-Key": "sok_demo"},
+    }
+
+
+def test_client_does_not_substitute_workspace_key_for_service_operator_key() -> None:
+    client, conn = make_client(FakeResponse(401, {"error": "authentication_required"}))
+
+    with pytest.raises(VinctorServiceClientError):
+        client.list_service_auth_failures()
+
+    assert conn.requests[0]["headers"] == {}
 
 
 def test_client_reads_grant_requests_with_workspace_key() -> None:
@@ -145,6 +180,22 @@ def test_client_reads_grant_requests_with_workspace_key() -> None:
     assert conn.requests[0] == {
         "method": "GET",
         "path": "/v1/grant-requests",
+        "body": None,
+        "headers": {"X-Workspace-Key": "wsk_demo"},
+    }
+
+
+def test_client_auto_approves_grant_request_without_body() -> None:
+    client, conn = make_client(
+        FakeResponse(200, {"request_id": "grq_x", "status": "approved"})
+    )
+
+    body = client.auto_approve_grant_request("grq_x")
+
+    assert body == {"request_id": "grq_x", "status": "approved"}
+    assert conn.requests[0] == {
+        "method": "POST",
+        "path": "/v1/grant-requests/grq_x/auto-approve",
         "body": None,
         "headers": {"X-Workspace-Key": "wsk_demo"},
     }
@@ -193,6 +244,78 @@ def test_client_reads_auto_approval_rules_with_workspace_key() -> None:
         "body": None,
         "headers": {"X-Workspace-Key": "wsk_demo"},
     }
+
+
+def test_client_creates_and_toggles_boundaries() -> None:
+    conn = FakeConnection(
+        [
+            FakeResponse(201, {"boundary_id": "bnd_x", "status": "active"}),
+            FakeResponse(200, {"boundary_id": "bnd_x", "status": "disabled"}),
+            FakeResponse(200, {"boundary_id": "bnd_x", "status": "active"}),
+        ]
+    )
+    client = VinctorServiceClient(
+        endpoint="http://127.0.0.1:8765",
+        workspace_key="wsk_demo",
+        connection_factory=lambda host, port, timeout: conn,
+    )
+
+    client.create_boundary(
+        name="codex-local",
+        runtime="codex",
+        boundary_type="pretooluse",
+        mode="fail_closed",
+    )
+    client.disable_boundary("bnd_x")
+    client.enable_boundary("bnd_x")
+
+    assert [request["path"] for request in conn.requests] == [
+        "/v1/boundaries",
+        "/v1/boundaries/bnd_x/disable",
+        "/v1/boundaries/bnd_x/enable",
+    ]
+    assert json.loads(conn.requests[0]["body"]) == {
+        "name": "codex-local",
+        "runtime": "codex",
+        "boundary_type": "pretooluse",
+        "mode": "fail_closed",
+    }
+    assert conn.requests[1]["body"] is None
+    assert conn.requests[2]["body"] is None
+
+
+def test_client_creates_and_disables_auto_approval_rules() -> None:
+    conn = FakeConnection(
+        [
+            FakeResponse(201, {"rule_id": "apr_x", "status": "active"}),
+            FakeResponse(200, {"rule_id": "apr_x", "status": "disabled"}),
+        ]
+    )
+    client = VinctorServiceClient(
+        endpoint="http://127.0.0.1:8765",
+        workspace_key="wsk_demo",
+        connection_factory=lambda host, port, timeout: conn,
+    )
+
+    client.create_auto_approval_rule(
+        name="CI",
+        target_agent_id="agent_ci",
+        allowed_scopes=["execute:ci/*"],
+        max_ttl_seconds=900,
+    )
+    client.disable_auto_approval_rule("apr_x")
+
+    assert [request["path"] for request in conn.requests] == [
+        "/v1/auto-approval-rules",
+        "/v1/auto-approval-rules/apr_x/disable",
+    ]
+    assert json.loads(conn.requests[0]["body"]) == {
+        "name": "CI",
+        "target_agent_id": "agent_ci",
+        "allowed_scopes": ["execute:ci/*"],
+        "max_ttl_seconds": 900,
+    }
+    assert conn.requests[1]["body"] is None
 
 
 def test_client_approves_grant_request_with_decision_reason() -> None:

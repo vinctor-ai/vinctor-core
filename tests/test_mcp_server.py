@@ -57,6 +57,9 @@ class FakeClient:
     def list_auto_approval_rules(self) -> dict[str, object]:
         return {"auto_approval_rules": []}
 
+    def list_service_auth_failures(self, *, limit: int = 20) -> dict[str, object]:
+        return {"auth_failures": []}
+
     def approve_grant_request(
         self,
         request_id: str,
@@ -73,8 +76,45 @@ class FakeClient:
     ) -> dict[str, object]:
         return {"request_id": request_id, "status": "rejected"}
 
+    def auto_approve_grant_request(self, request_id: str) -> dict[str, object]:
+        return {"request_id": request_id, "status": "approved"}
+
     def revoke_grant(self, grant_ref: str) -> dict[str, object]:
         return {"grant_ref": grant_ref, "status": "revoked"}
+
+    def issue_grant(
+        self, *, agent_id: str, scopes: list[str], ttl_seconds: int
+    ) -> dict[str, object]:
+        return {"agent_id": agent_id, "status": "active"}
+
+    def create_boundary(
+        self,
+        *,
+        name: str,
+        runtime: str,
+        boundary_type: str,
+        mode: str,
+    ) -> dict[str, object]:
+        return {"boundary_id": "bnd_x", "status": "active"}
+
+    def enable_boundary(self, boundary_id: str) -> dict[str, object]:
+        return {"boundary_id": boundary_id, "status": "active"}
+
+    def disable_boundary(self, boundary_id: str) -> dict[str, object]:
+        return {"boundary_id": boundary_id, "status": "disabled"}
+
+    def create_auto_approval_rule(
+        self,
+        *,
+        name: str,
+        target_agent_id: str,
+        allowed_scopes: list[str],
+        max_ttl_seconds: int,
+    ) -> dict[str, object]:
+        return {"rule_id": "apr_x", "status": "active"}
+
+    def disable_auto_approval_rule(self, rule_id: str) -> dict[str, object]:
+        return {"rule_id": rule_id, "status": "disabled"}
 
 
 def test_load_config_requires_mcp_workspace_key_not_agent_key() -> None:
@@ -94,12 +134,14 @@ def test_load_config_reads_explicit_mcp_environment() -> None:
             "VINCTOR_MCP_WORKSPACE_KEY": "wsk_operator",
             "VINCTOR_MCP_TIMEOUT": "9",
             "VINCTOR_MCP_OUTPUT_MODE": "diagnostic",
+            "VINCTOR_MCP_SERVICE_OPERATOR_KEY": "sok_operator",
         }
     )
 
     assert config == VinctorMcpConfig(
         endpoint="http://127.0.0.1:8765",
         workspace_key="wsk_operator",
+        service_operator_key="sok_operator",
         timeout=9,
         output_mode="diagnostic",
     )
@@ -114,6 +156,7 @@ def test_load_config_write_disabled_by_default() -> None:
     )
 
     assert config.write_enabled is False
+    assert config.service_operator_key is None
 
 
 def test_load_config_enables_write_for_truthy_values() -> None:
@@ -173,11 +216,13 @@ def test_create_stdio_server_registers_read_only_tools_with_fastmcp() -> None:
         "vinctor_get_grant",
         "vinctor_get_grant_request",
         "vinctor_grant_report",
+        "vinctor_grant_request_report",
         "vinctor_list_audit_events",
         "vinctor_list_auto_approval_rules",
         "vinctor_list_boundaries",
         "vinctor_list_grant_requests",
         "vinctor_list_grants",
+        "vinctor_list_service_auth_failures",
         "vinctor_status",
     ]
 
@@ -196,6 +241,17 @@ def test_create_stdio_server_omits_write_tools_when_write_disabled() -> None:
     assert "vinctor_reject_grant_request" not in server.tools
     assert "vinctor_revoke_grant" not in server.tools
     assert "vinctor_issue_grant" not in server.tools
+    assert "vinctor_auto_approve_grant_request" not in server.tools
+    assert "vinctor_create_boundary" not in server.tools
+    assert "vinctor_create_auto_approval_rule" not in server.tools
+    assert {
+        "vinctor_auto_approve_grant_request",
+        "vinctor_create_boundary",
+        "vinctor_enable_boundary",
+        "vinctor_disable_boundary",
+        "vinctor_create_auto_approval_rule",
+        "vinctor_disable_auto_approval_rule",
+    }.isdisjoint(server.tools)
     assert not any("approve" in name for name in server.tools)
     assert not any("reject" in name for name in server.tools)
     assert not any("revoke" in name for name in server.tools)
@@ -217,6 +273,12 @@ def test_create_stdio_server_registers_write_tools_when_write_enabled() -> None:
     assert "vinctor_reject_grant_request" in server.tools
     assert "vinctor_revoke_grant" in server.tools
     assert "vinctor_issue_grant" in server.tools
+    assert "vinctor_auto_approve_grant_request" in server.tools
+    assert "vinctor_create_boundary" in server.tools
+    assert "vinctor_enable_boundary" in server.tools
+    assert "vinctor_disable_boundary" in server.tools
+    assert "vinctor_create_auto_approval_rule" in server.tools
+    assert "vinctor_disable_auto_approval_rule" in server.tools
 
 
 def test_server_module_entrypoint_invokes_main() -> None:

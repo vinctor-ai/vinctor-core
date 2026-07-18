@@ -26,6 +26,7 @@ def create_stdio_server(
     resolved_client = client or VinctorServiceClient(
         endpoint=resolved_config.endpoint,
         workspace_key=resolved_config.workspace_key,
+        service_operator_key=resolved_config.service_operator_key,
         timeout=resolved_config.timeout,
     )
     server_cls = fastmcp_cls or _load_fastmcp()

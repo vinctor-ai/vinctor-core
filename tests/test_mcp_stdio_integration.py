@@ -50,11 +50,13 @@ EXPECTED_TOOLS = [
     "vinctor_get_grant",
     "vinctor_get_grant_request",
     "vinctor_grant_report",
+    "vinctor_grant_request_report",
     "vinctor_list_audit_events",
     "vinctor_list_auto_approval_rules",
     "vinctor_list_boundaries",
     "vinctor_list_grant_requests",
     "vinctor_list_grants",
+    "vinctor_list_service_auth_failures",
     "vinctor_status",
 ]
 

@@ -7,6 +7,7 @@ from vinctor_core.scope import match_scope
 from vinctor_mcp_server.output_policy import (
     AUDIT_EVENT_DIAGNOSTIC_FIELDS,
     AUDIT_EVENT_SAFE_FIELDS,
+    AUTO_APPROVAL_EVALUATION_FIELDS,
     AUTO_APPROVAL_RULE_DIAGNOSTIC_FIELDS,
     AUTO_APPROVAL_RULE_SAFE_FIELDS,
     BOUNDARY_FIELDS,
@@ -48,6 +49,9 @@ class ReadOnlyVinctorClient(Protocol):
         boundary_id: str | None = None,
         request_id: str | None = None,
         agent_id: str | None = None,
+        reason_code: str | None = None,
+        enforcing_principal: str | None = None,
+        subject_token_verified: bool | None = None,
     ) -> dict[str, Any]: ...
 
     def get_audit_event(self, event_id: str) -> dict[str, Any]: ...
@@ -57,6 +61,8 @@ class ReadOnlyVinctorClient(Protocol):
     def get_grant_request(self, request_id: str) -> dict[str, Any]: ...
 
     def list_auto_approval_rules(self) -> dict[str, Any]: ...
+
+    def list_service_auth_failures(self, *, limit: int = 20) -> dict[str, Any]: ...
 
 
 class WriteVinctorClient(Protocol):
@@ -74,11 +80,37 @@ class WriteVinctorClient(Protocol):
         reason: str | None = None,
     ) -> dict[str, Any]: ...
 
+    def auto_approve_grant_request(self, request_id: str) -> dict[str, Any]: ...
+
     def revoke_grant(self, grant_ref: str) -> dict[str, Any]: ...
 
     def issue_grant(
         self, *, agent_id: str, scopes: list[str], ttl_seconds: int
     ) -> dict[str, Any]: ...
+
+    def create_boundary(
+        self,
+        *,
+        name: str,
+        runtime: str,
+        boundary_type: str,
+        mode: str,
+    ) -> dict[str, Any]: ...
+
+    def enable_boundary(self, boundary_id: str) -> dict[str, Any]: ...
+
+    def disable_boundary(self, boundary_id: str) -> dict[str, Any]: ...
+
+    def create_auto_approval_rule(
+        self,
+        *,
+        name: str,
+        target_agent_id: str,
+        allowed_scopes: list[str],
+        max_ttl_seconds: int,
+    ) -> dict[str, Any]: ...
+
+    def disable_auto_approval_rule(self, rule_id: str) -> dict[str, Any]: ...
 
 
 class ToolRegistrar(Protocol):
@@ -142,6 +174,9 @@ class VinctorReadOnlyTools:
         boundary_id: str | None = None,
         request_id: str | None = None,
         agent_id: str | None = None,
+        reason_code: str | None = None,
+        enforcing_principal: str | None = None,
+        subject_token_verified: bool | None = None,
     ) -> dict[str, Any]:
         body = self._client.list_audit_events(
             limit=_clamp_audit_limit(limit),
@@ -150,6 +185,9 @@ class VinctorReadOnlyTools:
             boundary_id=boundary_id,
             request_id=request_id,
             agent_id=agent_id,
+            reason_code=reason_code,
+            enforcing_principal=enforcing_principal,
+            subject_token_verified=subject_token_verified,
         )
         events = body.get("audit_events", [])
         if not isinstance(events, list):
@@ -165,11 +203,17 @@ class VinctorReadOnlyTools:
     def get_audit_event(self, event_id: str) -> dict[str, Any]:
         return allowlist_object(self._client.get_audit_event(event_id), self._audit_fields())
 
-    def list_grant_requests(self) -> dict[str, Any]:
+    def list_grant_requests(self, status: str | None = None) -> dict[str, Any]:
         body = self._client.list_grant_requests()
         requests = body.get("grant_requests", [])
         if not isinstance(requests, list):
             requests = []
+        if status is not None:
+            requests = [
+                request
+                for request in requests
+                if isinstance(request, dict) and request.get("status") == status
+            ]
         return {
             "grant_requests": [
                 allowlist_object(request, self._grant_request_fields())
@@ -194,6 +238,21 @@ class VinctorReadOnlyTools:
                 allowlist_object(rule, self._auto_approval_rule_fields())
                 for rule in rules
                 if isinstance(rule, dict)
+            ]
+        }
+
+    def list_service_auth_failures(self, limit: int = 20) -> dict[str, Any]:
+        body = self._client.list_service_auth_failures(
+            limit=_clamp_auth_failure_limit(limit)
+        )
+        events = body.get("auth_failures", [])
+        if not isinstance(events, list):
+            events = []
+        return {
+            "auth_failures": [
+                allowlist_object(event, self._audit_fields())
+                for event in events
+                if isinstance(event, dict)
             ]
         }
 
@@ -241,6 +300,22 @@ class VinctorReadOnlyTools:
             "activity": {"permit": permit, "deny": deny},
             "recent": events,
         }
+
+    def grant_request_report(self, request_id: str) -> dict[str, Any]:
+        request = self.get_grant_request(request_id)
+        timeline = self.list_audit_events(request_id=request_id)["audit_events"]
+        report: dict[str, Any] = {
+            "grant_request": request,
+            "timeline": timeline,
+        }
+        grant_ref = request.get("issued_grant_ref")
+        if isinstance(grant_ref, str) and grant_ref:
+            report["grant"] = self.get_grant(grant_ref)
+            grant_events = self.list_audit_events(grant_ref=grant_ref)["audit_events"]
+            report["timeline"] = _deduplicate_audit_events(
+                [*timeline, *grant_events]
+            )
+        return report
 
     def _would_be_allowed_by(self, event: dict[str, Any]) -> list[str]:
         if self._output_mode != "diagnostic":
@@ -355,8 +430,9 @@ def register_read_only_tools(
     mcp.tool(
         name="vinctor_list_grant_requests",
         description=(
-            "Read-only workspace grant request queue lookup. Does not approve, "
-            "reject, auto-approve, issue, or revoke grants."
+            "Read-only workspace grant request queue lookup with an optional "
+            "status filter. Does not approve, reject, auto-approve, issue, or "
+            "revoke grants."
         ),
     )(tools.list_grant_requests)
     mcp.tool(
@@ -372,6 +448,14 @@ def register_read_only_tools(
             "or evaluate rules."
         ),
     )(tools.list_auto_approval_rules)
+    mcp.tool(
+        name="vinctor_list_service_auth_failures",
+        description=(
+            "Read-only global authentication-failure audit lookup using the "
+            "dedicated service-operator credential. Uses a 1..200 cap on limit; "
+            "output is allowlist-shaped and omits credentials and raw payloads."
+        ),
+    )(tools.list_service_auth_failures)
     mcp.tool(
         name="vinctor_explain_denial",
         description=(
@@ -396,6 +480,15 @@ def register_read_only_tools(
             "is allowlist-shaped and omits raw keys, hashes, and service internals."
         ),
     )(tools.boundary_report)
+    mcp.tool(
+        name="vinctor_grant_request_report",
+        description=(
+            "Inspect a grant request and its correlated audit timeline, including "
+            "the issued grant and grant audit events when present. Read-only; "
+            "output is allowlist-shaped and omits raw keys, hashes, and service "
+            "internals."
+        ),
+    )(tools.grant_request_report)
     return tools
 
 
@@ -427,6 +520,17 @@ class VinctorWriteTools:
             self._client.reject_grant_request(request_id, reason=reason)
         )
 
+    def auto_approve_grant_request(self, request_id: str) -> dict[str, Any]:
+        body = self._client.auto_approve_grant_request(request_id)
+        shaped = self._shape_decision(body)
+        evaluation = body.get("auto_approval")
+        if isinstance(evaluation, dict):
+            shaped["auto_approval"] = allowlist_object(
+                evaluation,
+                AUTO_APPROVAL_EVALUATION_FIELDS,
+            )
+        return shaped
+
     def revoke_grant(self, grant_ref: str) -> dict[str, Any]:
         body = self._client.revoke_grant(grant_ref)
         return {
@@ -444,6 +548,58 @@ class VinctorWriteTools:
             **allowlist_object(body, self._grant_fields()),
             "audit_event_id": body.get("audit_event_id"),
         }
+
+    def create_boundary(
+        self,
+        name: str,
+        runtime: str,
+        boundary_type: str,
+        mode: str,
+    ) -> dict[str, Any]:
+        return allowlist_object(
+            self._client.create_boundary(
+                name=name,
+                runtime=runtime,
+                boundary_type=boundary_type,
+                mode=mode,
+            ),
+            BOUNDARY_FIELDS,
+        )
+
+    def enable_boundary(self, boundary_id: str) -> dict[str, Any]:
+        return allowlist_object(
+            self._client.enable_boundary(boundary_id),
+            BOUNDARY_FIELDS,
+        )
+
+    def disable_boundary(self, boundary_id: str) -> dict[str, Any]:
+        return allowlist_object(
+            self._client.disable_boundary(boundary_id),
+            BOUNDARY_FIELDS,
+        )
+
+    def create_auto_approval_rule(
+        self,
+        name: str,
+        target_agent_id: str,
+        allowed_scopes: list[str],
+        max_ttl_seconds: int,
+    ) -> dict[str, Any]:
+        return allowlist_object(
+            self._client.create_auto_approval_rule(
+                name=name,
+                target_agent_id=target_agent_id,
+                allowed_scopes=allowed_scopes,
+                max_ttl_seconds=max_ttl_seconds,
+            ),
+            self._auto_approval_rule_fields(),
+        )
+
+    def disable_auto_approval_rule(self, rule_id: str) -> dict[str, Any]:
+        return allowlist_object(
+            self._client.disable_auto_approval_rule(rule_id),
+            self._auto_approval_rule_fields(),
+        )
 
     def _shape_decision(self, body: dict[str, Any]) -> dict[str, Any]:
         shaped: dict[str, Any] = {
@@ -466,6 +622,13 @@ class VinctorWriteTools:
         return fields_for_mode(
             GRANT_SAFE_FIELDS,
             GRANT_DIAGNOSTIC_FIELDS,
+            self._output_mode,
+        )
+
+    def _auto_approval_rule_fields(self) -> tuple[str, ...]:
+        return fields_for_mode(
+            AUTO_APPROVAL_RULE_SAFE_FIELDS,
+            AUTO_APPROVAL_RULE_DIAGNOSTIC_FIELDS,
             self._output_mode,
         )
 
@@ -498,6 +661,15 @@ def register_write_tools(
         ),
     )(tools.reject_grant_request)
     mcp.tool(
+        name="vinctor_auto_approve_grant_request",
+        description=(
+            "Operator write action: evaluate and auto-approve a pending grant "
+            "request by request_id via active workspace rules. The service "
+            "authenticates, enforces rule and issuable-scope bounds, and audits "
+            "successful issuance. Output is allowlist-shaped."
+        ),
+    )(tools.auto_approve_grant_request)
+    mcp.tool(
         name="vinctor_revoke_grant",
         description=(
             "Operator write action: revoke an active grant by grant_ref via the "
@@ -518,6 +690,42 @@ def register_write_tools(
             "hashes, and service internals."
         ),
     )(tools.issue_grant)
+    mcp.tool(
+        name="vinctor_create_boundary",
+        description=(
+            "Operator write action: create a runtime boundary via the "
+            "workspace-key authorized endpoint. Output is allowlist-shaped."
+        ),
+    )(tools.create_boundary)
+    mcp.tool(
+        name="vinctor_enable_boundary",
+        description=(
+            "Operator write action: enable a boundary by boundary_id via the "
+            "workspace-key authorized endpoint. Output is allowlist-shaped."
+        ),
+    )(tools.enable_boundary)
+    mcp.tool(
+        name="vinctor_disable_boundary",
+        description=(
+            "Operator write action: disable a boundary by boundary_id via the "
+            "workspace-key authorized endpoint. Output is allowlist-shaped."
+        ),
+    )(tools.disable_boundary)
+    mcp.tool(
+        name="vinctor_create_auto_approval_rule",
+        description=(
+            "Operator write action: create an auto-approval rule via the "
+            "workspace-key authorized endpoint. Output is allowlist-shaped and "
+            "scope detail follows the configured output mode."
+        ),
+    )(tools.create_auto_approval_rule)
+    mcp.tool(
+        name="vinctor_disable_auto_approval_rule",
+        description=(
+            "Operator write action: disable an auto-approval rule by rule_id via "
+            "the workspace-key authorized endpoint. Output is allowlist-shaped."
+        ),
+    )(tools.disable_auto_approval_rule)
     return tools
 
 
@@ -574,3 +782,22 @@ def _active_unexpired_grant(grant: dict[str, Any]) -> bool:
 
 def _clamp_audit_limit(limit: int) -> int:
     return max(1, min(limit, 100))
+
+
+def _clamp_auth_failure_limit(limit: int) -> int:
+    return max(1, min(limit, 200))
+
+
+def _deduplicate_audit_events(
+    events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    deduplicated: list[dict[str, Any]] = []
+    seen_event_ids: set[str] = set()
+    for event in events:
+        event_id = event.get("event_id")
+        if isinstance(event_id, str):
+            if event_id in seen_event_ids:
+                continue
+            seen_event_ids.add(event_id)
+        deduplicated.append(event)
+    return deduplicated

@@ -34,6 +34,7 @@ class VinctorServiceClient:
         *,
         endpoint: str,
         workspace_key: str,
+        service_operator_key: str | None = None,
         timeout: int = 5,
         connection_factory: ConnectionFactory | None = None,
     ) -> None:
@@ -44,6 +45,7 @@ class VinctorServiceClient:
         self._host = parsed.hostname
         self._port = parsed.port or (443 if parsed.scheme == "https" else 80)
         self._workspace_key = workspace_key
+        self._service_operator_key = service_operator_key
         self._timeout = timeout
         self._connection_factory = connection_factory or self._default_connection
 
@@ -55,6 +57,37 @@ class VinctorServiceClient:
 
     def get_boundary(self, boundary_id: str) -> dict[str, Any]:
         return self._request_json("GET", f"/v1/boundaries/{_path_part(boundary_id)}")
+
+    def create_boundary(
+        self,
+        *,
+        name: str,
+        runtime: str,
+        boundary_type: str,
+        mode: str,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            "/v1/boundaries",
+            body={
+                "name": name,
+                "runtime": runtime,
+                "boundary_type": boundary_type,
+                "mode": mode,
+            },
+        )
+
+    def enable_boundary(self, boundary_id: str) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            f"/v1/boundaries/{_path_part(boundary_id)}/enable",
+        )
+
+    def disable_boundary(self, boundary_id: str) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            f"/v1/boundaries/{_path_part(boundary_id)}/disable",
+        )
 
     def get_grant(self, grant_ref: str) -> dict[str, Any]:
         return self._request_json("GET", f"/v1/grants/{_path_part(grant_ref)}")
@@ -78,6 +111,9 @@ class VinctorServiceClient:
         boundary_id: str | None = None,
         request_id: str | None = None,
         agent_id: str | None = None,
+        reason_code: str | None = None,
+        enforcing_principal: str | None = None,
+        subject_token_verified: bool | None = None,
     ) -> dict[str, Any]:
         query = _query(
             {
@@ -86,6 +122,13 @@ class VinctorServiceClient:
                 "grant_ref": grant_ref,
                 "boundary_id": boundary_id,
                 "request_id": request_id,
+                "reason_code": reason_code,
+                "enforcing_principal": enforcing_principal,
+                "subject_token_verified": (
+                    str(subject_token_verified).lower()
+                    if subject_token_verified is not None
+                    else None
+                ),
                 "limit": str(limit),
             }
         )
@@ -102,6 +145,14 @@ class VinctorServiceClient:
 
     def list_auto_approval_rules(self) -> dict[str, Any]:
         return self._request_json("GET", "/v1/auto-approval-rules")
+
+    def list_service_auth_failures(self, *, limit: int = 20) -> dict[str, Any]:
+        return self._request_json(
+            "GET",
+            f"/v1/service/audit/auth-failures?{_query({'limit': str(limit)})}",
+            workspace_auth=False,
+            service_operator_auth=True,
+        )
 
     def approve_grant_request(
         self,
@@ -127,6 +178,12 @@ class VinctorServiceClient:
             body=_decision_body(reason),
         )
 
+    def auto_approve_grant_request(self, request_id: str) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            f"/v1/grant-requests/{_path_part(request_id)}/auto-approve",
+        )
+
     def revoke_grant(self, grant_ref: str) -> dict[str, Any]:
         return self._request_json("POST", f"/v1/grants/{_path_part(grant_ref)}/revoke")
 
@@ -139,18 +196,46 @@ class VinctorServiceClient:
             body={"agent_id": agent_id, "scopes": list(scopes), "ttl_seconds": ttl_seconds},
         )
 
+    def create_auto_approval_rule(
+        self,
+        *,
+        name: str,
+        target_agent_id: str,
+        allowed_scopes: list[str],
+        max_ttl_seconds: int,
+    ) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            "/v1/auto-approval-rules",
+            body={
+                "name": name,
+                "target_agent_id": target_agent_id,
+                "allowed_scopes": list(allowed_scopes),
+                "max_ttl_seconds": max_ttl_seconds,
+            },
+        )
+
+    def disable_auto_approval_rule(self, rule_id: str) -> dict[str, Any]:
+        return self._request_json(
+            "POST",
+            f"/v1/auto-approval-rules/{_path_part(rule_id)}/disable",
+        )
+
     def _request_json(
         self,
         method: str,
         path: str,
         *,
         workspace_auth: bool = True,
+        service_operator_auth: bool = False,
         body: object | None = None,
     ) -> dict[str, Any]:
         headers: dict[str, str] = {}
         request_body = None
         if workspace_auth:
             headers["X-Workspace-Key"] = self._workspace_key
+        if service_operator_auth and self._service_operator_key is not None:
+            headers["X-Service-Operator-Key"] = self._service_operator_key
         if body is not None:
             headers["Content-Type"] = "application/json"
             request_body = json.dumps(body)
