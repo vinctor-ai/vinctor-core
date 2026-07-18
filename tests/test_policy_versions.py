@@ -74,6 +74,46 @@ def _policy_state(service: SQLiteV1Service) -> tuple[object, object, object, obj
     )
 
 
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (
+            """
+proposed:
+  apply: false
+  agent_id: agent_a
+  scopes:
+    - scope: read:repo/a
+""",
+            "this is a proposal document; review and author a policy file",
+        ),
+        (
+            """
+version: 1
+workspace_id: ws_main
+""",
+            "policy file must contain agent_bounds, auto_approval_rules, or require_boundary",
+        ),
+    ],
+)
+def test_policy_apply_rejects_documents_without_policy_sections(
+    tmp_path: Path, body: str, message: str
+) -> None:
+    service = SQLiteV1Service(connect_sqlite(":memory:"))
+
+    with pytest.raises(ValueError, match=message):
+        apply_policy_file(
+            _write_policy(tmp_path / "not-policy.yaml", body),
+            service=service,
+            workspace_id="ws_main",
+            applied_by="operator:a",
+            now=NOW,
+        )
+
+    assert list_policy_versions(service=service, workspace_id="ws_main") == ()
+    assert service.audit_events == ()
+
+
 def test_policy_apply_records_append_only_versions(tmp_path: Path) -> None:
     service = SQLiteV1Service(connect_sqlite(":memory:"))
     policy = _write_policy(

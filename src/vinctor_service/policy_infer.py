@@ -72,6 +72,12 @@ def _scope_entry(
             for source, count in evidence_by_scope.get(covered_scope, {}).items():
                 evidence[source] += count
         entry["evidence"] = evidence
+        if (
+            evidence["enforced"] == 0
+            and evidence["simulated"] == 0
+            and evidence["observed"] > 0
+        ):
+            entry["warning"] = "observed-only evidence; unverified agent self-report"
     if proposal.generalized:
         entry["covers"] = list(proposal.covers)
     return entry

@@ -284,7 +284,8 @@ exact-scope by default.
 Use `operator policy infer --min-observations 2` (or a higher threshold) to
 exclude one-off pairs before reviewing a proposal. Proposal entries distinguish
 observed, enforced, and simulated evidence, and the document summarizes mapping
-gaps and dry-run outcomes.
+gaps and dry-run outcomes. Use `--generalize` over enforced evidence, not
+observed-only evidence reported by an agent.
 
 Before promoting a policy to enforcement, a boundary can calculate the same
 decision without using it as a gate:

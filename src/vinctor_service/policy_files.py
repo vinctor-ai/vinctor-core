@@ -682,6 +682,8 @@ def _load_policy_document(path: Path) -> dict[str, object]:
 
     if not isinstance(loaded, dict):
         raise ValueError("policy file must contain a mapping")
+    if "proposed" in loaded:
+        raise ValueError("this is a proposal document; review and author a policy file")
     extra = sorted(
         set(loaded)
         - {"version", "workspace_id", "agent_bounds", "auto_approval_rules", "require_boundary"}
@@ -691,6 +693,10 @@ def _load_policy_document(path: Path) -> dict[str, object]:
     version = loaded.get("version")
     if version != 1:
         raise ValueError("policy version must be 1")
+    if not ({"agent_bounds", "auto_approval_rules", "require_boundary"} & set(loaded)):
+        raise ValueError(
+            "policy file must contain agent_bounds, auto_approval_rules, or require_boundary"
+        )
     return loaded
 
 

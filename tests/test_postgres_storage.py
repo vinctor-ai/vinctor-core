@@ -949,6 +949,7 @@ def test_postgres_observation_feeds_exact_policy_proposal() -> None:
             "last_seen": NOW.isoformat(),
             "generalized": False,
             "evidence": {"enforced": 0, "observed": 1, "simulated": 0},
+            "warning": "observed-only evidence; unverified agent self-report",
         }
     ]
     conn.close()

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 
+import pytest
 import yaml
 
 from vinctor_core.models import AuditEvent
@@ -151,6 +152,59 @@ def test_infer_reports_evidence_sources_and_simulation_outcomes():
     }
 
 
+def test_infer_warns_only_on_scopes_backed_entirely_by_observed_evidence():
+    events = [
+        _event(
+            agent_id="a1",
+            action="read",
+            resource="repo/observed/readme",
+            decision="permit",
+            event_type="action_observed",
+            created_at=datetime(2026, 7, 1, tzinfo=UTC),
+        ),
+        _event(
+            agent_id="a1",
+            action="read",
+            resource="repo/enforced/readme",
+            decision="permit",
+            created_at=datetime(2026, 7, 1, tzinfo=UTC),
+        ),
+        _event(
+            agent_id="a1",
+            action="read",
+            resource="repo/simulated/readme",
+            decision="permit",
+            event_type="action_would_permit",
+            created_at=datetime(2026, 7, 1, tzinfo=UTC),
+        ),
+        _event(
+            agent_id="a1",
+            action="read",
+            resource="repo/mixed/readme",
+            decision="permit",
+            event_type="action_observed",
+            created_at=datetime(2026, 7, 1, tzinfo=UTC),
+        ),
+        _event(
+            agent_id="a1",
+            action="read",
+            resource="repo/mixed/readme",
+            decision="permit",
+            created_at=datetime(2026, 7, 2, tzinfo=UTC),
+        ),
+    ]
+
+    doc = infer_policy_document(events, agent_id="a1")
+
+    scopes = {entry["scope"]: entry for entry in doc["proposed"]["scopes"]}
+    assert scopes["read:repo/observed/readme"]["warning"] == (
+        "observed-only evidence; unverified agent self-report"
+    )
+    assert "warning" not in scopes["read:repo/enforced/readme"]
+    assert "warning" not in scopes["read:repo/simulated/readme"]
+    assert "warning" not in scopes["read:repo/mixed/readme"]
+
+
 def test_infer_ignores_non_action_permit_events():
     events = [
         _event(
@@ -266,6 +320,48 @@ def test_cli_policy_infer_emits_yaml_proposal(tmp_path: Path):
     doc = yaml.safe_load(stdout.getvalue())
     assert doc["proposed"]["apply"] is False
     assert [s["scope"] for s in doc["proposed"]["scopes"]] == ["read:repo/feature/readme"]
+
+
+def test_cli_policy_infer_renders_observed_only_warning(tmp_path: Path):
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed(
+        db_path,
+        [
+            _event(
+                agent_id="a1",
+                action="read",
+                resource="repo/feature/readme",
+                decision="permit",
+                event_type="action_observed",
+                created_at=datetime(2026, 7, 1, tzinfo=UTC),
+            )
+        ],
+    )
+    stdout = StringIO()
+
+    status = run_vinctor(
+        ["--db", str(db_path), "operator", "policy", "infer", "--agent", "a1"],
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    assert status == 0
+    doc = yaml.safe_load(stdout.getvalue())
+    assert doc["proposed"]["scopes"][0]["warning"] == (
+        "observed-only evidence; unverified agent self-report"
+    )
+
+
+def test_cli_policy_infer_generalize_help_recommends_enforced_evidence(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        run_vinctor(["operator", "policy", "infer", "--help"])
+
+    assert excinfo.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--generalize" in help_text
+    assert "use enforced evidence, not observed-only data" in " ".join(help_text.split())
 
 
 def test_cli_policy_infer_supports_min_observations(tmp_path: Path):

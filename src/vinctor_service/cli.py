@@ -699,7 +699,8 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
     policy_infer.add_argument(
         "--generalize",
         action="store_true",
-        help="Collapse deep sibling resources under a terminal wildcard (opt-in).",
+        help="Collapse deep sibling resources under a terminal wildcard (opt-in); "
+        "use enforced evidence, not observed-only data.",
     )
     policy_infer.add_argument(
         "--include-denied",
