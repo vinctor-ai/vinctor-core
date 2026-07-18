@@ -7,6 +7,7 @@ as one unit, and no control repo can be constructed without an audit path.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -255,7 +256,7 @@ def _auto_approval_rule(*, status: str = "active") -> AutoApprovalRule:
         workspace_id="ws_main",
         name="release",
         target_agent_id="agent_release",
-        allowed_scopes=("execute:deploy/*",),
+        allowed_scopes=("execute:deploy/env/*",),
         max_ttl_seconds=1800,
         status=status,
         created_by="operator:a",
@@ -397,6 +398,156 @@ def test_sqlite_rule_disable_rolls_back_when_audit_write_fails() -> None:
     assert len(rules) == 1 and rules[0].status == "active"
 
 
+def test_sqlite_rule_direct_update_emits_update_control_event() -> None:
+    # PKA-56 B1: a direct update that widens scopes / changes TTL / re-enables
+    # must emit its own control event, not silently commit un-audited.
+    service = _sqlite_service()
+    service.create_auto_approval_rule(_auto_approval_rule())
+    repo = service.auto_approval_rule_repository
+    prior = repo.get_rule("apr_release")
+    assert prior is not None
+    widened = replace(
+        prior,
+        allowed_scopes=("execute:deploy/prod/*", "execute:rollback/prod/*"),
+        max_ttl_seconds=7200,
+        updated_by="operator:c",
+        updated_at=NOW,
+    )
+    repo.update_rule(widened)
+
+    events = _control_events(service)
+    assert [e.event_type for e in events] == [
+        "auto_approval_rule_created",
+        "auto_approval_rule_updated",
+    ]
+    update = events[1]
+    assert update.action == "update_auto_approval_rule"
+    assert update.resource == "auto_approval_rule/apr_release"
+    assert update.reason == "status=active changed=allowed_scopes,max_ttl_seconds"
+    assert update.scope_attempted == ""
+    assert update.enforcing_principal == "operator:c"
+    serialized = json.dumps(update.to_dict())
+    assert "execute:deploy/prod/*" not in serialized
+    assert "agent_release" not in serialized
+    assert service.audit_writer.verify_chain().ok is True
+
+
+def test_sqlite_rule_reenable_emits_update_control_event() -> None:
+    from dataclasses import replace
+
+    service = _sqlite_service()
+    service.create_auto_approval_rule(_auto_approval_rule())
+    service.disable_auto_approval_rule(
+        rule_id="apr_release", workspace_id="ws_main",
+        disabled_by="operator:b", now=NOW,
+    )
+    repo = service.auto_approval_rule_repository
+    disabled = repo.get_rule("apr_release")
+    assert disabled is not None and disabled.status == "disabled"
+    reenabled = replace(disabled, status="active", updated_by="operator:d", updated_at=NOW)
+    repo.update_rule(reenabled)
+
+    events = _control_events(service)
+    assert [e.event_type for e in events] == [
+        "auto_approval_rule_created",
+        "auto_approval_rule_disabled",
+        "auto_approval_rule_updated",
+    ]
+    assert events[2].reason == "status=active changed=status"
+    assert events[2].enforcing_principal == "operator:d"
+
+
+def test_sqlite_rule_direct_update_rolls_back_when_audit_write_fails() -> None:
+    from dataclasses import replace
+
+    import pytest
+
+    service = _sqlite_service()
+    service.create_auto_approval_rule(_auto_approval_rule())
+    repo = service.auto_approval_rule_repository
+    prior = repo.get_rule("apr_release")
+    assert prior is not None
+    _break_audit(service)
+    widened = replace(
+        prior,
+        allowed_scopes=("execute:deploy/prod/*", "execute:rollback/prod/*"),
+    )
+
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        repo.update_rule(widened)
+
+    # The widen unwound with its failed audit write.
+    assert repo.get_rule("apr_release").allowed_scopes == ("execute:deploy/env/*",)
+
+
+def test_sqlite_control_events_carry_enforcing_principal(tmp_path) -> None:
+    # PKA-56 B4: WHO changed the rules must be attributable on the control
+    # events, not just on policy apply/rollback.
+    service = _sqlite_service()
+    service.agent_enforcement_settings_repository.set_require_boundary(
+        workspace_id="ws_main", agent_id="agent_a", require_boundary=True, now=NOW,
+        enforcing_principal="workspace:ws_main",
+    )
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main", agent_id="agent_a",
+        scopes=("read:repo/project/*",), now=NOW,
+        enforcing_principal="workspace:ws_main",
+    )
+    service.register_boundary(
+        BoundaryRegistrationInput(
+            workspace_id="ws_main", name="claude-code",
+            runtime="claude-code", boundary_type="pretooluse",
+        ),
+        boundary_id="bnd_main", now=NOW,
+        enforcing_principal="workspace:ws_main",
+    )
+    service.disable_boundary(
+        boundary_id="bnd_main", workspace_id="ws_main", now=NOW,
+        enforcing_principal="workspace:ws_main",
+    )
+    events = _control_events(service)
+    assert [e.action for e in events] == [
+        "set_require_boundary",
+        "set_issuable_scope_bounds",
+        "register_boundary",
+        "disable_boundary",
+    ]
+    assert all(e.enforcing_principal == "workspace:ws_main" for e in events)
+    assert service.audit_writer.verify_chain().ok is True
+
+
+def test_boundary_http_attributes_enforcing_principal() -> None:
+    # The authenticated workspace identity flows to the control event as a
+    # stable, non-secret principal id.
+    from vinctor_service.boundary_http import (
+        WorkspaceIdentity,
+        handle_v1_boundaries_http,
+    )
+
+    service = _sqlite_service()
+    key = "wsk_test"
+    identities = {key: WorkspaceIdentity(workspace_id="ws_main")}
+    response = handle_v1_boundaries_http(
+        method="POST",
+        path="/v1/boundaries",
+        headers={"X-Workspace-Key": key},
+        body={
+            "name": "claude-code",
+            "runtime": "claude-code",
+            "boundary_type": "pretooluse",
+            "mode": "fail_closed",
+        },
+        workspace_identities=identities,
+        service=service,
+        now=NOW,
+    )
+    assert response.status_code == 201
+    events = _control_events(service)
+    assert len(events) == 1
+    assert events[0].event_type == "boundary_registered"
+    assert events[0].enforcing_principal == "workspace:ws_main"
+
+
 def test_sqlite_set_require_boundary_emits_one_control_event() -> None:
     service = _sqlite_service()
     service.agent_enforcement_settings_repository.set_require_boundary(
@@ -437,7 +588,9 @@ def test_sqlite_set_bounds_emits_one_control_event_with_scopes() -> None:
     service = _sqlite_service()
     service.set_agent_issuable_scope_bounds(
         workspace_id="ws_main", agent_id="agent_a",
-        scopes=("read:repo/*", "execute:ci/test"), max_ttl_seconds=3600, now=NOW,
+        scopes=("read:repo/project/*", "execute:ci/test"),
+        max_ttl_seconds=3600,
+        now=NOW,
     )
     events = _control_events(service)
     assert len(events) == 1
@@ -448,7 +601,7 @@ def test_sqlite_set_bounds_emits_one_control_event_with_scopes() -> None:
     assert event.agent_id == "agent_a"
     # The new bounds ARE the evidence (a widened grant surface must be visible
     # to the operator), so they ride in scope_attempted.
-    assert event.scope_attempted == "read:repo/* execute:ci/test"
+    assert event.scope_attempted == "read:repo/project/* execute:ci/test"
     assert event.reason == "max_ttl_seconds=3600"
 
 
@@ -477,7 +630,7 @@ def test_sqlite_set_bounds_rolls_back_when_audit_write_fails() -> None:
     with pytest.raises(RuntimeError, match="audit write failed"):
         service.set_agent_issuable_scope_bounds(
             workspace_id="ws_main", agent_id="agent_a",
-            scopes=("read:repo/*",), now=NOW,
+            scopes=("read:repo/project/*",), now=NOW,
         )
     assert service.scope_bounds_repository.get_bounds(
         workspace_id="ws_main", agent_id="agent_a"
@@ -703,6 +856,119 @@ def test_rotation_requires_a_control_auditor() -> None:
     _service, repo = _key_service_and_repo()
     with pytest.raises(TypeError):
         rotate_workspace_key(repo, workspace_id="ws_main", now=NOW)
+
+
+# --- key revocation: one key_revoked event per revocation (PKA-56 B2) ------
+
+
+def test_sqlite_key_revoke_emits_one_control_event() -> None:
+    from vinctor_service.key_ops import revoke_local_key
+
+    service, repo = _key_service_and_repo()
+    created = repo.create_agent_key(workspace_id="ws_main", agent_id="agent_a", now=NOW)
+
+    record = revoke_local_key(
+        repo, key_id=created.record.key_id, now=NOW,
+        control_auditor=service.control_auditor,
+        enforcing_principal="workspace:ws_main",
+    )
+    assert record is not None and record.status == "revoked"
+
+    events = _control_events(service)
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_type == "key_revoked"
+    assert event.action == "revoke_key"
+    assert event.resource == f"key/agent/{created.record.key_id}"
+    assert event.reason == "status=revoked"
+    assert event.workspace_id == "ws_main" and event.agent_id == ""
+    assert event.enforcing_principal == "workspace:ws_main"
+    import json
+
+    assert created.raw_key not in json.dumps(event.to_dict())
+    assert service.audit_writer.verify_chain().ok is True
+
+
+def test_sqlite_key_revoke_unknown_returns_none_and_emits_nothing() -> None:
+    from vinctor_service.key_ops import revoke_local_key
+
+    service, repo = _key_service_and_repo()
+    result = revoke_local_key(
+        repo, key_id="lkey_missing", now=NOW,
+        control_auditor=service.control_auditor,
+    )
+    assert result is None
+    assert _control_events(service) == []
+
+
+def test_sqlite_key_revoke_already_revoked_is_idempotent_no_event() -> None:
+    from vinctor_service.key_ops import revoke_local_key
+
+    service, repo = _key_service_and_repo()
+    created = repo.create_agent_key(workspace_id="ws_main", agent_id="agent_a", now=NOW)
+    revoke_local_key(
+        repo, key_id=created.record.key_id, now=NOW,
+        control_auditor=service.control_auditor,
+    )
+    # A second revoke changes no state and must emit no additional event.
+    again = revoke_local_key(
+        repo, key_id=created.record.key_id, now=NOW,
+        control_auditor=service.control_auditor,
+    )
+    assert again is not None and again.status == "revoked"
+    assert len(_control_events(service)) == 1
+
+
+def test_sqlite_key_revoke_rolls_back_when_audit_write_fails() -> None:
+    import pytest
+
+    from vinctor_service.key_ops import revoke_local_key
+
+    service, repo = _key_service_and_repo()
+    created = repo.create_agent_key(workspace_id="ws_main", agent_id="agent_a", now=NOW)
+    _break_audit(service)
+
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        revoke_local_key(
+            repo, key_id=created.record.key_id, now=NOW,
+            control_auditor=service.control_auditor,
+        )
+
+    # The revocation unwound with its failed audit write: the key is still active.
+    assert repo.get_by_id(created.record.key_id).status == "active"
+
+
+def test_sqlite_rotation_does_not_emit_a_key_revoked_event() -> None:
+    # Rotation revokes predecessors internally via repository.revoke_key; those
+    # revokes must NOT be double-audited as key_revoked events — one key_rotated
+    # event covers the whole rotation.
+    from vinctor_service.key_ops import rotate_workspace_key
+
+    service, repo = _key_service_and_repo()
+    repo.create_workspace_key(workspace_id="ws_main", now=NOW)
+    rotate_workspace_key(
+        repo, workspace_id="ws_main", now=NOW,
+        control_auditor=service.control_auditor,
+    )
+    events = _control_events(service)
+    assert [e.event_type for e in events] == ["key_rotated"]
+
+
+def test_key_revoke_rejects_an_auditor_on_a_different_connection() -> None:
+    import pytest
+
+    from vinctor_service.key_ops import revoke_local_key
+
+    service, repo = _key_service_and_repo()
+    created = repo.create_agent_key(workspace_id="ws_main", agent_id="agent_a", now=NOW)
+    other = _sqlite_service()
+    with pytest.raises(ValueError, match="SAME connection"):
+        revoke_local_key(
+            repo, key_id=created.record.key_id, now=NOW,
+            control_auditor=other.control_auditor,
+        )
+    # Fail closed BEFORE any write: the key is untouched.
+    assert repo.get_by_id(created.record.key_id).status == "active"
 
 
 # --- end to end: one chain, ordering, no agent-facing disclosure -----------

@@ -22,6 +22,7 @@ class BoundaryAdminService(Protocol):
         *,
         now: datetime | None = None,
         boundary_id: str | None = None,
+        enforcing_principal: str | None = None,
     ) -> Boundary: ...
 
     def list_boundaries(self, workspace_id: str) -> tuple[Boundary, ...]: ...
@@ -34,6 +35,7 @@ class BoundaryAdminService(Protocol):
         boundary_id: str,
         workspace_id: str,
         now: datetime | None = None,
+        enforcing_principal: str | None = None,
     ) -> Boundary | None: ...
 
     def enable_boundary(
@@ -42,6 +44,7 @@ class BoundaryAdminService(Protocol):
         boundary_id: str,
         workspace_id: str,
         now: datetime | None = None,
+        enforcing_principal: str | None = None,
     ) -> Boundary | None: ...
 
 
@@ -160,6 +163,7 @@ def _create_boundary(
                 mode=cast(BoundaryMode, parsed["mode"]),
             ),
             now=now,
+            enforcing_principal=f"workspace:{identity.workspace_id}",
         )
     except ValueError as error:
         return _error(400, "invalid_request", str(error))
@@ -180,12 +184,14 @@ def _set_boundary_status(
             boundary_id=boundary_id,
             workspace_id=workspace_id,
             now=now,
+            enforcing_principal=f"workspace:{workspace_id}",
         )
     else:
         boundary = service.enable_boundary(
             boundary_id=boundary_id,
             workspace_id=workspace_id,
             now=now,
+            enforcing_principal=f"workspace:{workspace_id}",
         )
 
     if boundary is None:

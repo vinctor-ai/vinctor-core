@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 
+from vinctor_core.audit import (
+    EVENT_AUTO_APPROVAL_RULE_DISABLED,
+    EVENT_AUTO_APPROVAL_RULE_UPDATED,
+)
 from vinctor_core.scope import is_valid_grant_scope, scope_subsumes
 from vinctor_service.audit import AuditWriter
 from vinctor_service.grant_requests import approve_grant_request, lookup_grant_request
@@ -18,6 +22,66 @@ from vinctor_service.repositories import (
     GrantLifecycleRepository,
     GrantRequestRepository,
 )
+
+
+@dataclass(frozen=True)
+class RuleUpdateControlEvent:
+    """Fields for the control event a direct auto-approval-rule update emits.
+
+    A direct update can widen an active rule's scopes, change its target agent
+    or TTL, or re-enable it — every one of these must be audited, not just a
+    disable (PKA-56 B1). The before/after states pick the event: an active rule
+    going disabled keeps the dedicated ``auto_approval_rule_disabled`` event,
+    while everything else emits ``auto_approval_rule_updated``. Reasons name
+    changed fields without copying scope or target values into the event.
+    """
+
+    event_type: str
+    action: str
+    reason: str
+    scope_attempted: str
+
+
+_AUDITED_RULE_FIELDS = (
+    "name",
+    "target_agent_id",
+    "allowed_scopes",
+    "max_ttl_seconds",
+    "status",
+)
+
+
+def _changed_rule_fields(
+    prior: AutoApprovalRule, rule: AutoApprovalRule
+) -> list[str]:
+    return [
+        field
+        for field in _AUDITED_RULE_FIELDS
+        if getattr(prior, field) != getattr(rule, field)
+    ]
+
+
+def auto_approval_update_control_event(
+    prior: AutoApprovalRule, rule: AutoApprovalRule
+) -> RuleUpdateControlEvent:
+    changed = _changed_rule_fields(prior, rule)
+    if prior.status == "active" and rule.status == "disabled":
+        other = [field for field in changed if field != "status"]
+        reason = "status=disabled"
+        if other:
+            reason += f" changed={','.join(other)}"
+        return RuleUpdateControlEvent(
+            event_type=EVENT_AUTO_APPROVAL_RULE_DISABLED,
+            action="disable_auto_approval_rule",
+            reason=reason,
+            scope_attempted="",
+        )
+    return RuleUpdateControlEvent(
+        event_type=EVENT_AUTO_APPROVAL_RULE_UPDATED,
+        action="update_auto_approval_rule",
+        reason=f"status={rule.status} changed={','.join(changed) if changed else 'none'}",
+        scope_attempted="",
+    )
 
 
 def create_auto_approval_rule(

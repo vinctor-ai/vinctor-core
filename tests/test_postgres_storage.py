@@ -2052,3 +2052,96 @@ def test_postgres_verify_detects_event_class_column_tamper() -> None:
     assert verification.break_kind == "column_mismatch"
     assert verification.break_seq == 1
     conn.close()
+
+
+# --- PKA-57: Postgres anchor/export must not publish rolled-back events -----
+
+
+class _RecordingAnchor:
+    def __init__(self) -> None:
+        self.heads: list[int] = []
+
+    def emit(self, seq: int, row_hash: str, created_at: str) -> None:
+        self.heads.append(seq)
+
+    def emit_storage_op(self, *args, **kwargs) -> None:
+        pass
+
+
+class _RecordingExport:
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    def emit(self, event: AuditEvent) -> None:
+        self.events.append(event.event_id)
+
+
+def test_postgres_anchor_export_deferred_to_outer_commit_and_dropped_on_rollback() -> None:
+    # PKA-57: an audit write joined to an OUTER control transaction runs its
+    # INSERT in a nested savepoint that releases before the outer commit. The
+    # anchor and export must not publish until the OUTERMOST transaction
+    # commits, and must publish nothing if it rolls back — otherwise the anchor
+    # records a chain head (and the export streams an event) for a row that no
+    # longer exists.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    anchor = _RecordingAnchor()
+    export = _RecordingExport()
+    writer = ExportingAuditWriter(PostgresAuditWriter(conn, anchor=anchor), export)
+
+    # Joined write that rolls back: anchor + export deferred, then discarded.
+    with pytest.raises(RuntimeError, match="boom"), conn.transaction():
+        writer.write(_pg_audit_event("evt_rollback"))
+        assert anchor.heads == [] and export.events == []  # deferred while open
+        raise RuntimeError("boom")
+    with conn.transaction():
+        count = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+    assert count == 0
+    assert anchor.heads == [] and export.events == []  # never published
+
+    # Joined write that commits: anchor + export emit exactly once, after commit.
+    with conn.transaction():
+        writer.write(_pg_audit_event("evt_commit"))
+        assert anchor.heads == [] and export.events == []  # still deferred inside
+    assert anchor.heads == [1]
+    assert export.events == ["evt_commit"]
+    conn.close()
+
+
+def test_postgres_standalone_write_emits_anchor_export_inline() -> None:
+    # No outer transaction: the write's own transaction() is the commit
+    # boundary, so the anchor/export emit inline right after it commits.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    anchor = _RecordingAnchor()
+    export = _RecordingExport()
+    writer = ExportingAuditWriter(PostgresAuditWriter(conn, anchor=anchor), export)
+
+    writer.write(_pg_audit_event("evt_standalone"))
+    assert anchor.heads == [1]
+    assert export.events == ["evt_standalone"]
+    conn.close()
+
+
+def test_postgres_control_mutation_in_rolled_back_outer_txn_publishes_nothing() -> None:
+    # The real control path: a bounds change writes its control audit row in a
+    # nested savepoint under an outer transaction; when that outer transaction
+    # rolls back, no anchor may be published for the seq it briefly held.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    anchor = _RecordingAnchor()
+    auditor = ControlPlaneAuditor(PostgresAuditWriter(conn, anchor=anchor))
+    bounds = PostgresAgentIssuableScopeBoundsRepository(conn, auditor)
+
+    with pytest.raises(RuntimeError, match="boom"), conn.transaction():
+        bounds.set_bounds(
+            workspace_id="ws_main", agent_id="agent_a",
+            scopes=("read:repo/a",), now=NOW,
+        )
+        raise RuntimeError("boom")
+
+    with conn.transaction():
+        count = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+    assert count == 0
+    assert anchor.heads == []
+    conn.close()

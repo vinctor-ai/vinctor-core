@@ -1084,7 +1084,17 @@ def test_vinctor_cli_keys_list_and_revoke(tmp_path: Path) -> None:
 
     conn = connect_sqlite(db_path)
     try:
+        service = SQLiteV1Service(conn, initialize_schema=False)
         record = SQLiteLocalKeyRepository(conn).get_by_id(key_id)
+        # PKA-56 B2: a direct `keys revoke` now emits a key_revoked control event.
+        control = [
+            e for e in service.audit_writer.list_all() if e.event_class == "control"
+        ]
+        revoked_events = [e for e in control if e.event_type == "key_revoked"]
+        assert len(revoked_events) == 1
+        assert revoked_events[0].resource == f"key/workspace/{key_id}"
+        assert revoked_events[0].enforcing_principal == "workspace:ws_demo"
+        assert service.audit_writer.verify_chain().ok is True
     finally:
         conn.close()
     assert record.status == "revoked"
@@ -1171,6 +1181,20 @@ def test_vinctor_cli_keys_rotate_workspace_prints_raw_once(tmp_path: Path) -> No
     assert active[0]["key_id"] == rotated["key_id"]
     assert rotated["raw_key"] not in json.dumps(listed)
     assert "raw_key" not in json.dumps(listed)
+
+    # PKA-56 B4: the rotation control event attributes the acting workspace.
+    conn = connect_sqlite(db_path)
+    try:
+        service = SQLiteV1Service(conn, initialize_schema=False)
+        rotations = [
+            e
+            for e in service.audit_writer.list_all()
+            if e.event_type == "key_rotated"
+        ]
+        assert len(rotations) == 1
+        assert rotations[0].enforcing_principal == "workspace:ws_demo"
+    finally:
+        conn.close()
 
 
 def test_vinctor_cli_keys_rotate_agent(tmp_path: Path) -> None:

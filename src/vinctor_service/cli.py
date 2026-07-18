@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 from vinctor_core.models import Grant
 from vinctor_service.audit_chain import AnchorRecord
 from vinctor_service.key_ops import (
+    revoke_local_key,
     rotate_agent_key,
     rotate_auditor_key,
     rotate_pep_key,
@@ -1286,6 +1287,7 @@ def _operator_bounds(args: argparse.Namespace, *, stdout: TextIO) -> None:
                 scopes=tuple(args.scopes),
                 max_ttl_seconds=max_ttl_seconds,
                 now=datetime.now(UTC),
+                enforcing_principal=f"workspace:{args.workspace_id}",
             )
         except ValueError as error:
             raise CliError(str(error)) from error
@@ -1342,6 +1344,7 @@ def _operator_require_boundary(args: argparse.Namespace, *, stdout: TextIO) -> N
             agent_id=agent_id,
             require_boundary=value,
             now=datetime.now(UTC),
+            enforcing_principal=f"workspace:{args.workspace_id}",
         )
     else:  # show
         value = repo.get_require_boundary(workspace_id=args.workspace_id, agent_id=agent_id)
@@ -1372,6 +1375,7 @@ def _operator_require_subject_token(args: argparse.Namespace, *, stdout: TextIO)
             agent_id=agent_id,
             require_subject_token=value,
             now=datetime.now(UTC),
+            enforcing_principal=f"workspace:{args.workspace_id}",
         )
     else:  # show
         setting = repo.get_require_subject_token_setting(
@@ -1405,6 +1409,7 @@ def _operator_require_pop(args: argparse.Namespace, *, stdout: TextIO) -> None:
             agent_id=agent_id,
             require_pop=value,
             now=datetime.now(UTC),
+            enforcing_principal=f"workspace:{args.workspace_id}",
         )
     else:  # show
         setting = repo.get_require_pop_setting(
@@ -1809,7 +1814,16 @@ def _operator_keys(args: argparse.Namespace, *, stdout: TextIO) -> None:
         _emit(args, body, _keys_list_text(records), stdout=stdout)
         return
     if command == "revoke":
-        record = repository.revoke_key(args.key_id, now=now)
+        # Route through the audited operation wrapper so a direct `keys revoke`
+        # emits a key_revoked control event, atomic with the revocation
+        # (PKA-56 B2), instead of calling the repository unaudited.
+        record = revoke_local_key(
+            repository,
+            key_id=args.key_id,
+            now=now,
+            control_auditor=service.control_auditor,
+            enforcing_principal=f"workspace:{args.workspace_id}",
+        )
         if record is None:
             raise CliError(f"unknown key: {args.key_id}")
         body = serialize_key_record(record)
@@ -1822,6 +1836,7 @@ def _operator_keys(args: argparse.Namespace, *, stdout: TextIO) -> None:
                 workspace_id=args.workspace_id,
                 now=now,
                 control_auditor=service.control_auditor,
+                enforcing_principal=f"workspace:{args.workspace_id}",
             )
             key_type = "workspace"
             agent_id = None
@@ -1831,12 +1846,14 @@ def _operator_keys(args: argparse.Namespace, *, stdout: TextIO) -> None:
                 workspace_id=args.workspace_id,
                 now=now,
                 control_auditor=service.control_auditor,
+                enforcing_principal=f"workspace:{args.workspace_id}",
             )
             key_type = "auditor"
             agent_id = None
         elif args.rotate_target == "service-operator":
             result = rotate_service_operator_key(
-                repository, now=now, control_auditor=service.control_auditor
+                repository, now=now, control_auditor=service.control_auditor,
+                enforcing_principal=f"workspace:{args.workspace_id}",
             )
             key_type = "service_operator"
             agent_id = None
@@ -1847,6 +1864,7 @@ def _operator_keys(args: argparse.Namespace, *, stdout: TextIO) -> None:
                 agent_id=args.agent_id,
                 now=now,
                 control_auditor=service.control_auditor,
+                enforcing_principal=f"workspace:{args.workspace_id}",
             )
             key_type = "agent"
             agent_id = args.agent_id
@@ -1857,6 +1875,7 @@ def _operator_keys(args: argparse.Namespace, *, stdout: TextIO) -> None:
                 pep_id=args.pep_id,
                 now=now,
                 control_auditor=service.control_auditor,
+                enforcing_principal=f"workspace:{args.workspace_id}",
             )
             key_type = "resource_server"
             agent_id = args.pep_id

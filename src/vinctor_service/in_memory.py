@@ -148,12 +148,14 @@ class InMemoryV1Service:
         *,
         now: datetime | None = None,
         boundary_id: str | None = None,
+        enforcing_principal: str | None = None,
     ) -> Boundary:
         return register_boundary(
             self.boundary_registry,
             registration,
             now=now,
             boundary_id=boundary_id,
+            enforcing_principal=enforcing_principal,
         )
 
     def get_boundary(self, *, boundary_id: str, workspace_id: str) -> Boundary | None:
@@ -172,12 +174,14 @@ class InMemoryV1Service:
         boundary_id: str,
         workspace_id: str,
         now: datetime | None = None,
+        enforcing_principal: str | None = None,
     ) -> Boundary | None:
         return disable_boundary(
             self.boundary_registry,
             boundary_id=boundary_id,
             workspace_id=workspace_id,
             now=now,
+            enforcing_principal=enforcing_principal,
         )
 
     def enable_boundary(
@@ -186,12 +190,14 @@ class InMemoryV1Service:
         boundary_id: str,
         workspace_id: str,
         now: datetime | None = None,
+        enforcing_principal: str | None = None,
     ) -> Boundary | None:
         return enable_boundary(
             self.boundary_registry,
             boundary_id=boundary_id,
             workspace_id=workspace_id,
             now=now,
+            enforcing_principal=enforcing_principal,
         )
 
     def set_agent_issuable_scope_bounds(
@@ -202,6 +208,7 @@ class InMemoryV1Service:
         scopes: tuple[str, ...],
         max_ttl_seconds: int | None = None,
         now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None:
         self.scope_bounds_repository.set_bounds(
             workspace_id=workspace_id,
@@ -209,6 +216,7 @@ class InMemoryV1Service:
             scopes=scopes,
             max_ttl_seconds=max_ttl_seconds,
             now=now,
+            enforcing_principal=enforcing_principal,
         )
 
     def issue_grant(

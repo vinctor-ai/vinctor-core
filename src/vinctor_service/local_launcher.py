@@ -293,6 +293,7 @@ def _ensure_grant(
         agent_id=config.agent_id,
         scopes=config.scopes,
         now=now,
+        enforcing_principal=f"workspace:{config.workspace_id}",
     )
     existing = service.grant_repository.get_by_ref(config.grant_ref)
     if existing is not None:
@@ -345,6 +346,7 @@ def _ensure_boundary(
                     boundary_id=boundary.boundary_id,
                     workspace_id=config.workspace_id,
                     now=now,
+                    enforcing_principal=f"workspace:{config.workspace_id}",
                 )
                 if enabled is None:
                     raise ValueError(
@@ -361,6 +363,7 @@ def _ensure_boundary(
             boundary_type=config.boundary_type,
         ),
         now=now,
+        enforcing_principal=f"workspace:{config.workspace_id}",
     )
 
 

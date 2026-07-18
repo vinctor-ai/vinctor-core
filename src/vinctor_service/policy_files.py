@@ -195,6 +195,7 @@ def _apply_policy_document(
             agent_id=parsed["agent_id"],
             scopes=tuple(parsed["scopes"]),
             now=now,
+            enforcing_principal=applied_by,
         )
 
     rules_created = 0
@@ -216,6 +217,7 @@ def _apply_policy_document(
             agent_id="",
             require_boundary=parsed_require_boundary["workspace"],
             now=now,
+            enforcing_principal=applied_by,
         )
     for agent_id in parsed_require_boundary["agents"]:
         service.agent_enforcement_settings_repository.set_require_boundary(
@@ -223,6 +225,7 @@ def _apply_policy_document(
             agent_id=agent_id,
             require_boundary=True,
             now=now,
+            enforcing_principal=applied_by,
         )
 
     # Record the immutable version snapshot INSIDE the same transaction: the

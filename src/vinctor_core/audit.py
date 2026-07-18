@@ -160,7 +160,9 @@ EVENT_KEY_ROTATED = "key_rotated"
 EVENT_BOUNDARY_REGISTERED = "boundary_registered"
 EVENT_BOUNDARY_STATUS_CHANGED = "boundary_status_changed"
 EVENT_AUTO_APPROVAL_RULE_CREATED = "auto_approval_rule_created"
+EVENT_AUTO_APPROVAL_RULE_UPDATED = "auto_approval_rule_updated"
 EVENT_AUTO_APPROVAL_RULE_DISABLED = "auto_approval_rule_disabled"
+EVENT_KEY_REVOKED = "key_revoked"
 
 
 def build_control_audit_event(

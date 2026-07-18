@@ -45,6 +45,7 @@ class AgentIssuableScopeBoundsRepository(Protocol):
         scopes: tuple[str, ...],
         max_ttl_seconds: int | None = None,
         now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None: ...
 
 
@@ -90,7 +91,10 @@ class InMemoryAgentIssuableScopeBoundsRepository:
         scopes: tuple[str, ...],
         max_ttl_seconds: int | None = None,
         now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None:
+        # enforcing_principal is only meaningful for the audited durable
+        # repositories; the in-memory reference store has no audit path.
         validate_issuable_scope_bounds(scopes, max_ttl_seconds=max_ttl_seconds)
         # Single atomic dict write of the combined value.
         self._bounds[(workspace_id, agent_id)] = AgentIssuableBounds(

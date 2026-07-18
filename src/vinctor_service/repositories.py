@@ -78,7 +78,8 @@ class AgentEnforcementSettingsRepository(Protocol):
     def list_require_boundary(self, workspace_id: str) -> tuple[tuple[str, bool], ...]: ...
 
     def set_require_boundary(
-        self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime
+        self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None: ...
 
     def get_require_subject_token_setting(
@@ -88,7 +89,8 @@ class AgentEnforcementSettingsRepository(Protocol):
     def is_subject_token_required(self, *, workspace_id: str, agent_id: str) -> bool: ...
 
     def set_require_subject_token(
-        self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime
+        self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None: ...
 
     def get_require_pop_setting(self, *, workspace_id: str, agent_id: str) -> bool | None: ...
@@ -96,7 +98,8 @@ class AgentEnforcementSettingsRepository(Protocol):
     def is_pop_required(self, *, workspace_id: str, agent_id: str) -> bool: ...
 
     def set_require_pop(
-        self, *, workspace_id: str, agent_id: str, require_pop: bool, now: datetime
+        self, *, workspace_id: str, agent_id: str, require_pop: bool, now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None: ...
 
 
@@ -279,7 +282,8 @@ class InMemoryAgentEnforcementSettingsRepository:
         )
 
     def set_require_boundary(
-        self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime
+        self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None:
         self._require_boundary[(workspace_id, agent_id)] = require_boundary
 
@@ -295,7 +299,8 @@ class InMemoryAgentEnforcementSettingsRepository:
         return self._require_subject_token.get((workspace_id, ""), False)
 
     def set_require_subject_token(
-        self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime
+        self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None:
         self._require_subject_token[(workspace_id, agent_id)] = require_subject_token
 
@@ -309,6 +314,7 @@ class InMemoryAgentEnforcementSettingsRepository:
         return self._require_pop.get((workspace_id, ""), False)
 
     def set_require_pop(
-        self, *, workspace_id: str, agent_id: str, require_pop: bool, now: datetime
+        self, *, workspace_id: str, agent_id: str, require_pop: bool, now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None:
         self._require_pop[(workspace_id, agent_id)] = require_pop

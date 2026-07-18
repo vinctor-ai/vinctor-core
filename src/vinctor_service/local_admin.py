@@ -296,6 +296,7 @@ def _bounds(args: argparse.Namespace, *, stdout: TextIO) -> None:
             agent_id=args.agent_id,
             scopes=tuple(args.scopes),
             now=datetime.now(UTC),
+            enforcing_principal=f"workspace:{args.workspace_id}",
         )
         print(
             f"set bounds workspace={args.workspace_id} agent={args.agent_id} "

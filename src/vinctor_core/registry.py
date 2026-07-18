@@ -11,9 +11,16 @@ from vinctor_core.models import Boundary, BoundaryRegistrationInput
 class BoundaryRegistry:
     _boundaries: dict[str, Boundary] = field(default_factory=dict)
 
-    def add(self, boundary: Boundary, *, operation: str = "register") -> Boundary:
+    def add(
+        self,
+        boundary: Boundary,
+        *,
+        operation: str = "register",
+        enforcing_principal: str | None = None,
+    ) -> Boundary:
         # Durable registries use the caller's operation to select their control
-        # event. The pure registry intentionally has no auditor and ignores it.
+        # event and the enforcing_principal to attribute it. The pure registry
+        # intentionally has no auditor and ignores both.
         self._boundaries[boundary.boundary_id] = boundary
         return boundary
 
@@ -34,6 +41,7 @@ def register_boundary(
     *,
     now: datetime | None = None,
     boundary_id: str | None = None,
+    enforcing_principal: str | None = None,
 ) -> Boundary:
     if registration.mode != "fail_closed":
         raise ValueError("boundary mode must be fail_closed")
@@ -57,7 +65,9 @@ def register_boundary(
     # Registration intent wins even when a durable registry's boundary-id
     # upsert replaces an existing row: re-registration is still recorded as
     # one boundary_registered operation, not inferred from the prior row.
-    return registry.add(boundary, operation="register")
+    return registry.add(
+        boundary, operation="register", enforcing_principal=enforcing_principal
+    )
 
 
 def get_boundary_for_workspace(
@@ -77,13 +87,16 @@ def disable_boundary(
     boundary_id: str,
     workspace_id: str,
     now: datetime | None = None,
+    enforcing_principal: str | None = None,
 ) -> Boundary | None:
     boundary = get_boundary_for_workspace(registry, boundary_id, workspace_id)
     if boundary is None:
         return None
 
     disabled = boundary.with_status("disabled", updated_at=now or datetime.now(UTC))
-    return registry.add(disabled, operation="disable")
+    return registry.add(
+        disabled, operation="disable", enforcing_principal=enforcing_principal
+    )
 
 
 def enable_boundary(
@@ -92,15 +105,20 @@ def enable_boundary(
     boundary_id: str,
     workspace_id: str,
     now: datetime | None = None,
+    enforcing_principal: str | None = None,
 ) -> Boundary | None:
     boundary = get_boundary_for_workspace(registry, boundary_id, workspace_id)
     if boundary is None:
         return None
     if boundary.status == "active":
-        return registry.add(boundary, operation="enable")
+        return registry.add(
+            boundary, operation="enable", enforcing_principal=enforcing_principal
+        )
 
     enabled = boundary.with_status("active", updated_at=now or datetime.now(UTC))
-    return registry.add(enabled, operation="enable")
+    return registry.add(
+        enabled, operation="enable", enforcing_principal=enforcing_principal
+    )
 
 
 def _new_boundary_id() -> str:

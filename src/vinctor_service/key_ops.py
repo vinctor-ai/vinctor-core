@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from vinctor_core.audit import EVENT_KEY_ROTATED
+from vinctor_core.audit import EVENT_KEY_REVOKED, EVENT_KEY_ROTATED
 from vinctor_service.control_audit import ControlPlaneAuditor
 from vinctor_service.keys import CreatedLocalKey, LocalKeyRecord
 
@@ -69,6 +69,7 @@ def _record_rotation(
     workspace_id: str,
     now: datetime,
     agent_id: str = "",
+    enforcing_principal: str | None = None,
 ) -> None:
     """Write the rotation's ONE control event inside the rotation transaction
     (ADR 0019): the new key, the revocations, and the audit row commit — or
@@ -81,7 +82,51 @@ def _record_rotation(
         resource=f"key/{created.record.key_type}/{created.record.key_id}",
         reason=f"revoked={len(revoked)}",
         now=now,
+        enforcing_principal=enforcing_principal,
     )
+
+
+def revoke_local_key(
+    repository: KeyRotationRepository,
+    *,
+    key_id: str,
+    now: datetime,
+    control_auditor: ControlPlaneAuditor,
+    enforcing_principal: str | None = None,
+) -> LocalKeyRecord | None:
+    """Revoke one local key and audit it as ONE unit (PKA-56 B2).
+
+    ``operator keys revoke`` used to call the repository's ``revoke_key``
+    directly, so a revoked key left NO control event on the chain. This wrapper
+    shares the repository's connection/transaction with the auditor (as
+    rotation does), emits a ``key_revoked`` control event, and returns the
+    revoked record — or ``None`` for an unknown key. An already-revoked key is
+    idempotent: it returns the record and emits nothing, because no state
+    changed. The per-key revokes a rotation performs internally are NOT routed
+    through here, so a rotation still emits exactly one ``key_rotated`` event,
+    never a ``key_revoked`` per predecessor.
+    """
+    # Fail closed BEFORE any write: the revoke and its control audit event are
+    # one transaction only if the auditor writes through the repository's
+    # connection.
+    control_auditor.require_bound_to(getattr(repository, "_conn", None))
+    with repository.transaction():
+        existing = repository.get_by_id(key_id)
+        if existing is None:
+            return None
+        if existing.status == "revoked":
+            return existing
+        record = repository.revoke_key(key_id, now=now)
+        control_auditor.record(
+            event_type=EVENT_KEY_REVOKED,
+            workspace_id=existing.workspace_id,
+            action="revoke_key",
+            resource=f"key/{existing.key_type}/{key_id}",
+            reason="status=revoked",
+            now=now,
+            enforcing_principal=enforcing_principal,
+        )
+        return record
 
 
 def rotate_workspace_key(
@@ -90,6 +135,7 @@ def rotate_workspace_key(
     workspace_id: str,
     now: datetime,
     control_auditor: ControlPlaneAuditor,
+    enforcing_principal: str | None = None,
 ) -> RotationResult:
     """Mint a new workspace key and revoke the previously active workspace keys."""
     # Fail closed BEFORE any write: the rotation and its control audit event
@@ -108,6 +154,7 @@ def rotate_workspace_key(
         _record_rotation(
             control_auditor, action="rotate_workspace_key", created=created,
             revoked=revoked, workspace_id=workspace_id, now=now,
+            enforcing_principal=enforcing_principal,
         )
     # Return the plaintext only after the rotation has committed.
     return RotationResult(
@@ -123,6 +170,7 @@ def rotate_auditor_key(
     workspace_id: str,
     now: datetime,
     control_auditor: ControlPlaneAuditor,
+    enforcing_principal: str | None = None,
 ) -> RotationResult:
     """Mint a new read-only auditor key and revoke prior auditor keys."""
     # Fail closed BEFORE any write: the rotation and its control audit event
@@ -141,6 +189,7 @@ def rotate_auditor_key(
         _record_rotation(
             control_auditor, action="rotate_auditor_key", created=created,
             revoked=revoked, workspace_id=workspace_id, now=now,
+            enforcing_principal=enforcing_principal,
         )
     # Return the plaintext only after the rotation has committed.
     return RotationResult(
@@ -155,6 +204,7 @@ def rotate_service_operator_key(
     *,
     now: datetime,
     control_auditor: ControlPlaneAuditor,
+    enforcing_principal: str | None = None,
 ) -> RotationResult:
     """Mint one global service-operator key and revoke its predecessors."""
     # Fail closed BEFORE any write: the rotation and its control audit event
@@ -175,6 +225,7 @@ def rotate_service_operator_key(
         _record_rotation(
             control_auditor, action="rotate_service_operator_key", created=created,
             revoked=revoked, workspace_id="*", now=now,
+            enforcing_principal=enforcing_principal,
         )
     # Return the plaintext only after the rotation has committed.
     return RotationResult(
@@ -191,6 +242,7 @@ def rotate_agent_key(
     agent_id: str,
     now: datetime,
     control_auditor: ControlPlaneAuditor,
+    enforcing_principal: str | None = None,
 ) -> RotationResult:
     """Mint a new agent key and revoke the previously active keys for that agent."""
     # Fail closed BEFORE any write: the rotation and its control audit event
@@ -213,6 +265,7 @@ def rotate_agent_key(
         _record_rotation(
             control_auditor, action="rotate_agent_key", created=created,
             revoked=revoked, workspace_id=workspace_id, agent_id=agent_id, now=now,
+            enforcing_principal=enforcing_principal,
         )
     # Return the plaintext only after the rotation has committed.
     return RotationResult(
@@ -229,6 +282,7 @@ def rotate_pep_key(
     pep_id: str,
     now: datetime,
     control_auditor: ControlPlaneAuditor,
+    enforcing_principal: str | None = None,
 ) -> RotationResult:
     """Mint a new PEP (resource-server) key and revoke prior keys for that PEP."""
     # Fail closed BEFORE any write: the rotation and its control audit event
@@ -251,6 +305,7 @@ def rotate_pep_key(
         _record_rotation(
             control_auditor, action="rotate_pep_key", created=created,
             revoked=revoked, workspace_id=workspace_id, agent_id=pep_id, now=now,
+            enforcing_principal=enforcing_principal,
         )
     # Return the plaintext only after the rotation has committed.
     return RotationResult(

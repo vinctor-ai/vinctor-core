@@ -5,7 +5,7 @@ import json
 import os
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -18,7 +18,6 @@ from vinctor_core import (
 )
 from vinctor_core.audit import (
     EVENT_AUTO_APPROVAL_RULE_CREATED,
-    EVENT_AUTO_APPROVAL_RULE_DISABLED,
     EVENT_BOUNDARY_REGISTERED,
     EVENT_BOUNDARY_STATUS_CHANGED,
     EVENT_ENFORCEMENT_SETTING_CHANGED,
@@ -43,6 +42,7 @@ from vinctor_service.audit_export import (
     audit_export_from_env,
 )
 from vinctor_service.auto_approval import (
+    auto_approval_update_control_event,
     auto_approve_grant_request,
     create_auto_approval_rule,
     disable_auto_approval_rule,
@@ -129,6 +129,15 @@ def _grant_request_decision_transaction(conn: Any, request_id: str) -> Iterator[
         yield
 
 
+def _run_fail_open(emission: Callable[[], None]) -> None:
+    # A raising anchor/export sink must never surface into the enforce path or
+    # unwind the persisted audit row (mirrors sqlite_txn._run_fail_open).
+    try:
+        emission()
+    except Exception as exc:  # noqa: BLE001 - deliberate fail-open
+        sys.stderr.write(f"vinctor: audit post-commit emission raised: {exc}\n")
+
+
 def connect_postgres(dsn: str):
     try:
         import psycopg
@@ -152,6 +161,14 @@ class SerializedPostgresConnection:
     def __init__(self, connection: Any) -> None:
         self._connection = connection
         self._lock = threading.RLock()
+        # Stack of post-commit deferral scopes for the currently open
+        # transaction tree (PKA-57). The outermost transaction() owns the
+        # commit boundary; audit anchor/export emissions queued via
+        # emit_or_defer are held until it commits and dropped if it rolls back,
+        # so a rolled-back audit row never publishes an anchor/export. Guarded
+        # by the connection lock, which the outermost transaction() holds for
+        # the whole transaction, so only one thread ever mutates it at a time.
+        self._deferral_scopes: list[list[Callable[[], None]]] = []
 
     @property
     def lock(self) -> threading.RLock:
@@ -164,10 +181,63 @@ class SerializedPostgresConnection:
         """
         return self._lock
 
+    def _in_transaction(self) -> bool:
+        # PQTRANS_IDLE == 0; any other status means a transaction is open on the
+        # connection (an explicit one, OR an implicit one psycopg started for a
+        # bare execute in the default non-autocommit mode).
+        return int(self._connection.info.transaction_status) != 0
+
     @contextmanager
     def transaction(self):
-        with self._lock, self._connection.transaction():
-            yield
+        with self._lock:
+            # This scope owns the commit boundary only when it opens the REAL
+            # transaction — i.e. the connection was idle on entry. If a
+            # transaction is already open (a tracked parent scope, or an
+            # implicit transaction from a bare execute), psycopg opens a
+            # SAVEPOINT instead, whose release is NOT a durable commit, so this
+            # scope must not flush. Determining this from transaction_status
+            # rather than the scope stack alone closes the implicit-transaction
+            # gap where an untracked BEGIN would be mistaken for the boundary.
+            is_commit_boundary = not self._in_transaction()
+            scope: list[Callable[[], None]] = []
+            self._deferral_scopes.append(scope)
+            committed = False
+            try:
+                with self._connection.transaction():
+                    yield
+                committed = True
+            finally:
+                self._deferral_scopes.pop()
+                # A nested savepoint that committed hands its deferred emissions
+                # to its enclosing tracked scope, so they flush only when the
+                # OUTERMOST transaction commits (and are dropped with it if the
+                # outer transaction later rolls back). A scope whose
+                # transaction/savepoint rolled back is simply discarded. If the
+                # outer transaction is UNTRACKED (an implicit txn), there is no
+                # post-commit hook to flush through, so the emissions are dropped
+                # rather than published for a not-yet-committed row — anchor and
+                # export are fail-open.
+                if committed and not is_commit_boundary and self._deferral_scopes:
+                    self._deferral_scopes[-1].extend(scope)
+            if committed and is_commit_boundary:
+                for emission in scope:
+                    _run_fail_open(emission)
+
+    def emit_or_defer(self, emission: Callable[[], None]) -> None:
+        """Defer a post-commit audit side effect (anchor/export) to the open
+        transaction's outermost commit, or run it inline when the connection is
+        idle (the row is already committed). Fail-open (PKA-57)."""
+        with self._lock:
+            if self._deferral_scopes:
+                self._deferral_scopes[-1].append(emission)
+                return
+            # No tracked scope: run inline ONLY when the connection is idle, so
+            # the durable row is already committed. If an untracked transaction
+            # is open (an implicit txn from a bare execute), running inline would
+            # publish a not-yet-committed row, so drop instead (fail-open).
+            if self._in_transaction():
+                return
+        _run_fail_open(emission)
 
     def execute(self, *args: Any, **kwargs: Any):
         with self._lock:
@@ -653,6 +723,7 @@ class PostgresAgentIssuableScopeBoundsRepository:
         scopes: tuple[str, ...],
         max_ttl_seconds: int | None = None,
         now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None:
         validate_issuable_scope_bounds(scopes, max_ttl_seconds=max_ttl_seconds)
         # The bounds change and its control audit event commit as ONE unit (the
@@ -686,6 +757,7 @@ class PostgresAgentIssuableScopeBoundsRepository:
                 + (str(max_ttl_seconds) if max_ttl_seconds is not None else "none"),
                 scope_attempted=" ".join(scopes),
                 now=now,
+                enforcing_principal=enforcing_principal,
             )
 
 
@@ -714,6 +786,7 @@ class PostgresAutoApprovalRuleRepository:
                 resource=f"auto_approval_rule/{rule.rule_id}",
                 reason=f"status={rule.status}",
                 now=rule.created_at,
+                enforcing_principal=rule.created_by or None,
             )
 
     def get_rule(self, rule_id: str) -> AutoApprovalRule | None:
@@ -751,7 +824,26 @@ class PostgresAutoApprovalRuleRepository:
 
     def update_rule(self, rule: AutoApprovalRule) -> None:
         with self._conn.transaction():
-            row = self._conn.execute(
+            # Read the prior state INSIDE the transaction and lock the row FOR
+            # UPDATE so a concurrent updater on another connection serializes
+            # behind this one instead of racing between the read and the UPDATE
+            # (which could otherwise record a false before/after transition).
+            # This mirrors SQLite's BEGIN IMMEDIATE serialization of the path.
+            prior_row = self._conn.execute(
+                """
+                SELECT rule_id, workspace_id, name, target_agent_id,
+                       allowed_scopes_json, max_ttl_seconds, status,
+                       created_by, created_at, updated_by, updated_at
+                FROM auto_approval_rules
+                WHERE rule_id = %s
+                FOR UPDATE
+                """,
+                (rule.rule_id,),
+            ).fetchone()
+            prior = _postgres_auto_approval_from_row(prior_row)
+            if prior is None:
+                raise ValueError(f"unknown auto-approval rule_id: {rule.rule_id}")
+            self._conn.execute(
                 """
                 UPDATE auto_approval_rules
                 SET workspace_id = %s, name = %s, target_agent_id = %s,
@@ -759,21 +851,21 @@ class PostgresAutoApprovalRuleRepository:
                     status = %s, created_by = %s, created_at = %s,
                     updated_by = %s, updated_at = %s
                 WHERE rule_id = %s
-                RETURNING rule_id
                 """,
                 (*_postgres_auto_approval_values(rule)[1:], rule.rule_id),
-            ).fetchone()
-            if row is None:
-                raise ValueError(f"unknown auto-approval rule_id: {rule.rule_id}")
-            if rule.status == "disabled":
-                self._control_auditor.record(
-                    event_type=EVENT_AUTO_APPROVAL_RULE_DISABLED,
-                    workspace_id=rule.workspace_id,
-                    action="disable_auto_approval_rule",
-                    resource=f"auto_approval_rule/{rule.rule_id}",
-                    reason="status=disabled",
-                    now=rule.updated_at or rule.created_at,
-                )
+            )
+            # EVERY direct update is audited, not just disable (PKA-56 B1).
+            control = auto_approval_update_control_event(prior, rule)
+            self._control_auditor.record(
+                event_type=control.event_type,
+                workspace_id=rule.workspace_id,
+                action=control.action,
+                resource=f"auto_approval_rule/{rule.rule_id}",
+                reason=control.reason,
+                scope_attempted=control.scope_attempted,
+                now=rule.updated_at or rule.created_at,
+                enforcing_principal=rule.updated_by or None,
+            )
 
 
 def _boundary_control_operation(operation: str) -> tuple[str, str]:
@@ -792,7 +884,13 @@ class PostgresBoundaryRegistry:
         control_auditor.require_bound_to(conn)
         self._control_auditor = control_auditor
 
-    def add(self, boundary: Boundary, *, operation: str = "register") -> Boundary:
+    def add(
+        self,
+        boundary: Boundary,
+        *,
+        operation: str = "register",
+        enforcing_principal: str | None = None,
+    ) -> Boundary:
         event_type, action = _boundary_control_operation(operation)
         try:
             with self._conn.transaction():
@@ -832,6 +930,7 @@ class PostgresBoundaryRegistry:
                     reason=f"status={boundary.status}",
                     boundary_id=boundary.boundary_id,
                     now=boundary.updated_at,
+                    enforcing_principal=enforcing_principal,
                 )
         except Exception as exc:
             if getattr(exc, "sqlstate", None) == "23505":
@@ -916,6 +1015,7 @@ class PostgresAgentEnforcementSettingsRepository:
         agent_id: str,
         value: bool,
         now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None:
         if column not in self._COLUMNS:
             raise ValueError("unknown enforcement setting")
@@ -952,6 +1052,7 @@ class PostgresAgentEnforcementSettingsRepository:
                 resource=f"enforcement_setting/{column}",
                 reason=f"{column}={'true' if value else 'false'}",
                 now=now,
+                enforcing_principal=enforcing_principal,
             )
 
     def get_require_boundary(self, *, workspace_id: str, agent_id: str) -> bool:
@@ -981,7 +1082,8 @@ class PostgresAgentEnforcementSettingsRepository:
         return tuple((row[0], bool(row[1])) for row in rows)
 
     def set_require_boundary(
-        self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime
+        self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None:
         self._set(
             "require_boundary",
@@ -989,6 +1091,7 @@ class PostgresAgentEnforcementSettingsRepository:
             agent_id=agent_id,
             value=require_boundary,
             now=now,
+            enforcing_principal=enforcing_principal,
         )
 
     def get_require_subject_token_setting(
@@ -1004,7 +1107,8 @@ class PostgresAgentEnforcementSettingsRepository:
         )
 
     def set_require_subject_token(
-        self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime
+        self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None:
         self._set(
             "require_subject_token",
@@ -1012,6 +1116,7 @@ class PostgresAgentEnforcementSettingsRepository:
             agent_id=agent_id,
             value=require_subject_token,
             now=now,
+            enforcing_principal=enforcing_principal,
         )
 
     def get_require_pop_setting(
@@ -1023,7 +1128,8 @@ class PostgresAgentEnforcementSettingsRepository:
         return self._required("require_pop", workspace_id=workspace_id, agent_id=agent_id)
 
     def set_require_pop(
-        self, *, workspace_id: str, agent_id: str, require_pop: bool, now: datetime
+        self, *, workspace_id: str, agent_id: str, require_pop: bool, now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None:
         self._set(
             "require_pop",
@@ -1031,6 +1137,7 @@ class PostgresAgentEnforcementSettingsRepository:
             agent_id=agent_id,
             value=require_pop,
             now=now,
+            enforcing_principal=enforcing_principal,
         )
 
 class PostgresAuditWriter:
@@ -1096,10 +1203,21 @@ class PostgresAuditWriter:
                     current_hash,
                 ),
             )
-        try:
-            self._anchor.emit(seq, current_hash, event.created_at.isoformat())
-        except Exception as exc:  # noqa: BLE001 - anchor is deliberately fail-open
-            sys.stderr.write(f"vinctor: audit anchor emit raised: {exc}\n")
+        # Emit the external anchor only after the row is DURABLY committed:
+        # inline for a standalone write, deferred to the OUTERMOST commit when
+        # this write joined a control transaction (its INSERT ran in a nested
+        # savepoint that releases before the outer commit) — so the anchor
+        # never records a chain head a later rollback removes (PKA-57). The
+        # export decorator defers likewise via emit_or_defer. Fail-open either
+        # way.
+        created = event.created_at.isoformat()
+        self.emit_or_defer(lambda: self._anchor.emit(seq, current_hash, created))
+
+    def emit_or_defer(self, emission: Callable[[], None]) -> None:
+        """Run a post-commit audit side effect now, or defer it to this
+        connection's outermost transaction commit if one is open (dropped on
+        rollback). Fail-open. Mirrors SQLiteAuditWriter.emit_or_defer."""
+        self._conn.emit_or_defer(emission)
 
     # Materialized columns cross-checked against event_json during verification.
     # MUST stay identical to SQLiteAuditWriter._CROSSCHECK_COLUMNS — a parity test
@@ -1375,6 +1493,7 @@ class PostgresV1Service:
         scopes: tuple[str, ...],
         max_ttl_seconds: int | None = None,
         now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None:
         self.scope_bounds_repository.set_bounds(
             workspace_id=workspace_id,
@@ -1382,6 +1501,7 @@ class PostgresV1Service:
             scopes=scopes,
             max_ttl_seconds=max_ttl_seconds,
             now=now,
+            enforcing_principal=enforcing_principal,
         )
 
     def create_grant_request(
@@ -1521,34 +1641,40 @@ class PostgresV1Service:
     def register_boundary(
         self, registration: BoundaryRegistrationInput, *,
         now: datetime | None = None, boundary_id: str | None = None,
+        enforcing_principal: str | None = None,
     ) -> Boundary:
         return register_boundary(
             self.boundary_registry,
             registration,
             now=now,
             boundary_id=boundary_id,
+            enforcing_principal=enforcing_principal,
         )
 
     def disable_boundary(
         self, *, boundary_id: str, workspace_id: str,
         now: datetime | None = None,
+        enforcing_principal: str | None = None,
     ) -> Boundary | None:
         return disable_boundary(
             self.boundary_registry,
             boundary_id=boundary_id,
             workspace_id=workspace_id,
             now=now,
+            enforcing_principal=enforcing_principal,
         )
 
     def enable_boundary(
         self, *, boundary_id: str, workspace_id: str,
         now: datetime | None = None,
+        enforcing_principal: str | None = None,
     ) -> Boundary | None:
         return enable_boundary(
             self.boundary_registry,
             boundary_id=boundary_id,
             workspace_id=workspace_id,
             now=now,
+            enforcing_principal=enforcing_principal,
         )
 
     def list_boundaries(self, workspace_id: str) -> tuple[Boundary, ...]:

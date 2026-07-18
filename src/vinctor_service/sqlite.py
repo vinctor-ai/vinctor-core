@@ -16,7 +16,6 @@ from vinctor_core import (
 )
 from vinctor_core.audit import (
     EVENT_AUTO_APPROVAL_RULE_CREATED,
-    EVENT_AUTO_APPROVAL_RULE_DISABLED,
     EVENT_BOUNDARY_REGISTERED,
     EVENT_BOUNDARY_STATUS_CHANGED,
     EVENT_ENFORCEMENT_SETTING_CHANGED,
@@ -42,6 +41,7 @@ from vinctor_service.audit_export import (
     audit_export_from_env,
 )
 from vinctor_service.auto_approval import (
+    auto_approval_update_control_event,
     auto_approve_grant_request,
     create_auto_approval_rule,
     disable_auto_approval_rule,
@@ -940,6 +940,7 @@ class SQLiteAgentIssuableScopeBoundsRepository:
         scopes: tuple[str, ...],
         max_ttl_seconds: int | None = None,
         now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None:
         validate_issuable_scope_bounds(scopes, max_ttl_seconds=max_ttl_seconds)
         # The bounds change and its control audit event commit as ONE unit.
@@ -972,6 +973,7 @@ class SQLiteAgentIssuableScopeBoundsRepository:
                 + (str(max_ttl_seconds) if max_ttl_seconds is not None else "none"),
                 scope_attempted=" ".join(scopes),
                 now=now,
+                enforcing_principal=enforcing_principal,
             )
 
 
@@ -988,7 +990,7 @@ class SQLiteAgentEnforcementSettingsRepository:
 
     def _record_setting_change(
         self, *, setting: str, value: bool, workspace_id: str, agent_id: str,
-        now: datetime,
+        now: datetime, enforcing_principal: str | None = None,
     ) -> None:
         self._control_auditor.record(
             event_type=EVENT_ENFORCEMENT_SETTING_CHANGED,
@@ -998,6 +1000,7 @@ class SQLiteAgentEnforcementSettingsRepository:
             resource=f"enforcement_setting/{setting}",
             reason=f"{setting}={'true' if value else 'false'}",
             now=now,
+            enforcing_principal=enforcing_principal,
         )
 
     def get_require_boundary(self, *, workspace_id: str, agent_id: str) -> bool:
@@ -1039,7 +1042,8 @@ class SQLiteAgentEnforcementSettingsRepository:
         return tuple((row[0], bool(row[1])) for row in rows)
 
     def set_require_boundary(
-        self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime
+        self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None:
         # The mandate change and its control audit event commit as ONE unit.
         with _atomic_write(self._conn):
@@ -1059,6 +1063,7 @@ class SQLiteAgentEnforcementSettingsRepository:
             self._record_setting_change(
                 setting="require_boundary", value=require_boundary,
                 workspace_id=workspace_id, agent_id=agent_id, now=now,
+                enforcing_principal=enforcing_principal,
             )
 
     def get_require_subject_token_setting(
@@ -1083,7 +1088,8 @@ class SQLiteAgentEnforcementSettingsRepository:
         return ws if ws is not None else False
 
     def set_require_subject_token(
-        self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime
+        self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None:
         with _atomic_write(self._conn):
             self._conn.execute(
@@ -1102,6 +1108,7 @@ class SQLiteAgentEnforcementSettingsRepository:
             self._record_setting_change(
                 setting="require_subject_token", value=require_subject_token,
                 workspace_id=workspace_id, agent_id=agent_id, now=now,
+                enforcing_principal=enforcing_principal,
             )
 
     def get_require_pop_setting(self, *, workspace_id: str, agent_id: str) -> bool | None:
@@ -1122,7 +1129,8 @@ class SQLiteAgentEnforcementSettingsRepository:
         return ws if ws is not None else False
 
     def set_require_pop(
-        self, *, workspace_id: str, agent_id: str, require_pop: bool, now: datetime
+        self, *, workspace_id: str, agent_id: str, require_pop: bool, now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None:
         with _atomic_write(self._conn):
             self._conn.execute(
@@ -1141,6 +1149,7 @@ class SQLiteAgentEnforcementSettingsRepository:
             self._record_setting_change(
                 setting="require_pop", value=require_pop,
                 workspace_id=workspace_id, agent_id=agent_id, now=now,
+                enforcing_principal=enforcing_principal,
             )
 
 
@@ -1460,6 +1469,7 @@ class SQLiteAutoApprovalRuleRepository:
                 resource=f"auto_approval_rule/{rule.rule_id}",
                 reason=f"status={rule.status}",
                 now=rule.created_at,
+                enforcing_principal=rule.created_by or None,
             )
 
     def get_rule(self, rule_id: str) -> AutoApprovalRule | None:
@@ -1494,9 +1504,13 @@ class SQLiteAutoApprovalRuleRepository:
         )
 
     def update_rule(self, rule: AutoApprovalRule) -> None:
-        if self.get_rule(rule.rule_id) is None:
-            raise ValueError(f"unknown auto-approval rule_id: {rule.rule_id}")
+        # The bounds change and its control event commit as ONE unit; the prior
+        # state is read INSIDE that transaction so a concurrent writer cannot
+        # change it between the read and the before/after event.
         with _atomic_write(self._conn):
+            prior = self.get_rule(rule.rule_id)
+            if prior is None:
+                raise ValueError(f"unknown auto-approval rule_id: {rule.rule_id}")
             self._conn.execute(
                 """
                 UPDATE auto_approval_rules
@@ -1526,15 +1540,20 @@ class SQLiteAutoApprovalRuleRepository:
                     rule.rule_id,
                 ),
             )
-            if rule.status == "disabled":
-                self._control_auditor.record(
-                    event_type=EVENT_AUTO_APPROVAL_RULE_DISABLED,
-                    workspace_id=rule.workspace_id,
-                    action="disable_auto_approval_rule",
-                    resource=f"auto_approval_rule/{rule.rule_id}",
-                    reason="status=disabled",
-                    now=rule.updated_at or rule.created_at,
-                )
+            # EVERY direct update is audited, not just disable (PKA-56 B1): a
+            # widened scope, changed target/TTL, or re-enable emits its own
+            # control event from the before/after state.
+            control = auto_approval_update_control_event(prior, rule)
+            self._control_auditor.record(
+                event_type=control.event_type,
+                workspace_id=rule.workspace_id,
+                action=control.action,
+                resource=f"auto_approval_rule/{rule.rule_id}",
+                reason=control.reason,
+                scope_attempted=control.scope_attempted,
+                now=rule.updated_at or rule.created_at,
+                enforcing_principal=rule.updated_by or None,
+            )
 
 
 class SQLiteAuditWriter:
@@ -1812,7 +1831,13 @@ class SQLiteBoundaryRegistry:
         control_auditor.require_bound_to(self._conn)
         self._control_auditor = control_auditor
 
-    def add(self, boundary: Boundary, *, operation: str = "register") -> Boundary:
+    def add(
+        self,
+        boundary: Boundary,
+        *,
+        operation: str = "register",
+        enforcing_principal: str | None = None,
+    ) -> Boundary:
         event_type, action = _boundary_control_operation(operation)
         with _atomic_write(self._conn):
             self._conn.execute(
@@ -1851,6 +1876,7 @@ class SQLiteBoundaryRegistry:
                 reason=f"status={boundary.status}",
                 boundary_id=boundary.boundary_id,
                 now=boundary.updated_at,
+                enforcing_principal=enforcing_principal,
             )
         return boundary
 
@@ -2001,6 +2027,7 @@ class SQLiteV1Service:
         scopes: tuple[str, ...],
         max_ttl_seconds: int | None = None,
         now: datetime,
+        enforcing_principal: str | None = None,
     ) -> None:
         self.scope_bounds_repository.set_bounds(
             workspace_id=workspace_id,
@@ -2008,6 +2035,7 @@ class SQLiteV1Service:
             scopes=scopes,
             max_ttl_seconds=max_ttl_seconds,
             now=now,
+            enforcing_principal=enforcing_principal,
         )
 
     def issue_grant(
@@ -2257,12 +2285,14 @@ class SQLiteV1Service:
         *,
         now: datetime | None = None,
         boundary_id: str | None = None,
+        enforcing_principal: str | None = None,
     ) -> Boundary:
         return register_boundary(
             self.boundary_registry,
             registration,
             now=now,
             boundary_id=boundary_id,
+            enforcing_principal=enforcing_principal,
         )
 
     def disable_boundary(
@@ -2271,12 +2301,14 @@ class SQLiteV1Service:
         boundary_id: str,
         workspace_id: str,
         now: datetime | None = None,
+        enforcing_principal: str | None = None,
     ) -> Boundary | None:
         return disable_boundary(
             self.boundary_registry,
             boundary_id=boundary_id,
             workspace_id=workspace_id,
             now=now,
+            enforcing_principal=enforcing_principal,
         )
 
     def enable_boundary(
@@ -2285,12 +2317,14 @@ class SQLiteV1Service:
         boundary_id: str,
         workspace_id: str,
         now: datetime | None = None,
+        enforcing_principal: str | None = None,
     ) -> Boundary | None:
         return enable_boundary(
             self.boundary_registry,
             boundary_id=boundary_id,
             workspace_id=workspace_id,
             now=now,
+            enforcing_principal=enforcing_principal,
         )
 
     def list_boundaries(self, workspace_id: str) -> tuple[Boundary, ...]:
