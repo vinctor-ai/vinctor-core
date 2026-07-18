@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import contextlib
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from vinctor_core import Grant
 from vinctor_core.audit import REASON_SUBJECT_TOKEN_INVALID
@@ -105,6 +110,35 @@ def test_verify_pop_non_ascii_mac_returns_false_no_crash() -> None:
     ) is False
 
 
+def test_pop_replay_cache_atomically_rejects_concurrent_duplicate() -> None:
+    barrier = threading.Barrier(2)
+
+    class RacingSeen(dict[tuple[str, str], int]):
+        def __contains__(self, key: object) -> bool:
+            present = super().__contains__(key)
+            with contextlib.suppress(threading.BrokenBarrierError):
+                barrier.wait(timeout=0.25)
+            return present
+
+    cache = PopReplayCache()
+    cache._seen = RacingSeen()
+    now_unix = _now_unix()
+
+    def record() -> bool:
+        return cache.check_and_record(
+            token_id="vtk_x",
+            nonce="same-valid-nonce",
+            ts=now_unix,
+            now_unix=now_unix,
+            skew=SKEW,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: record(), range(2)))
+
+    assert sorted(results) == [False, True]
+
+
 # ---- delegated path tests --------------------------------------------------
 
 
@@ -151,6 +185,40 @@ def test_pop_token_without_proof_denies() -> None:
     assert r.status_code == 403
     assert r.error == "forbidden"
     assert audit.events[-1].reason_code == REASON_SUBJECT_TOKEN_INVALID
+
+
+def test_pop_verification_exception_is_generic_subject_token_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    svc, raw, secret, token_id = _pop_svc()
+    proof = make_proof(
+        secret,
+        action="write",
+        resource="repo/feature/readme",
+        ts=_now_unix(),
+        nonce="n-raises",
+        token_id=token_id,
+    )
+
+    def raise_verification_error(**_kwargs: object) -> bool:
+        raise RuntimeError("replay store unavailable")
+
+    monkeypatch.setattr(
+        "vinctor_service.v1_enforce.verify_pop",
+        raise_verification_error,
+    )
+
+    response = svc.delegated_enforce(
+        _request(subject_token=raw, subject_token_proof=proof),
+        now=NOW,
+        pep_workspace_id="ws_main",
+    )
+
+    assert response.status_code == 403
+    assert response.decision is None
+    assert response.error == "forbidden"
+    assert response.reason == "subject token is not valid"
+    assert svc.audit_events[-1].reason_code == REASON_SUBJECT_TOKEN_INVALID
 
 
 def test_pop_token_with_blank_proof_denies() -> None:

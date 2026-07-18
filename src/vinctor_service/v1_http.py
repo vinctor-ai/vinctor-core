@@ -7,6 +7,7 @@ from typing import Any, Protocol, cast
 
 from vinctor_service.models import (
     ObservationClassification,
+    ObservationOutcome,
     V1DelegatedEnforceRequest,
     V1EnforceRequest,
     V1EnforceResponse,
@@ -175,6 +176,7 @@ def handle_v1_observe_http(
             action=parsed.get("action"),
             resource=parsed.get("resource"),
             boundary_id=boundary_id,
+            outcome=cast(ObservationOutcome | None, parsed.get("outcome")),
         ),
         now=now,
     )
@@ -437,7 +439,11 @@ def _parse_observe_body(body: object) -> dict[str, str] | V1HttpResponse:
         required_fields = {"classification"}
     else:
         return _error(400, "invalid_request", "classification must be mapped or unmapped")
-    return _parse_string_body(body, required_fields=required_fields)
+    return _parse_string_body(
+        body,
+        required_fields=required_fields,
+        optional_fields={"outcome"},
+    )
 
 
 def _parse_delegated_enforce_body(body: object) -> dict[str, str] | V1HttpResponse:
@@ -451,20 +457,22 @@ def _parse_string_body(
     body: object,
     *,
     required_fields: set[str],
+    optional_fields: set[str] | None = None,
 ) -> dict[str, str] | V1HttpResponse:
     if not isinstance(body, dict):
         return _error(400, "invalid_request", "request body must be a JSON object")
 
     body_fields = set(body)
+    allowed_optional_fields = optional_fields or set()
     missing = sorted(required_fields - body_fields)
-    extra = sorted(body_fields - required_fields)
+    extra = sorted(body_fields - required_fields - allowed_optional_fields)
     if missing:
         return _error(400, "invalid_request", f"missing required field: {missing[0]}")
     if extra:
         return _error(400, "invalid_request", f"unexpected field: {extra[0]}")
 
     parsed: dict[str, str] = {}
-    for field in sorted(required_fields):
+    for field in sorted(required_fields | (body_fields & allowed_optional_fields)):
         value = body[field]
         if not isinstance(value, str) or value == "":
             return _error(400, "invalid_request", f"{field} must be a non-empty string")

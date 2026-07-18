@@ -274,10 +274,13 @@ curl -sS "$VINCTOR_ENDPOINT/v1/observe" \
   -d '{"classification":"mapped","action":"write","resource":"repo/feature/readme"}'
 ```
 
-Unmapped calls send only `{"classification":"unmapped"}`. The endpoint never
-accepts raw tool input or prompt content. Successful mapped observations are
-stored as `action_observed` audit events and are available to `operator policy
-infer`; inference remains propose-only and exact-scope by default.
+Unmapped calls send only `{"classification":"unmapped"}`. A PEP that
+fail-closed an unmapped call can add `"outcome":"blocked_unmapped"`; Vinctor
+stores a coarse `action_blocked_unmapped` deny event without action or resource
+details. The endpoint never accepts raw tool input or prompt content. Successful
+mapped observations are stored as `action_observed` audit events and are
+available to `operator policy infer`; inference remains propose-only and
+exact-scope by default.
 Use `operator policy infer --min-observations 2` (or a higher threshold) to
 exclude one-off pairs before reviewing a proposal. Proposal entries distinguish
 observed, enforced, and simulated evidence, and the document summarizes mapping

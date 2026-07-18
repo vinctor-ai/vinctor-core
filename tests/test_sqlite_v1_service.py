@@ -119,6 +119,37 @@ def test_sqlite_v1_service_records_mapped_observation(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_sqlite_v1_service_records_blocked_unmapped_deny(tmp_path: Path) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+
+    response = service.observe(
+        V1ObserveRequest(
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            classification="unmapped",
+            outcome="blocked_unmapped",
+        ),
+        now=NOW,
+    )
+
+    assert response.status_code == 200
+    row = conn.execute(
+        "SELECT event_type, decision, reason, action, resource, scope_attempted "
+        "FROM audit_events WHERE event_id = ?",
+        (response.audit_event_id,),
+    ).fetchone()
+    assert row == (
+        "action_blocked_unmapped",
+        "deny",
+        "blocked_unmapped",
+        "",
+        "",
+        "",
+    )
+    conn.close()
+
+
 def test_sqlite_v1_service_persists_simulated_deny(tmp_path: Path) -> None:
     conn = connect_db(tmp_path)
     service = SQLiteV1Service(conn)

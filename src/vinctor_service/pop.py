@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import threading
 from datetime import UTC, datetime
 
 
@@ -45,28 +46,30 @@ class PopReplayCache:
         # bounded to its own footprint (fresh proofs beyond the cap are rejected),
         # so it can never saturate the global cap against other tokens.
         self._max_per_token = max_per_token
+        self._lock = threading.Lock()
 
     def check_and_record(
         self, *, token_id: str, nonce: str, ts: int, now_unix: int, skew: int
     ) -> bool:
-        cutoff = now_unix - skew
-        if self._seen:
-            for k in [k for k, t in self._seen.items() if t < cutoff]:
-                del self._seen[k]
-        key = (token_id, nonce)
-        if key in self._seen:
-            return False  # replay
-        # Expired entries were purged above, so every entry counted here is
-        # still inside the freshness window. NEVER evict a live nonce to make
-        # room (ADR 0007): a dropped fresh nonce would let its captured proof
-        # replay within the window. When a cap is full of fresh entries, fail
-        # closed (reject the new proof); operators can raise the cap.
-        if sum(1 for k in self._seen if k[0] == token_id) >= self._max_per_token:
-            return False  # per-token cap full of fresh entries -> fail closed
-        if len(self._seen) >= self._max:
-            return False  # full of fresh entries -> fail closed
-        self._seen[key] = ts
-        return True
+        with self._lock:
+            cutoff = now_unix - skew
+            if self._seen:
+                for k in [k for k, t in self._seen.items() if t < cutoff]:
+                    del self._seen[k]
+            key = (token_id, nonce)
+            if key in self._seen:
+                return False  # replay
+            # Expired entries were purged above, so every entry counted here is
+            # still inside the freshness window. NEVER evict a live nonce to make
+            # room (ADR 0007): a dropped fresh nonce would let its captured proof
+            # replay within the window. When a cap is full of fresh entries, fail
+            # closed (reject the new proof); operators can raise the cap.
+            if sum(1 for k in self._seen if k[0] == token_id) >= self._max_per_token:
+                return False  # per-token cap full of fresh entries -> fail closed
+            if len(self._seen) >= self._max:
+                return False  # full of fresh entries -> fail closed
+            self._seen[key] = ts
+            return True
 
 
 def verify_pop(

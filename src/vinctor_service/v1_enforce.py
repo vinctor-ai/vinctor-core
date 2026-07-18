@@ -322,16 +322,19 @@ def delegated_enforce_v1_contract(
         # with no replay cache wired fails closed (defense in depth). All failure
         # modes collapse to the SAME generic subject_token_invalid (no leak).
         if token.pop_secret is not None:
-            ok = pop_replay_cache is not None and verify_pop(
-                proof=request.subject_token_proof,
-                pop_secret=token.pop_secret,
-                token_id=token.token_id,
-                action=request.action,
-                resource=request.resource,
-                now=now,
-                skew=pop_skew_seconds,
-                replay_cache=pop_replay_cache,
-            )
+            try:
+                ok = pop_replay_cache is not None and verify_pop(
+                    proof=request.subject_token_proof,
+                    pop_secret=token.pop_secret,
+                    token_id=token.token_id,
+                    action=request.action,
+                    resource=request.resource,
+                    now=now,
+                    skew=pop_skew_seconds,
+                    replay_cache=pop_replay_cache,
+                )
+            except Exception:
+                ok = False
             if not ok:
                 _record_rejection(
                     audit_writer,

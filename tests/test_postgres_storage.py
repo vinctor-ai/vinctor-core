@@ -954,6 +954,34 @@ def test_postgres_observation_feeds_exact_policy_proposal() -> None:
     conn.close()
 
 
+def test_postgres_records_blocked_unmapped_observation_as_coarse_deny() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+
+    response = service.observe(
+        V1ObserveRequest(
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            classification="unmapped",
+            outcome="blocked_unmapped",
+        ),
+        now=NOW,
+    )
+
+    assert response.status_code == 200
+    event = service.audit_events[0]
+    assert (
+        event.event_type,
+        event.decision,
+        event.reason,
+        event.action,
+        event.resource,
+        event.scope_attempted,
+    ) == ("action_blocked_unmapped", "deny", "blocked_unmapped", "", "", "")
+    conn.close()
+
+
 def test_postgres_audit_chain_serializes_multiple_instances() -> None:
     assert DSN is not None
 

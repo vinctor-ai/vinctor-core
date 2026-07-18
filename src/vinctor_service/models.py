@@ -8,6 +8,7 @@ from vinctor_core.models import Decision, Grant
 
 GrantIssueStatus = Literal["issued", "rejected"]
 ObservationClassification = Literal["mapped", "unmapped"]
+ObservationOutcome = Literal["blocked_unmapped"]
 GrantRequestStatus = Literal["pending", "approved", "rejected", "cancelled", "expired"]
 GrantRequestCreateStatus = Literal["created", "rejected"]
 GrantRequestDecisionStatus = Literal["approved", "rejected", "failed"]
@@ -108,6 +109,7 @@ class V1ObserveRequest:
     action: str | None = None
     resource: str | None = None
     boundary_id: str | None = None
+    outcome: ObservationOutcome | None = None
 
 
 @dataclass(frozen=True)

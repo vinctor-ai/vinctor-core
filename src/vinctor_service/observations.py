@@ -20,6 +20,11 @@ def record_observation(
     now: datetime,
     boundary_registry: BoundaryLookup | None = None,
 ) -> V1ObserveResponse:
+    if request.outcome not in (None, "blocked_unmapped"):
+        return _invalid("outcome must be blocked_unmapped")
+    if request.outcome == "blocked_unmapped" and request.classification != "unmapped":
+        return _invalid("blocked_unmapped outcome requires unmapped classification")
+
     if request.classification == "mapped":
         if request.action is None or not is_valid_requested_action(request.action):
             return _invalid("action must be a valid Vinctor action")
@@ -32,7 +37,11 @@ def record_observation(
     elif request.classification == "unmapped":
         if request.action is not None or request.resource is not None:
             return _invalid("unmapped observations must not include action or resource")
-        event_type = "action_unmapped"
+        event_type = (
+            "action_blocked_unmapped"
+            if request.outcome == "blocked_unmapped"
+            else "action_unmapped"
+        )
         action = ""
         resource = ""
         scope = ""
@@ -50,8 +59,8 @@ def record_observation(
     event = AuditEvent(
         event_id=_new_event_id(),
         event_type=event_type,
-        decision="permit",
-        reason="observe_mode",
+        decision="deny" if request.outcome == "blocked_unmapped" else "permit",
+        reason="blocked_unmapped" if request.outcome == "blocked_unmapped" else "observe_mode",
         workspace_id=request.workspace_id,
         agent_id=request.agent_id,
         grant_id="",
