@@ -447,6 +447,8 @@ Every permit and deny is recorded; the operator reads or exports it.
 
 ```bash
 vinctor operator audit list --limit 50 \
+  --event-class control
+vinctor operator audit list --limit 50 \
   --event action_denied --grant-ref grt_… --boundary-id bnd_… --request-id …
 vinctor operator audit export --format jsonl --file audit.jsonl
 vinctor operator audit auth-failures --limit 50  # service operator only

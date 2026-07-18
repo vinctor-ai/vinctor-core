@@ -1730,6 +1730,50 @@ def test_vinctor_cli_audit_list_filters_by_reason(tmp_path) -> None:
     assert "identity_proven" not in filtered["audit_events"][0]
 
 
+def test_vinctor_cli_audit_list_filters_by_validated_event_class(tmp_path) -> None:
+    from vinctor_core.audit import build_rejection_audit_event
+
+    db_path = tmp_path / "vinctor.sqlite"
+    conn = connect_sqlite(db_path)
+    try:
+        writer = SQLiteV1Service(conn).audit_writer
+        writer.write(
+            build_rejection_audit_event(
+                reason_code="agent_grant_mismatch",
+                workspace_id="ws_demo",
+                agent_id="agent_a",
+                action="write",
+                resource="repo/decision",
+                created_at=NOW,
+            )
+        )
+        writer.write(
+            replace(
+                build_rejection_audit_event(
+                    reason_code="pop_required",
+                    workspace_id="ws_demo",
+                    agent_id="agent_a",
+                    action="write",
+                    resource="repo/control",
+                    created_at=NOW,
+                ),
+                event_class="control",
+            )
+        )
+    finally:
+        conn.close()
+
+    common = ["--json", "--db", str(db_path), "operator", "audit", "list"]
+    control = _run([*common, "--event-class", "control"])
+    decision = _run([*common, "--event-class", "decision"])
+
+    assert [event["event_class"] for event in control["audit_events"]] == ["control"]
+    assert [event["event_class"] for event in decision["audit_events"]] == ["decision"]
+    with pytest.raises(SystemExit) as excinfo:
+        run_vinctor([*common, "--event-class", "security"])
+    assert excinfo.value.code == 2
+
+
 def test_vinctor_cli_workspace_id_default_survives_after_subcommand_output_flag(
     tmp_path: Path,
 ) -> None:

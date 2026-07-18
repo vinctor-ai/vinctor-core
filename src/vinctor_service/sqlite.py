@@ -20,6 +20,7 @@ from vinctor_core.audit import (
     EVENT_BOUNDARY_STATUS_CHANGED,
     EVENT_ENFORCEMENT_SETTING_CHANGED,
     EVENT_SCOPE_BOUNDS_SET,
+    validate_audit_event_class,
 )
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput, Grant
 from vinctor_service.audit import AuthFailureAuditThrottle
@@ -1660,6 +1661,7 @@ class SQLiteAuditWriter:
         self,
         workspace_id: str,
         *,
+        event_class: str | None = None,
         event_type: str | None = None,
         grant_ref: str | None = None,
         boundary_id: str | None = None,
@@ -1687,13 +1689,18 @@ class SQLiteAuditWriter:
         canonical ``event_json`` (JSON paths are literals, values are bound
         parameters). ``AuditEvent.to_dict`` omits these keys when unset, so an
         absent key reads as SQL NULL and never matches a string filter.
-        ``subject_token_verified`` uses its v16 materialized column.
+        ``subject_token_verified`` and ``event_class`` use their materialized
+        columns.
 
         Workspace scoping is mandatory: results never cross tenants. Every value
         travels as a bound parameter (no string interpolation into SQL).
         """
+        validate_audit_event_class(event_class)
         clauses = ["workspace_id = ?"]
         params: list[object] = [workspace_id]
+        if event_class is not None:
+            clauses.append("event_class = ?")
+            params.append(event_class)
         if event_type is not None:
             clauses.append("event_type = ?")
             params.append(event_type)
@@ -2256,6 +2263,7 @@ class SQLiteV1Service:
         self,
         workspace_id: str,
         *,
+        event_class: str | None = None,
         event_type: str | None = None,
         grant_ref: str | None = None,
         boundary_id: str | None = None,
@@ -2268,6 +2276,7 @@ class SQLiteV1Service:
     ) -> tuple[AuditEvent, ...]:
         return self.audit_writer.list_filtered(
             workspace_id,
+            event_class=event_class,
             event_type=event_type,
             grant_ref=grant_ref,
             boundary_id=boundary_id,

@@ -150,6 +150,15 @@ def build_rejection_audit_event(
 # evidence — one chain, one clock.
 EVENT_CLASS_CONTROL = "control"
 EVENT_CLASS_DECISION = "decision"
+AUDIT_EVENT_CLASSES = (EVENT_CLASS_CONTROL, EVENT_CLASS_DECISION)
+
+
+def validate_audit_event_class(event_class: str | None) -> None:
+    """Reject audit filters outside the two classes stored on the shared chain."""
+    if event_class is not None and event_class not in AUDIT_EVENT_CLASSES:
+        raise ValueError(
+            f"event_class must be one of: {', '.join(AUDIT_EVENT_CLASSES)}"
+        )
 
 # Control-plane operation event types (one per operator operation).
 EVENT_ENFORCEMENT_SETTING_CHANGED = "enforcement_setting_changed"

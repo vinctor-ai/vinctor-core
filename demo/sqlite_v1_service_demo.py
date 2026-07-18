@@ -94,7 +94,9 @@ def _request(
 
 
 def _audit_count(conn: sqlite3.Connection) -> int:
-    row = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()
+    row = conn.execute(
+        "SELECT COUNT(*) FROM audit_events WHERE event_class = 'decision'"
+    ).fetchone()
     return row[0]
 
 

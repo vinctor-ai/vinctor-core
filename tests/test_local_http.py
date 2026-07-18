@@ -1287,6 +1287,7 @@ def security_audit_event(
     reason_code: str | None = None,
     enforcing_principal: str | None = None,
     subject_token_verified: bool = False,
+    event_class: str = "decision",
 ) -> AuditEvent:
     return AuditEvent(
         event_id=event_id,
@@ -1308,6 +1309,7 @@ def security_audit_event(
         enforcing_principal=enforcing_principal,
         reason_code=reason_code,
         subject_token_verified=subject_token_verified,
+        event_class=event_class,
     )
 
 
@@ -1411,6 +1413,53 @@ def test_local_http_audit_events_rejects_invalid_subject_token_verified() -> Non
     assert status == 400
     assert response["error"] == "invalid_request"
     assert response["reason"] == "subject_token_verified must be true or false"
+
+
+def test_local_http_audit_events_filter_by_event_class() -> None:
+    svc = service()
+    svc.audit_writer.write(security_audit_event("evt_decision"))
+    svc.audit_writer.write(
+        security_audit_event("evt_control", event_class="control")
+    )
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        control_status, control_response = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events?event_class=control",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+        decision_status, decision_response = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events?event_class=decision",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert control_status == 200
+    assert [event["event_id"] for event in control_response["audit_events"]] == [
+        "evt_control"
+    ]
+    assert decision_status == 200
+    assert [event["event_id"] for event in decision_response["audit_events"]] == [
+        "evt_decision"
+    ]
+
+
+def test_local_http_audit_events_rejects_invalid_event_class() -> None:
+    svc = service()
+
+    with running_server(svc, workspace_keys=workspace_identities()) as server:
+        status, response = raw_request(
+            server,
+            method="GET",
+            path="/v1/audit-events?event_class=security",
+            headers={"X-Workspace-Key": "workspace_key_main"},
+        )
+
+    assert status == 400
+    assert response["error"] == "invalid_request"
+    assert response["reason"] == "event_class must be one of: control, decision"
 
 
 def test_local_http_workspace_manages_auto_approval_rules() -> None:

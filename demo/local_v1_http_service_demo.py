@@ -118,7 +118,9 @@ def main() -> None:
                 assert strict_status == 400
                 assert strict["error"] == "invalid_request"
 
-                audit_events = service.audit_events
+                audit_events = service.list_filtered(
+                    "ws_demo", event_class="decision"
+                )
                 # Timing oracle closed: the unknown grant records a coarse
                 # rejection too, so audit is [permit, deny, unknown-rejection].
                 decision_events = audit_events[-3:]

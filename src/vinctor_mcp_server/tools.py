@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
+from vinctor_core.audit import validate_audit_event_class
 from vinctor_core.scope import match_scope
 from vinctor_mcp_server.output_policy import (
     AUDIT_EVENT_DIAGNOSTIC_FIELDS,
@@ -44,6 +45,7 @@ class ReadOnlyVinctorClient(Protocol):
         self,
         *,
         limit: int = 20,
+        event_class: str | None = None,
         event_type: str | None = None,
         grant_ref: str | None = None,
         boundary_id: str | None = None,
@@ -169,6 +171,7 @@ class VinctorReadOnlyTools:
     def list_audit_events(
         self,
         limit: int = 20,
+        event_class: str | None = None,
         event_type: str | None = None,
         grant_ref: str | None = None,
         boundary_id: str | None = None,
@@ -178,8 +181,10 @@ class VinctorReadOnlyTools:
         enforcing_principal: str | None = None,
         subject_token_verified: bool | None = None,
     ) -> dict[str, Any]:
+        validate_audit_event_class(event_class)
         body = self._client.list_audit_events(
             limit=_clamp_audit_limit(limit),
+            event_class=event_class,
             event_type=event_type,
             grant_ref=grant_ref,
             boundary_id=boundary_id,
@@ -422,9 +427,10 @@ def register_read_only_tools(
     mcp.tool(
         name="vinctor_list_audit_events",
         description=(
-            "Read-only Vinctor audit lookup with safe filters. Uses a 1..100 cap "
-            "on limit. Output is model-visible and omits raw payloads, prompts, "
-            "commands, keys, hashes, and service internals."
+            "Read-only Vinctor audit lookup with safe filters, including event_class "
+            "(control or decision). Uses a 1..100 cap on limit. Output is model-visible "
+            "and omits raw payloads, prompts, commands, keys, hashes, and service "
+            "internals."
         ),
     )(tools.list_audit_events)
     mcp.tool(

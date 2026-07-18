@@ -4,6 +4,8 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+import pytest
+
 from vinctor_mcp_server.tools import (
     VinctorReadOnlyTools,
     VinctorWriteTools,
@@ -114,6 +116,7 @@ class FakeClient:
         self,
         *,
         limit: int = 20,
+        event_class: str | None = None,
         event_type: str | None = None,
         grant_ref: str | None = None,
         boundary_id: str | None = None,
@@ -291,6 +294,7 @@ class RecordingAuditClient(FakeClient):
         self,
         *,
         limit: int = 20,
+        event_class: str | None = None,
         event_type: str | None = None,
         grant_ref: str | None = None,
         boundary_id: str | None = None,
@@ -303,6 +307,7 @@ class RecordingAuditClient(FakeClient):
         self.seen_limits.append(limit)
         return super().list_audit_events(
             limit=limit,
+            event_class=event_class,
             event_type=event_type,
             grant_ref=grant_ref,
             boundary_id=boundary_id,
@@ -457,6 +462,7 @@ def test_list_audit_events_passes_agent_id_filter() -> None:
             self,
             *,
             limit: int = 20,
+            event_class: str | None = None,
             event_type: str | None = None,
             grant_ref: str | None = None,
             boundary_id: str | None = None,
@@ -469,6 +475,7 @@ def test_list_audit_events_passes_agent_id_filter() -> None:
             self.seen_agent_id = agent_id
             return super().list_audit_events(
                 limit=limit,
+                event_class=event_class,
                 event_type=event_type,
                 grant_ref=grant_ref,
                 boundary_id=boundary_id,
@@ -490,12 +497,15 @@ def test_list_audit_events_passes_agent_id_filter() -> None:
 def test_list_audit_events_passes_security_filters() -> None:
     class RecordingClient(FakeClient):
         def __init__(self) -> None:
-            self.seen: tuple[str | None, str | None, bool | None] | None = None
+            self.seen: tuple[
+                str | None, str | None, str | None, bool | None
+            ] | None = None
 
         def list_audit_events(
             self,
             *,
             limit: int = 20,
+            event_class: str | None = None,
             event_type: str | None = None,
             grant_ref: str | None = None,
             boundary_id: str | None = None,
@@ -505,9 +515,15 @@ def test_list_audit_events_passes_security_filters() -> None:
             enforcing_principal: str | None = None,
             subject_token_verified: bool | None = None,
         ) -> dict[str, Any]:
-            self.seen = (reason_code, enforcing_principal, subject_token_verified)
+            self.seen = (
+                event_class,
+                reason_code,
+                enforcing_principal,
+                subject_token_verified,
+            )
             return super().list_audit_events(
                 limit=limit,
+                event_class=event_class,
                 event_type=event_type,
                 grant_ref=grant_ref,
                 boundary_id=boundary_id,
@@ -521,12 +537,24 @@ def test_list_audit_events_passes_security_filters() -> None:
     client = RecordingClient()
 
     VinctorReadOnlyTools(client).list_audit_events(
+        event_class="control",
         reason_code="agent_key_invalid",
         enforcing_principal="pep_git_host",
         subject_token_verified=False,
     )
 
-    assert client.seen == ("agent_key_invalid", "pep_git_host", False)
+    assert client.seen == ("control", "agent_key_invalid", "pep_git_host", False)
+
+
+def test_list_audit_events_rejects_invalid_event_class_before_calling_service() -> None:
+    client = RecordingAuditClient()
+
+    with pytest.raises(
+        ValueError, match="event_class must be one of: control, decision"
+    ):
+        VinctorReadOnlyTools(client).list_audit_events(event_class="security")
+
+    assert client.seen_limits == []
 
 
 def test_explain_denial_uses_safe_fields_by_default() -> None:
@@ -605,6 +633,7 @@ class ReportClient(FakeClient):
         self,
         *,
         limit: int = 20,
+        event_class: str | None = None,
         event_type: str | None = None,
         grant_ref: str | None = None,
         boundary_id: str | None = None,
@@ -617,6 +646,7 @@ class ReportClient(FakeClient):
         self.audit_calls.append(
             {
                 "limit": limit,
+                "event_class": event_class,
                 "event_type": event_type,
                 "grant_ref": grant_ref,
                 "boundary_id": boundary_id,
@@ -751,6 +781,7 @@ class ControlMutationReportClient(ReportClient):
         self,
         *,
         limit: int = 20,
+        event_class: str | None = None,
         event_type: str | None = None,
         grant_ref: str | None = None,
         boundary_id: str | None = None,
@@ -1146,6 +1177,7 @@ def test_audit_list_tool_description_mentions_limit_cap() -> None:
 
     description = mcp.descriptions["vinctor_list_audit_events"]
     assert "1..100 cap" in description
+    assert "event_class" in description
 
 
 class FakeDecisionClient(FakeClient):

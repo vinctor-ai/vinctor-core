@@ -288,9 +288,10 @@ The MCP server calls only read-only service APIs:
 - `GET /v1/boundaries/{boundary_id}`
 - `GET /v1/grants/{grant_ref}`
 - `GET /v1/grants` with optional `agent_id` and `status` filters.
-- `GET /v1/audit-events` with optional `limit`, `event_type`, `agent_id`,
-  `grant_ref`, `boundary_id`, and `request_id` filters. MCP clamps `limit` to
-  `1..100` before calling the service.
+- `GET /v1/audit-events` with optional `limit`, `event_class` (`control` or
+  `decision`), `event_type`, `agent_id`, `grant_ref`, `boundary_id`, and
+  `request_id` filters. MCP clamps `limit` to `1..100` before calling the
+  service.
 - `GET /v1/audit-events/{event_id}`
 - `GET /v1/grant-requests`
 - `GET /v1/grant-requests/{request_id}`

@@ -156,23 +156,18 @@ def main() -> None:
                 assert permit_status == 200
                 assert permit["decision"] == "permit"
 
-                audit_events = service.audit_events
-                decision_event_ids = {
-                    disabled_enforce["audit_event_id"],
-                    permit["audit_event_id"],
-                }
-                decision_events = [
-                    event for event in audit_events if event.event_id in decision_event_ids
-                ]
-                assert len(decision_events) == 2
-                assert decision_events[0].boundary_id == created["boundary_id"]
-                assert decision_events[0].runtime == "claude-code"
-                assert decision_events[0].boundary_type == "pretooluse"
-                assert decision_events[0].reason == "boundary_inactive"
-                assert decision_events[1].boundary_id == created["boundary_id"]
-                assert decision_events[1].runtime == "claude-code"
-                assert decision_events[1].boundary_type == "pretooluse"
-                assert decision_events[1].decision == "permit"
+                audit_events = service.list_filtered(
+                    "ws_demo", event_class="decision"
+                )
+                assert len(audit_events) == 2
+                assert audit_events[0].boundary_id == created["boundary_id"]
+                assert audit_events[0].runtime == "claude-code"
+                assert audit_events[0].boundary_type == "pretooluse"
+                assert audit_events[0].reason == "boundary_inactive"
+                assert audit_events[1].boundary_id == created["boundary_id"]
+                assert audit_events[1].runtime == "claude-code"
+                assert audit_events[1].boundary_type == "pretooluse"
+                assert audit_events[1].decision == "permit"
             finally:
                 server.shutdown()
                 thread.join(timeout=5)

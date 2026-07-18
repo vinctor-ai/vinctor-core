@@ -333,6 +333,14 @@ paths:
           required: false
           schema:
             type: string
+        - name: event_class
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - control
+              - decision
         - name: agent_id
           in: query
           required: false

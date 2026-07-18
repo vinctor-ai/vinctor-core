@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Protocol
 from urllib.parse import parse_qs
 
+from vinctor_core.audit import validate_audit_event_class
 from vinctor_core.models import AuditEvent
 from vinctor_service.boundary_http import WorkspaceIdentity
 from vinctor_service.v1_http import V1HttpResponse
@@ -21,6 +22,7 @@ class AuditReadService(Protocol):
         self,
         workspace_id: str,
         *,
+        event_class: str | None = None,
         event_type: str | None = None,
         grant_ref: str | None = None,
         boundary_id: str | None = None,
@@ -42,6 +44,7 @@ ServiceOperatorResolver = Callable[[str, datetime], bool]
 @dataclass(frozen=True)
 class AuditEventFilters:
     agent_id: str | None = None
+    event_class: str | None = None
     event_type: str | None = None
     grant_ref: str | None = None
     boundary_id: str | None = None
@@ -89,6 +92,7 @@ def handle_v1_audit_events_http(
             return filters
         events = service.list_filtered(
             identity.workspace_id,
+            event_class=filters.event_class,
             event_type=filters.event_type,
             grant_ref=filters.grant_ref,
             boundary_id=filters.boundary_id,
@@ -196,6 +200,7 @@ def _parse_filters(query_string: str) -> AuditEventFilters | V1HttpResponse:
     params = parse_qs(query_string, keep_blank_values=True)
     allowed = {
         "agent_id",
+        "event_class",
         "event_type",
         "grant_ref",
         "boundary_id",
@@ -238,8 +243,14 @@ def _parse_filters(query_string: str) -> AuditEventFilters | V1HttpResponse:
         else:
             return _error(400, "invalid_request", "subject_token_verified must be true or false")
 
+    try:
+        validate_audit_event_class(values["event_class"])
+    except ValueError as error:
+        return _error(400, "invalid_request", str(error))
+
     return AuditEventFilters(
         agent_id=values["agent_id"],
+        event_class=values["event_class"],
         event_type=values["event_type"],
         grant_ref=values["grant_ref"],
         boundary_id=values["boundary_id"],

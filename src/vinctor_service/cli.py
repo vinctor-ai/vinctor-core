@@ -14,6 +14,7 @@ from threading import Thread
 from typing import NoReturn, TextIO
 from urllib.parse import urlsplit
 
+from vinctor_core.audit import AUDIT_EVENT_CLASSES
 from vinctor_core.models import Grant
 from vinctor_service.audit_chain import AnchorRecord
 from vinctor_service.key_ops import (
@@ -609,10 +610,15 @@ def _add_operator_commands(roles: argparse._SubParsersAction) -> None:
         "list",
         help="List recent audit events (filterable).",
         description="List recent audit events, filterable by event type, grant ref, "
-        "boundary id, request id, or rejection reason code.",
+        "event class, boundary id, request id, or rejection reason code.",
     )
     audit_list.add_argument("--limit", type=int, default=20)
     audit_list.add_argument("--event")
+    audit_list.add_argument(
+        "--event-class",
+        choices=AUDIT_EVENT_CLASSES,
+        help="Filter by control-plane changes or decision events.",
+    )
     audit_list.add_argument("--grant-ref")
     audit_list.add_argument("--boundary-id")
     audit_list.add_argument("--request-id")
@@ -2667,6 +2673,8 @@ def _metadata_text(body: dict[str, object]) -> str:
 
 
 def _audit_event_matches(event: object, args: argparse.Namespace) -> bool:
+    if args.event_class and event.event_class != args.event_class:
+        return False
     if args.event and event.event_type != args.event:
         return False
     if args.grant_ref and event.grant_ref != args.grant_ref:

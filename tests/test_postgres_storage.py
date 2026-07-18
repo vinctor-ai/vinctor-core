@@ -1082,6 +1082,28 @@ def _seed_pg_chain(conn, count: int = 3) -> PostgresAuditWriter:
     return writer
 
 
+def test_postgres_audit_list_filters_by_validated_materialized_event_class() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    writer = PostgresAuditWriter(conn)
+    writer.write(_pg_audit_event("evt_decision"))
+    writer.write(replace(_pg_audit_event("evt_control"), event_class="control"))
+
+    assert [
+        event.event_id
+        for event in writer.list_filtered("ws_main", event_class="control")
+    ] == ["evt_control"]
+    assert [
+        event.event_id
+        for event in writer.list_filtered("ws_main", event_class="decision")
+    ] == ["evt_decision"]
+    with pytest.raises(
+        ValueError, match="event_class must be one of: control, decision"
+    ):
+        writer.list_filtered("ws_main", event_class="security")
+    conn.close()
+
+
 def test_postgres_audit_verify_ok_on_untouched_chain() -> None:
     assert DSN is not None
     conn = connect_postgres(DSN)

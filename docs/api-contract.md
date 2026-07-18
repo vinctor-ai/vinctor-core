@@ -347,6 +347,7 @@ Returns workspace audit events through an explicit output allowlist. Supported
 query parameters:
 
 - `limit`: positive integer, default `20`, max `100`
+- `event_class`: `control` or `decision`
 - `event_type`
 - `agent_id`
 - `grant_ref`

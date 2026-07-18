@@ -120,6 +120,7 @@ def test_client_lists_audit_events_with_read_only_filters() -> None:
 
     body = client.list_audit_events(
         limit=5,
+        event_class="control",
         event_type="action_denied",
         request_id="grq_demo",
         agent_id="agent_release",
@@ -136,6 +137,7 @@ def test_client_lists_audit_events_with_read_only_filters() -> None:
     assert parsed.path == "/v1/audit-events"
     assert parse_qs(parsed.query) == {
         "agent_id": ["agent_release"],
+        "event_class": ["control"],
         "event_type": ["action_denied"],
         "enforcing_principal": ["pep_git_host"],
         "subject_token_verified": ["false"],
@@ -143,6 +145,17 @@ def test_client_lists_audit_events_with_read_only_filters() -> None:
         "reason_code": ["agent_key_invalid"],
         "request_id": ["grq_demo"],
     }
+
+
+def test_client_rejects_invalid_audit_event_class_before_request() -> None:
+    client, conn = make_client(FakeResponse(200, {"audit_events": []}))
+
+    with pytest.raises(
+        ValueError, match="event_class must be one of: control, decision"
+    ):
+        client.list_audit_events(event_class="security")
+
+    assert conn.requests == []
 
 
 def test_client_reads_service_auth_failures_with_dedicated_key() -> None:

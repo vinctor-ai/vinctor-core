@@ -22,6 +22,7 @@ from vinctor_core.audit import (
     EVENT_BOUNDARY_STATUS_CHANGED,
     EVENT_ENFORCEMENT_SETTING_CHANGED,
     EVENT_SCOPE_BOUNDS_SET,
+    validate_audit_event_class,
 )
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput, Grant
 from vinctor_service.audit import AuthFailureAuditThrottle
@@ -1349,6 +1350,7 @@ class PostgresAuditWriter:
         self,
         workspace_id: str,
         *,
+        event_class: str | None = None,
         event_type: str | None = None,
         grant_ref: str | None = None,
         boundary_id: str | None = None,
@@ -1359,9 +1361,11 @@ class PostgresAuditWriter:
         subject_token_verified: bool | None = None,
         limit: int | None = None,
     ) -> tuple[AuditEvent, ...]:
+        validate_audit_event_class(event_class)
         clauses = ["workspace_id = %s"]
         params: list[object] = [workspace_id]
         filters = (
+            ("event_class", event_class),
             ("event_type", event_type),
             ("grant_ref", grant_ref),
             ("boundary_id", boundary_id),

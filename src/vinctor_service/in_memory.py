@@ -11,6 +11,7 @@ from vinctor_core import (
     get_boundary_for_workspace,
     register_boundary,
 )
+from vinctor_core.audit import validate_audit_event_class
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput
 from vinctor_service.audit import AuthFailureAuditThrottle, InMemoryAuditWriter
 from vinctor_service.auto_approval import (
@@ -102,6 +103,7 @@ class InMemoryV1Service:
         self,
         workspace_id: str,
         *,
+        event_class: str | None = None,
         event_type: str | None = None,
         grant_ref: str | None = None,
         boundary_id: str | None = None,
@@ -119,12 +121,14 @@ class InMemoryV1Service:
         returned (the legacy ``[-limit:]`` slice), oldest-first within that
         window. Workspace scoping is mandatory. ``limit=None`` returns all matches.
         """
+        validate_audit_event_class(event_class)
         matched = [
             event
             for event in self.audit_writer.events
             if event.workspace_id == workspace_id
             and _audit_event_matches(
                 event,
+                event_class=event_class,
                 event_type=event_type,
                 grant_ref=grant_ref,
                 boundary_id=boundary_id,
@@ -469,6 +473,7 @@ class InMemoryV1Service:
 def _audit_event_matches(
     event: AuditEvent,
     *,
+    event_class: str | None,
     event_type: str | None,
     grant_ref: str | None,
     boundary_id: str | None,
@@ -478,6 +483,8 @@ def _audit_event_matches(
     enforcing_principal: str | None = None,
     subject_token_verified: bool | None = None,
 ) -> bool:
+    if event_class is not None and event.event_class != event_class:
+        return False
     if agent_id is not None and event.agent_id != agent_id:
         return False
     if event_type is not None and event.event_type != event_type:

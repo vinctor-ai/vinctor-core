@@ -6,6 +6,8 @@ from http.client import HTTPConnection, HTTPSConnection
 from typing import Any, Protocol
 from urllib.parse import quote, urlencode, urlsplit
 
+from vinctor_core.audit import validate_audit_event_class
+
 
 class HttpConnection(Protocol):
     def request(
@@ -106,6 +108,7 @@ class VinctorServiceClient:
         self,
         *,
         limit: int = 20,
+        event_class: str | None = None,
         event_type: str | None = None,
         grant_ref: str | None = None,
         boundary_id: str | None = None,
@@ -115,9 +118,11 @@ class VinctorServiceClient:
         enforcing_principal: str | None = None,
         subject_token_verified: bool | None = None,
     ) -> dict[str, Any]:
+        validate_audit_event_class(event_class)
         query = _query(
             {
                 "agent_id": agent_id,
+                "event_class": event_class,
                 "event_type": event_type,
                 "grant_ref": grant_ref,
                 "boundary_id": boundary_id,

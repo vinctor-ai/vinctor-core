@@ -15,6 +15,8 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from vinctor_core.models import AuditEvent
 from vinctor_service import InMemoryV1Service
 from vinctor_service.sqlite import (
@@ -39,6 +41,7 @@ def _event(
     resource: str = "email/external",
     boundary_id: str | None = None,
     created_at: datetime = NOW,
+    event_class: str = "decision",
 ) -> AuditEvent:
     return AuditEvent(
         event_id=event_id,
@@ -57,6 +60,7 @@ def _event(
         runtime=None,
         boundary_type=None,
         created_at=created_at,
+        event_class=event_class,
     )
 
 
@@ -130,6 +134,25 @@ def test_list_filtered_by_event_type(tmp_path: Path) -> None:
         result = svc.list_filtered("ws_main", event_type="grant_issued")
 
         assert [e.event_id for e in result] == ["evt_b"]
+
+
+def test_list_filtered_by_validated_event_class(tmp_path: Path) -> None:
+    for svc in _both_services(tmp_path / "eclass"):
+        svc.audit_writer.write(_event(event_id="evt_decision"))
+        svc.audit_writer.write(_event(event_id="evt_control", event_class="control"))
+
+        assert [
+            event.event_id
+            for event in svc.list_filtered("ws_main", event_class="control")
+        ] == ["evt_control"]
+        assert [
+            event.event_id
+            for event in svc.list_filtered("ws_main", event_class="decision")
+        ] == ["evt_decision"]
+        with pytest.raises(
+            ValueError, match="event_class must be one of: control, decision"
+        ):
+            svc.list_filtered("ws_main", event_class="security")
 
 
 def test_list_filtered_by_grant_ref(tmp_path: Path) -> None:
