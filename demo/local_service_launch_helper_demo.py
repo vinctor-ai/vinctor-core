@@ -54,7 +54,11 @@ def main() -> None:
             assert response["decision"] == "permit"
 
             audit_events = handle.service.audit_events
+            # The bootstrap's scope-bounds write is itself audited on the same
+            # chain (ADR 0019): control events and decision events share one
+            # tamper-evident ordering.
             assert [event.event_type for event in audit_events] == [
+                "scope_bounds_set",
                 "grant_issued",
                 "action_permitted",
             ]

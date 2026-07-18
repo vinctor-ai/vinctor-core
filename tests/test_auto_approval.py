@@ -98,7 +98,8 @@ def test_auto_approval_dry_run_matches_scope_and_ttl(tmp_path: Path) -> None:
         workspace_id="ws_main",
     ).status == "pending"
     assert service.lookup_grant(grant_ref="grt_missing", workspace_id="ws_main") is None
-    assert [event.event_type for event in service.audit_events] == ["grant_requested"]
+    assert [event.event_type for event in service.audit_events
+            if event.event_class == "decision"] == ["grant_requested"]
     conn.close()
 
 
@@ -225,7 +226,8 @@ def test_auto_approval_service_path_approves_and_issues_grant(
 
     assert enforced.status_code == 200
     assert enforced.decision == "permit"
-    assert [event.event_type for event in service.audit_events] == [
+    assert [event.event_type for event in service.audit_events
+            if event.event_class == "decision"] == [
         "grant_requested",
         "grant_issued",
         "grant_request_auto_approved",
@@ -264,7 +266,8 @@ def test_auto_approval_service_path_leaves_non_matching_request_pending(
     assert result.request.status == "pending"
     assert result.grant is None
     assert service.list_grant_requests(workspace_id="ws_main") == (result.request,)
-    assert [event.event_type for event in service.audit_events] == ["grant_requested"]
+    assert [event.event_type for event in service.audit_events
+            if event.event_class == "decision"] == ["grant_requested"]
     conn.close()
 
 
@@ -292,7 +295,8 @@ def test_auto_approval_service_path_ignores_disabled_rule(tmp_path: Path) -> Non
     assert result.request is not None
     assert result.request.status == "pending"
     assert result.grant is None
-    assert [event.event_type for event in service.audit_events] == ["grant_requested"]
+    assert [event.event_type for event in service.audit_events
+            if event.event_class == "decision"] == ["grant_requested"]
     conn.close()
 
 
@@ -320,7 +324,8 @@ def test_auto_approval_service_path_rejects_rule_ttl_excess(tmp_path: Path) -> N
     assert result.request is not None
     assert result.request.status == "pending"
     assert result.grant is None
-    assert [event.event_type for event in service.audit_events] == ["grant_requested"]
+    assert [event.event_type for event in service.audit_events
+            if event.event_class == "decision"] == ["grant_requested"]
     conn.close()
 
 
@@ -358,7 +363,8 @@ def test_auto_approval_service_path_still_requires_agent_issuable_bounds(
         workspace_id="ws_main",
     ).status == "pending"
     # ADR 0008: the auto-approval's out-of-bounds issuance attempt is recorded.
-    assert [event.event_type for event in service.audit_events] == [
+    assert [event.event_type for event in service.audit_events
+            if event.event_class == "decision"] == [
         "grant_requested",
         "grant_issue_rejected",
     ]

@@ -1797,7 +1797,8 @@ def _operator_service(args: argparse.Namespace, *, stdout: TextIO) -> None:
 
 
 def _operator_keys(args: argparse.Namespace, *, stdout: TextIO) -> None:
-    repository = SQLiteLocalKeyRepository(_sqlite_service(args.db).conn)
+    service = _sqlite_service(args.db)
+    repository = SQLiteLocalKeyRepository(service.conn)
     command = args.keys_command
     now = datetime.now(UTC)
     if command == "list":
@@ -1815,17 +1816,27 @@ def _operator_keys(args: argparse.Namespace, *, stdout: TextIO) -> None:
         return
     if command == "rotate":
         if args.rotate_target == "workspace":
-            result = rotate_workspace_key(repository, workspace_id=args.workspace_id, now=now)
+            result = rotate_workspace_key(
+                repository,
+                workspace_id=args.workspace_id,
+                now=now,
+                control_auditor=service.control_auditor,
+            )
             key_type = "workspace"
             agent_id = None
         elif args.rotate_target == "auditor":
             result = rotate_auditor_key(
-                repository, workspace_id=args.workspace_id, now=now
+                repository,
+                workspace_id=args.workspace_id,
+                now=now,
+                control_auditor=service.control_auditor,
             )
             key_type = "auditor"
             agent_id = None
         elif args.rotate_target == "service-operator":
-            result = rotate_service_operator_key(repository, now=now)
+            result = rotate_service_operator_key(
+                repository, now=now, control_auditor=service.control_auditor
+            )
             key_type = "service_operator"
             agent_id = None
         elif args.rotate_target == "agent":
@@ -1834,6 +1845,7 @@ def _operator_keys(args: argparse.Namespace, *, stdout: TextIO) -> None:
                 workspace_id=args.workspace_id,
                 agent_id=args.agent_id,
                 now=now,
+                control_auditor=service.control_auditor,
             )
             key_type = "agent"
             agent_id = args.agent_id
@@ -1843,6 +1855,7 @@ def _operator_keys(args: argparse.Namespace, *, stdout: TextIO) -> None:
                 workspace_id=args.workspace_id,
                 pep_id=args.pep_id,
                 now=now,
+                control_auditor=service.control_auditor,
             )
             key_type = "resource_server"
             agent_id = args.pep_id

@@ -5,8 +5,19 @@ from vinctor_service import (
     InMemoryAgentEnforcementSettingsRepository,
     SQLiteAgentEnforcementSettingsRepository,
 )
-from vinctor_service.sqlite import get_sqlite_schema_versions, init_sqlite_schema
+from vinctor_service.control_audit import ControlPlaneAuditor
+from vinctor_service.sqlite import (
+    SQLiteAuditWriter,
+    get_sqlite_schema_versions,
+    init_sqlite_schema,
+)
 from vinctor_service.sqlite_txn import connect_sqlite
+
+
+def _sqlite_repo(conn) -> SQLiteAgentEnforcementSettingsRepository:
+    return SQLiteAgentEnforcementSettingsRepository(
+        conn, ControlPlaneAuditor(SQLiteAuditWriter(conn))
+    )
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -23,7 +34,7 @@ def test_in_memory_default_false_and_set_get() -> None:
 def test_sqlite_default_false_and_round_trip(tmp_path) -> None:
     conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
-    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    repo = _sqlite_repo(conn)
     assert repo.get_require_boundary(workspace_id="ws", agent_id="a") is False
     repo.set_require_boundary(workspace_id="ws", agent_id="a", require_boundary=True, now=NOW)
     assert repo.get_require_boundary(workspace_id="ws", agent_id="a") is True
@@ -32,13 +43,13 @@ def test_sqlite_default_false_and_round_trip(tmp_path) -> None:
 def test_sqlite_schema_records_latest_version(tmp_path) -> None:
     conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
-    assert get_sqlite_schema_versions(conn) == tuple(range(1, 15))
+    assert get_sqlite_schema_versions(conn) == tuple(range(1, 16))
 
 
 def test_unrelated_agent_setting_does_not_override_workspace_boundary(tmp_path) -> None:
     conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
-    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    repo = _sqlite_repo(conn)
     repo.set_require_boundary(
         workspace_id="ws", agent_id="", require_boundary=True, now=NOW
     )
@@ -70,7 +81,7 @@ def test_boundary_override_presence_migration_preserves_existing_rows(tmp_path) 
         """
     )
     init_sqlite_schema(conn)
-    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    repo = _sqlite_repo(conn)
     assert repo.get_require_boundary_setting(
         workspace_id="ws", agent_id="enabled"
     ) is True
@@ -100,7 +111,7 @@ def test_migrated_db_new_subject_token_row_does_not_override_workspace_boundary(
         """
     )
     init_sqlite_schema(conn)
-    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    repo = _sqlite_repo(conn)
     repo.set_require_boundary(workspace_id="ws", agent_id="", require_boundary=True, now=NOW)
     repo.set_require_subject_token(
         workspace_id="ws", agent_id="a", require_subject_token=True, now=NOW
@@ -123,7 +134,7 @@ def test_migrated_db_new_pop_row_does_not_override_workspace_boundary(tmp_path) 
         """
     )
     init_sqlite_schema(conn)
-    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    repo = _sqlite_repo(conn)
     repo.set_require_boundary(workspace_id="ws", agent_id="", require_boundary=True, now=NOW)
     repo.set_require_pop(workspace_id="ws", agent_id="a", require_pop=True, now=NOW)
     assert repo.is_boundary_required(workspace_id="ws", agent_id="a") is True
@@ -136,7 +147,7 @@ def test_unrelated_setting_does_not_drop_workspace_require_subject_token(tmp_pat
     # = its default false", overriding the workspace true. Presence-bit gated.
     conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
-    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    repo = _sqlite_repo(conn)
     repo.set_require_subject_token(
         workspace_id="ws", agent_id="", require_subject_token=True, now=NOW
     )
@@ -148,7 +159,7 @@ def test_unrelated_setting_does_not_drop_workspace_require_pop(tmp_path) -> None
     # SECURITY: same bypass for the require_pop mandate.
     conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
-    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    repo = _sqlite_repo(conn)
     repo.set_require_pop(workspace_id="ws", agent_id="", require_pop=True, now=NOW)
     repo.set_require_boundary(workspace_id="ws", agent_id="a", require_boundary=False, now=NOW)
     assert repo.is_pop_required(workspace_id="ws", agent_id="a") is True
@@ -158,7 +169,7 @@ def test_explicit_agent_require_subject_token_false_still_exempts(tmp_path) -> N
     # The presence bit must still let an operator EXPLICITLY exempt an agent.
     conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
-    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    repo = _sqlite_repo(conn)
     repo.set_require_subject_token(
         workspace_id="ws", agent_id="", require_subject_token=True, now=NOW
     )
@@ -194,7 +205,7 @@ def test_presence_migration_keeps_existing_subject_token_mandate(tmp_path) -> No
         """
     )
     init_sqlite_schema(conn)
-    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    repo = _sqlite_repo(conn)
     assert repo.get_require_subject_token_setting(workspace_id="ws", agent_id="a") is True
     assert repo.is_subject_token_required(workspace_id="ws", agent_id="a") is True
 
@@ -217,7 +228,7 @@ def test_presence_migration_unrelated_row_keeps_workspace_token_and_pop_mandates
         """
     )
     init_sqlite_schema(conn)
-    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    repo = _sqlite_repo(conn)
     assert repo.is_subject_token_required(workspace_id="ws", agent_id="a") is True
     assert repo.is_pop_required(workspace_id="ws", agent_id="a") is True
 
@@ -240,7 +251,7 @@ def test_boundary_realignment_unsets_subject_token_only_row_override(tmp_path) -
         """
     )
     init_sqlite_schema(conn)
-    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    repo = _sqlite_repo(conn)
     assert repo.is_boundary_required(workspace_id="ws", agent_id="a") is True
 
 
@@ -249,7 +260,7 @@ def test_boundary_realignment_is_one_time_and_version_gated(tmp_path) -> None:
     # require_boundary=false exemption must survive a later re-init.
     conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
-    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    repo = _sqlite_repo(conn)
     repo.set_require_boundary(workspace_id="ws", agent_id="", require_boundary=True, now=NOW)
     repo.set_require_boundary(workspace_id="ws", agent_id="a", require_boundary=False, now=NOW)
     init_sqlite_schema(conn)
@@ -270,7 +281,7 @@ def test_in_memory_require_pop_default_false_and_set_get() -> None:
 def test_sqlite_require_pop_default_false_and_round_trip(tmp_path) -> None:
     conn = connect_sqlite(tmp_path / "v.sqlite")
     init_sqlite_schema(conn)
-    repo = SQLiteAgentEnforcementSettingsRepository(conn)
+    repo = _sqlite_repo(conn)
     assert repo.get_require_pop_setting(workspace_id="ws", agent_id="a") is None
     assert repo.is_pop_required(workspace_id="ws", agent_id="a") is False
     repo.set_require_pop(workspace_id="ws", agent_id="a", require_pop=True, now=NOW)

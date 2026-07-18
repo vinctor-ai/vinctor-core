@@ -14,6 +14,10 @@ from vinctor_core import (
     get_boundary_for_workspace,
     register_boundary,
 )
+from vinctor_core.audit import (
+    EVENT_ENFORCEMENT_SETTING_CHANGED,
+    EVENT_SCOPE_BOUNDS_SET,
+)
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput, Grant
 from vinctor_service.audit import AuthFailureAuditThrottle
 from vinctor_service.audit_anchor import AuditAnchor, NullAnchor, anchor_from_env
@@ -38,6 +42,7 @@ from vinctor_service.auto_approval import (
     evaluate_auto_approval,
     list_auto_approval_rules,
 )
+from vinctor_service.control_audit import ControlPlaneAuditor
 from vinctor_service.grant_requests import (
     approve_grant_request,
     create_grant_request,
@@ -296,6 +301,7 @@ def _apply_sqlite_schema(conn: sqlite3.Connection) -> None:
     _ensure_agent_enforcement_require_subject_token_set_column(conn)
     _ensure_agent_enforcement_require_pop_set_column(conn)
     _ensure_audit_events_hashchain_columns(conn)
+    _ensure_audit_events_event_class_column(conn)
     _realign_agent_enforcement_require_boundary_set(conn)
     conn.execute(
         """
@@ -394,6 +400,13 @@ def _apply_sqlite_schema(conn: sqlite3.Connection) -> None:
         VALUES (?, ?)
         """,
         (_AUDIT_HASHCHAIN_BACKFILL_VERSION, datetime.now(UTC).isoformat()),
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, ?)
+        """,
+        (15, datetime.now(UTC).isoformat()),
     )
     conn.commit()
 
@@ -647,6 +660,23 @@ def _ensure_audit_events_hashchain_columns(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _ensure_audit_events_event_class_column(conn: sqlite3.Connection) -> None:
+    # Schema version 15 (ADR 0019): audit events carry an event category on the
+    # SAME chain — "decision" (what an agent did) or "control" (an operator
+    # changed the rules). The non-NULL default backfills every pre-existing row
+    # as "decision", matching its canonical event_json, which omits the key for
+    # that class — so the migration touches no hashed bytes and verify_chain is
+    # unaffected.
+    cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(audit_events)").fetchall()
+    }
+    if "event_class" not in cols:
+        conn.execute(
+            "ALTER TABLE audit_events "
+            "ADD COLUMN event_class TEXT NOT NULL DEFAULT 'decision'"
+        )
+
+
 def get_sqlite_schema_versions(conn: sqlite3.Connection) -> tuple[int, ...]:
     rows = conn.execute(
         """
@@ -788,8 +818,15 @@ def _atomic_write(conn: sqlite3.Connection) -> Iterator[None]:
 
 
 class SQLiteAgentIssuableScopeBoundsRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    # ADR 0019: issuable scope bounds are control-plane state, so the repository
+    # cannot exist without an audit path — the auditor is a required argument
+    # and must write through THIS connection (one transaction, one commit).
+    def __init__(
+        self, conn: sqlite3.Connection, control_auditor: ControlPlaneAuditor
+    ) -> None:
         self._conn = require_serialized(conn)
+        control_auditor.require_bound_to(self._conn)
+        self._control_auditor = control_auditor
 
     def get_bounds(self, *, workspace_id: str, agent_id: str) -> tuple[str, ...] | None:
         row = self._conn.execute(
@@ -859,7 +896,8 @@ class SQLiteAgentIssuableScopeBoundsRepository:
         now: datetime,
     ) -> None:
         validate_issuable_scope_bounds(scopes, max_ttl_seconds=max_ttl_seconds)
-        with _write_scope(self._conn):
+        # The bounds change and its control audit event commit as ONE unit.
+        with _atomic_write(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO agent_issuable_scope_bounds (
@@ -878,11 +916,43 @@ class SQLiteAgentIssuableScopeBoundsRepository:
                     now.isoformat(),
                 ),
             )
+            self._control_auditor.record(
+                event_type=EVENT_SCOPE_BOUNDS_SET,
+                workspace_id=workspace_id,
+                agent_id=agent_id,
+                action="set_issuable_scope_bounds",
+                resource=f"issuable_scope_bounds/{agent_id}",
+                reason="max_ttl_seconds="
+                + (str(max_ttl_seconds) if max_ttl_seconds is not None else "none"),
+                scope_attempted=" ".join(scopes),
+                now=now,
+            )
 
 
 class SQLiteAgentEnforcementSettingsRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    # ADR 0019: the enforcement mandates are control-plane state, so the
+    # repository cannot exist without an audit path — the auditor is required
+    # and must write through THIS connection (one transaction, one commit).
+    def __init__(
+        self, conn: sqlite3.Connection, control_auditor: ControlPlaneAuditor
+    ) -> None:
         self._conn = require_serialized(conn)
+        control_auditor.require_bound_to(self._conn)
+        self._control_auditor = control_auditor
+
+    def _record_setting_change(
+        self, *, setting: str, value: bool, workspace_id: str, agent_id: str,
+        now: datetime,
+    ) -> None:
+        self._control_auditor.record(
+            event_type=EVENT_ENFORCEMENT_SETTING_CHANGED,
+            workspace_id=workspace_id,
+            agent_id=agent_id,
+            action=f"set_{setting}",
+            resource=f"enforcement_setting/{setting}",
+            reason=f"{setting}={'true' if value else 'false'}",
+            now=now,
+        )
 
     def get_require_boundary(self, *, workspace_id: str, agent_id: str) -> bool:
         row = self._conn.execute(
@@ -925,7 +995,8 @@ class SQLiteAgentEnforcementSettingsRepository:
     def set_require_boundary(
         self, *, workspace_id: str, agent_id: str, require_boundary: bool, now: datetime
     ) -> None:
-        with _write_scope(self._conn):
+        # The mandate change and its control audit event commit as ONE unit.
+        with _atomic_write(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
@@ -938,6 +1009,10 @@ class SQLiteAgentEnforcementSettingsRepository:
                     updated_at = excluded.updated_at
                 """,
                 (workspace_id, agent_id, 1 if require_boundary else 0, now.isoformat()),
+            )
+            self._record_setting_change(
+                setting="require_boundary", value=require_boundary,
+                workspace_id=workspace_id, agent_id=agent_id, now=now,
             )
 
     def get_require_subject_token_setting(
@@ -964,7 +1039,7 @@ class SQLiteAgentEnforcementSettingsRepository:
     def set_require_subject_token(
         self, *, workspace_id: str, agent_id: str, require_subject_token: bool, now: datetime
     ) -> None:
-        with _write_scope(self._conn):
+        with _atomic_write(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
@@ -977,6 +1052,10 @@ class SQLiteAgentEnforcementSettingsRepository:
                     updated_at = excluded.updated_at
                 """,
                 (workspace_id, agent_id, 1 if require_subject_token else 0, now.isoformat()),
+            )
+            self._record_setting_change(
+                setting="require_subject_token", value=require_subject_token,
+                workspace_id=workspace_id, agent_id=agent_id, now=now,
             )
 
     def get_require_pop_setting(self, *, workspace_id: str, agent_id: str) -> bool | None:
@@ -999,7 +1078,7 @@ class SQLiteAgentEnforcementSettingsRepository:
     def set_require_pop(
         self, *, workspace_id: str, agent_id: str, require_pop: bool, now: datetime
     ) -> None:
-        with _write_scope(self._conn):
+        with _atomic_write(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO agent_enforcement_settings (
@@ -1012,6 +1091,10 @@ class SQLiteAgentEnforcementSettingsRepository:
                     updated_at = excluded.updated_at
                 """,
                 (workspace_id, agent_id, 1 if require_pop else 0, now.isoformat()),
+            )
+            self._record_setting_change(
+                setting="require_pop", value=require_pop,
+                workspace_id=workspace_id, agent_id=agent_id, now=now,
             )
 
 
@@ -1409,9 +1492,9 @@ class SQLiteAuditWriter:
                     event_id, event_type, decision, reason,
                     workspace_id, agent_id, grant_id, grant_ref,
                     action, resource, scope_attempted, scope_matched,
-                    boundary_id, runtime, boundary_type, created_at, event_json,
-                    seq, prev_hash, row_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    boundary_id, runtime, boundary_type, created_at, event_class,
+                    event_json, seq, prev_hash, row_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.event_id,
@@ -1430,6 +1513,7 @@ class SQLiteAuditWriter:
                     event.runtime,
                     event.boundary_type,
                     event.created_at.isoformat(),
+                    event.event_class,
                     event_json,
                     seq,
                     prev_hash,
@@ -1574,6 +1658,7 @@ class SQLiteAuditWriter:
         "event_id", "event_type", "decision", "reason", "workspace_id", "agent_id",
         "grant_id", "grant_ref", "action", "resource", "scope_attempted",
         "scope_matched", "boundary_id", "runtime", "boundary_type", "created_at",
+        "event_class",
     )
 
     def verify_chain(self) -> ChainVerification:
@@ -1725,6 +1810,7 @@ class SQLiteV1Service:
     shared_state: SQLiteServiceSharedState | None = None
     grant_repository: SQLiteGrantRepository = field(init=False)
     audit_writer: SQLiteAuditWriter = field(init=False)
+    control_auditor: ControlPlaneAuditor = field(init=False)
     boundary_registry: SQLiteBoundaryRegistry = field(init=False)
     scope_bounds_repository: SQLiteAgentIssuableScopeBoundsRepository = field(init=False)
     grant_request_repository: SQLiteGrantRequestRepository = field(init=False)
@@ -1740,6 +1826,7 @@ class SQLiteV1Service:
         "shared_state": "process_shared",
         "grant_repository": "database_backed",
         "audit_writer": "connection_writer_with_shared_sinks",
+        "control_auditor": "connection_writer_with_shared_sinks",
         "boundary_registry": "database_backed",
         "scope_bounds_repository": "database_backed",
         "grant_request_repository": "database_backed",
@@ -1778,14 +1865,19 @@ class SQLiteV1Service:
         export = shared_state.audit_export
         if not isinstance(export, NullExport):
             self.audit_writer = ExportingAuditWriter(self.audit_writer, export)
+        # Control-plane mutations audit through the SAME (possibly
+        # export-wrapped) writer as decisions: one chain, one clock (ADR 0019).
+        self.control_auditor = ControlPlaneAuditor(self.audit_writer)
         self._auth_failures = shared_state.auth_failures
         self.boundary_registry = SQLiteBoundaryRegistry(self.conn)
-        self.scope_bounds_repository = SQLiteAgentIssuableScopeBoundsRepository(self.conn)
+        self.scope_bounds_repository = SQLiteAgentIssuableScopeBoundsRepository(
+            self.conn, self.control_auditor
+        )
         self.grant_request_repository = SQLiteGrantRequestRepository(self.conn)
         self.auto_approval_rule_repository = SQLiteAutoApprovalRuleRepository(self.conn)
         self.subject_token_repository = SQLiteSubjectTokenRepository(self.conn)
         self.agent_enforcement_settings_repository = SQLiteAgentEnforcementSettingsRepository(
-            self.conn
+            self.conn, self.control_auditor
         )
         self._pop_replay = SQLiteReplayStore(self.conn)
 
@@ -2345,6 +2437,7 @@ def _audit_event_from_json(value: str) -> AuditEvent:
         last_seen_at=_optional_datetime(data.get("last_seen_at")),
         identity_proven=data.get("identity_proven", False),
         token_id=data.get("token_id"),
+        event_class=data.get("event_class", "decision"),
     )
 
 

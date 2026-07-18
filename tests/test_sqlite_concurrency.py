@@ -172,7 +172,7 @@ def test_rotation_waits_for_another_threads_transaction(tmp_path: Path) -> None:
     # it should wait for the connection to become idle, then run (Codex P2: the
     # nesting check ran before the lock, mistaking a peer's txn for caller nesting).
     conn = connect_sqlite(str(tmp_path / "v.sqlite"), check_same_thread=False)
-    SQLiteV1Service(conn)  # initialize schema
+    service = SQLiteV1Service(conn)  # initialize schema
     repo = SQLiteLocalKeyRepository(conn)
     old = repo.create_workspace_key(workspace_id="ws_main", now=NOW)
     a_inside = threading.Event()
@@ -188,7 +188,10 @@ def test_rotation_waits_for_another_threads_transaction(tmp_path: Path) -> None:
     def thread_b() -> None:
         a_inside.wait(timeout=2)
         try:
-            rotate_workspace_key(repo, workspace_id="ws_main", now=NOW)
+            rotate_workspace_key(
+                repo, workspace_id="ws_main", now=NOW,
+                control_auditor=service.control_auditor,
+            )
             rotated.set()
         except Exception as exc:  # noqa: BLE001 - captured for assertion
             errors.append(exc)

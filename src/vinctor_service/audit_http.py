@@ -280,6 +280,7 @@ def _audit_event_body(event: AuditEvent) -> dict[str, str | bool | int | None]:
         ),
         "identity_proven": event.identity_proven,
         "token_id": event.token_id,
+        "event_class": event.event_class,
     }
 
 

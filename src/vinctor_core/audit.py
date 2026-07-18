@@ -145,5 +145,65 @@ def build_rejection_audit_event(
     )
 
 
+# ADR 0019: control-plane events share the decision chain, distinguished by
+# event_class. The ordering between a rule change and an action IS the
+# evidence — one chain, one clock.
+EVENT_CLASS_CONTROL = "control"
+EVENT_CLASS_DECISION = "decision"
+
+# Control-plane operation event types (one per operator operation).
+EVENT_ENFORCEMENT_SETTING_CHANGED = "enforcement_setting_changed"
+EVENT_SCOPE_BOUNDS_SET = "scope_bounds_set"
+EVENT_POLICY_APPLIED = "policy_applied"
+EVENT_POLICY_ROLLED_BACK = "policy_rolled_back"
+EVENT_KEY_ROTATED = "key_rotated"
+
+
+def build_control_audit_event(
+    *,
+    event_type: str,
+    workspace_id: str,
+    action: str,
+    resource: str,
+    reason: str,
+    created_at: datetime,
+    agent_id: str = "",
+    scope_attempted: str = "",
+    enforcing_principal: str | None = None,
+    event_id: str | None = None,
+) -> AuditEvent:
+    """Build an audit event for a completed control-plane mutation (ADR 0019).
+
+    Records WHO changed the rules on the same chain that records what agents
+    did. ``action`` names the operation (e.g. ``set_require_boundary``),
+    ``resource`` the object acted on, ``reason`` the operator-visible change
+    summary, and ``agent_id`` the TARGET agent for per-agent settings (empty
+    for workspace-level). The acting principal, when known, goes in
+    ``enforcing_principal``. No grant is involved and nothing here reaches an
+    agent-facing response: grant identifiers stay empty and the coarse
+    ``reason_code`` deny surface is never set.
+    """
+    return AuditEvent(
+        event_id=event_id or _new_event_id(),
+        event_type=event_type,
+        decision="permit",
+        reason=reason,
+        workspace_id=workspace_id,
+        agent_id=agent_id,
+        grant_id="",
+        grant_ref="",
+        action=action,
+        resource=resource,
+        scope_attempted=scope_attempted,
+        scope_matched=None,
+        boundary_id=None,
+        runtime=None,
+        boundary_type=None,
+        created_at=created_at,
+        enforcing_principal=enforcing_principal,
+        event_class=EVENT_CLASS_CONTROL,
+    )
+
+
 def _new_event_id() -> str:
     return f"evt_{token_urlsafe(12)}"

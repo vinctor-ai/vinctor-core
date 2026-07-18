@@ -53,6 +53,10 @@ def crosscheck_values_match(column: str, json_value: object, column_value: objec
       tz-aware datetime in the session timezone (Postgres TIMESTAMPTZ).
     - booleans (identity_proven): compared as Python bools; AuditEvent.to_dict
       omits the JSON key when False, and backends store 0/1 or BOOLEAN.
+    - event_class: AuditEvent.to_dict omits the key when "decision" (and
+      pre-event_class rows never carried it), so an absent JSON field equals a
+      'decision' column; any other divergence — e.g. a control row's column
+      flipped to 'decision' to hide it from per-category readers — is a break.
     - everything else (nullable text, integers): direct equality, with SQL NULL
       equal to an absent-or-null JSON field (both arrive here as None).
     """
@@ -60,6 +64,8 @@ def crosscheck_values_match(column: str, json_value: object, column_value: objec
         return _canonical_instant(json_value) == _canonical_instant(column_value)
     if column in _BOOLEAN_CROSSCHECK_FIELDS:
         return bool(json_value) == bool(column_value)
+    if column == "event_class":
+        return (json_value if json_value is not None else "decision") == column_value
     return json_value == column_value
 
 

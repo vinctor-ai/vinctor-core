@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
+from vinctor_core.audit import EVENT_POLICY_ROLLED_BACK
 from vinctor_service.policy_files import (
     PolicyRollbackResult,
     PolicyVersionInfo,
@@ -128,6 +129,17 @@ def rollback_postgres_policy_version(
             source_version=version,
             applied_by=applied_by,
             now=now,
+        )
+        # The rollback and its ONE control event commit together (the restore
+        # itself is raw SQL, so there are no per-mutation records to collapse).
+        service.control_auditor.record(
+            event_type=EVENT_POLICY_ROLLED_BACK,
+            workspace_id=workspace_id,
+            action="policy_rollback",
+            resource=f"policy/version/{new_version}",
+            reason=f"restored_version={version}",
+            now=now,
+            enforcing_principal=applied_by,
         )
     return PolicyRollbackResult(
         workspace_id=workspace_id,

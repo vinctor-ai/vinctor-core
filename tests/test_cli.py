@@ -562,7 +562,7 @@ def test_vinctor_demo_check_runs_smoke_flow() -> None:
 
     assert result["ok"] is True
     assert result["decision"] == "permit"
-    assert result["audit_event_count"] == 5
+    assert result["audit_event_count"] == 6
 
 
 def test_vinctor_demo_service_runs_user_facing_flow() -> None:
@@ -687,8 +687,8 @@ auto_approval_rules:
         "rules_updated": 0,
         "workspace_id": "ws_demo",
     }
-    assert service_info["schema_versions"] == list(range(1, 15))
-    assert service_info["schema_version"] == 14
+    assert service_info["schema_versions"] == list(range(1, 16))
+    assert service_info["schema_version"] == 15
     assert exported["agent_bounds"] == 1
     assert exported["auto_approval_rules"] == 1
     assert bounds == ("execute:ci/test", "write:repo/vinctor-core/*")
@@ -853,11 +853,11 @@ def test_vinctor_cli_storage_backup_and_reset(tmp_path: Path) -> None:
 
     assert backup["output_path"] == str(backup_path)
     assert backup["bytes"] > 0
-    assert backup["schema_versions"] == list(range(1, 15))
+    assert backup["schema_versions"] == list(range(1, 16))
     assert reset == {
         "db_path": str(db_path),
         "reset": True,
-        "schema_versions": list(range(1, 15)),
+        "schema_versions": list(range(1, 16)),
     }
 
     backup_conn = connect_sqlite(backup_path)
@@ -929,8 +929,8 @@ def test_vinctor_cli_service_info_reports_schema(tmp_path: Path) -> None:
 
     assert info["mode"] == "local"
     assert info["db_path"] == str(db_path)
-    assert info["schema_version"] == 14
-    assert info["schema_versions"] == list(range(1, 15))
+    assert info["schema_version"] == 15
+    assert info["schema_versions"] == list(range(1, 16))
     assert info["key_storage_mode"] == "sqlite_hashes"
     assert "host" in info
     assert "port" in info
@@ -966,7 +966,7 @@ def test_vinctor_cli_storage_restore_roundtrip(tmp_path: Path) -> None:
         "db_path": str(db_path),
         "input_path": str(backup_path),
         "restored": True,
-        "schema_versions": list(range(1, 15)),
+        "schema_versions": list(range(1, 16)),
     }
     conn = connect_sqlite(db_path)
     try:
@@ -1046,7 +1046,7 @@ def test_vinctor_cli_storage_migrate_reports_versions(tmp_path: Path) -> None:
 
     assert migrate == {
         "db_path": str(db_path),
-        "schema_versions": list(range(1, 15)),
+        "schema_versions": list(range(1, 16)),
     }
     conn = connect_sqlite(db_path)
     try:

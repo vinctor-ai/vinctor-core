@@ -19,6 +19,7 @@ GRANT_DIAGNOSTIC_FIELDS = ("scopes",)
 AUDIT_EVENT_SAFE_FIELDS = (
     "event_id",
     "event_type",
+    "event_class",
     "decision",
     "reason",
     "workspace_id",

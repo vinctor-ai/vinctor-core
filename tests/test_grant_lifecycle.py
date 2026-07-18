@@ -57,10 +57,14 @@ def enforce_request(
 
 
 def audit_rows(conn: sqlite3.Connection) -> list[tuple[str, str, str, str]]:
+    # Grant-lifecycle assertions target decision-class rows; control-plane
+    # events (e.g. the scope_bounds_set emitted by test setup) are covered by
+    # tests/test_control_plane_audit.py.
     return conn.execute(
         """
         SELECT event_type, reason, grant_ref, action
         FROM audit_events
+        WHERE event_class = 'decision'
         ORDER BY rowid
         """
     ).fetchall()
@@ -71,6 +75,7 @@ def audit_event_decisions(conn: sqlite3.Connection) -> list[tuple[str, str]]:
         """
         SELECT event_type, decision
         FROM audit_events
+        WHERE event_class = 'decision'
         ORDER BY rowid
         """
     ).fetchall()
@@ -137,7 +142,11 @@ def test_scopes_outside_agent_issuable_bounds_are_rejected(tmp_path: Path) -> No
         (EVENT_GRANT_ISSUE_REJECTED, REASON_SCOPE_OUTSIDE_ISSUABLE_BOUNDS, "", "issue_grant")
     ]
     # The persisted event carries the coarse reason_code (mirrored into reason).
-    event_json = json.loads(conn.execute("SELECT event_json FROM audit_events").fetchone()[0])
+    event_json = json.loads(
+        conn.execute(
+            "SELECT event_json FROM audit_events WHERE event_class = 'decision'"
+        ).fetchone()[0]
+    )
     assert event_json["reason_code"] == REASON_SCOPE_OUTSIDE_ISSUABLE_BOUNDS
     assert "grt_issued" not in json.dumps(event_json)
     conn.close()
@@ -158,7 +167,11 @@ def test_issuance_without_agent_bounds_records_rejection_audit(tmp_path: Path) -
     assert audit_rows(conn) == [
         (EVENT_GRANT_ISSUE_REJECTED, REASON_ISSUABLE_BOUNDS_NOT_FOUND, "", "issue_grant")
     ]
-    event_json = json.loads(conn.execute("SELECT event_json FROM audit_events").fetchone()[0])
+    event_json = json.loads(
+        conn.execute(
+            "SELECT event_json FROM audit_events WHERE event_class = 'decision'"
+        ).fetchone()[0]
+    )
     assert event_json["reason_code"] == REASON_ISSUABLE_BOUNDS_NOT_FOUND
     conn.close()
 
@@ -292,7 +305,11 @@ def test_ttl_exceeding_agent_max_ttl_is_rejected(tmp_path: Path) -> None:
     assert audit_rows(conn) == [
         (EVENT_GRANT_ISSUE_REJECTED, REASON_TTL_EXCEEDS_ISSUABLE_MAX, "", "issue_grant")
     ]
-    event_json = json.loads(conn.execute("SELECT event_json FROM audit_events").fetchone()[0])
+    event_json = json.loads(
+        conn.execute(
+            "SELECT event_json FROM audit_events WHERE event_class = 'decision'"
+        ).fetchone()[0]
+    )
     assert event_json["reason_code"] == REASON_TTL_EXCEEDS_ISSUABLE_MAX
     conn.close()
 
@@ -388,7 +405,9 @@ def test_lifecycle_audit_event_json_excludes_raw_inputs(tmp_path: Path) -> None:
 
     service.issue_grant(issue_request(), now=NOW)
 
-    row = conn.execute("SELECT event_json FROM audit_events").fetchone()
+    row = conn.execute(
+        "SELECT event_json FROM audit_events WHERE event_class = 'decision'"
+    ).fetchone()
     event_json = json.loads(row[0])
     assert event_json["event_type"] == "grant_issued"
     assert event_json.keys().isdisjoint({"raw_tool_input", "raw_command", "prompt"})

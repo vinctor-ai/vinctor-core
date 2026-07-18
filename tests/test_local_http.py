@@ -1063,6 +1063,7 @@ def test_local_http_workspace_lists_audit_events_with_allowlisted_fields() -> No
         "last_seen_at": None,
         "identity_proven": False,
         "token_id": None,
+        "event_class": "decision",
     }
     assert "event_json" not in event
     assert "raw_prompt" not in event

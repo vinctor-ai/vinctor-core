@@ -101,7 +101,7 @@ agent_bounds:
         (1, "apply", "operator:a"),
         (2, "apply", "operator:b"),
     ]
-    assert get_sqlite_schema_versions(service.conn) == tuple(range(1, 15))
+    assert get_sqlite_schema_versions(service.conn) == tuple(range(1, 16))
 
 
 def test_policy_rollback_exactly_restores_versioned_authorization_state(

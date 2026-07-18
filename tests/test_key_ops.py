@@ -29,6 +29,13 @@ def _repo(db_path: Path) -> SQLiteLocalKeyRepository:
     return SQLiteLocalKeyRepository(conn)
 
 
+def _auditor(repo: SQLiteLocalKeyRepository):
+    from vinctor_service.control_audit import ControlPlaneAuditor
+    from vinctor_service.sqlite import SQLiteAuditWriter
+
+    return ControlPlaneAuditor(SQLiteAuditWriter(repo._conn))
+
+
 def test_serialize_key_record_omits_hash(tmp_path: Path) -> None:
     repo = _repo(tmp_path / "vinctor.sqlite")
     created = repo.create_workspace_key(workspace_id="ws_demo", now=NOW)
@@ -47,7 +54,9 @@ def test_rotate_workspace_key_mints_new_and_revokes_old(tmp_path: Path) -> None:
     repo = _repo(tmp_path / "vinctor.sqlite")
     old = repo.create_workspace_key(workspace_id="ws_demo", now=NOW)
 
-    result = rotate_workspace_key(repo, workspace_id="ws_demo", now=NOW)
+    result = rotate_workspace_key(
+        repo, workspace_id="ws_demo", now=NOW, control_auditor=_auditor(repo)
+    )
 
     assert result.raw_key.startswith(WORKSPACE_KEY_PREFIX)
     assert result.new_key_id != old.record.key_id
@@ -62,7 +71,10 @@ def test_rotate_agent_key_only_revokes_same_agent(tmp_path: Path) -> None:
     other_agent = repo.create_agent_key(workspace_id="ws_demo", agent_id="agent_b", now=NOW)
     workspace_key = repo.create_workspace_key(workspace_id="ws_demo", now=NOW)
 
-    result = rotate_agent_key(repo, workspace_id="ws_demo", agent_id="agent_a", now=NOW)
+    result = rotate_agent_key(
+        repo, workspace_id="ws_demo", agent_id="agent_a", now=NOW,
+        control_auditor=_auditor(repo),
+    )
 
     assert result.raw_key.startswith(AGENT_KEY_PREFIX)
     assert agent_old.record.key_id in result.revoked_key_ids
@@ -75,7 +87,7 @@ def test_rotate_workspace_key_does_not_revoke_agent_keys(tmp_path: Path) -> None
     repo = _repo(tmp_path / "vinctor.sqlite")
     agent_key = repo.create_agent_key(workspace_id="ws_demo", agent_id="agent_a", now=NOW)
 
-    rotate_workspace_key(repo, workspace_id="ws_demo", now=NOW)
+    rotate_workspace_key(repo, workspace_id="ws_demo", now=NOW, control_auditor=_auditor(repo))
 
     assert repo.get_by_id(agent_key.record.key_id).status == "active"
 
@@ -86,7 +98,10 @@ def test_rotate_pep_key_only_revokes_same_pep(tmp_path: Path) -> None:
     other_pep = repo.create_pep_key(workspace_id="ws_demo", pep_id="pep_b", now=NOW)
     agent_key = repo.create_agent_key(workspace_id="ws_demo", agent_id="agent_a", now=NOW)
 
-    result = rotate_pep_key(repo, workspace_id="ws_demo", pep_id="pep_a", now=NOW)
+    result = rotate_pep_key(
+        repo, workspace_id="ws_demo", pep_id="pep_a", now=NOW,
+        control_auditor=_auditor(repo),
+    )
 
     assert result.raw_key.startswith(PEP_KEY_PREFIX)
     assert pep_old.record.key_id in result.revoked_key_ids
@@ -105,7 +120,10 @@ def test_rotate_rejects_running_inside_an_open_transaction(tmp_path: Path) -> No
     repo._conn.execute("BEGIN")
     try:
         with pytest.raises(RuntimeError, match="cannot run inside an open transaction"):
-            rotate_workspace_key(repo, workspace_id="ws_demo", now=NOW)
+            rotate_workspace_key(
+                repo, workspace_id="ws_demo", now=NOW,
+                control_auditor=_auditor(repo),
+            )
     finally:
         repo._conn.rollback()
 
@@ -128,7 +146,7 @@ def test_rotate_is_atomic_when_revocation_fails(
     monkeypatch.setattr(repo, "revoke_key", _boom)
 
     with pytest.raises(RuntimeError, match="revoke failed"):
-        rotate_workspace_key(repo, workspace_id="ws_demo", now=NOW)
+        rotate_workspace_key(repo, workspace_id="ws_demo", now=NOW, control_auditor=_auditor(repo))
 
     # All-or-nothing: the predecessor is still the sole active workspace key, and
     # no half-minted key leaked (the plaintext was never returned to the caller).

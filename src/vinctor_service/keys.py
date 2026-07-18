@@ -97,13 +97,18 @@ class SQLiteLocalKeyRepository:
                     "own its transaction so the plaintext is returned only after "
                     "commit"
                 )
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                yield
-            except BaseException:
-                self._conn.rollback()
-                raise
-            self._conn.commit()
+            with self._conn.atomic_write_deferral():
+                # The deferral bracket holds the rotation audit event's
+                # post-commit anchor/export emissions until the commit below
+                # lands, and drops them on rollback (ADR 0019: rotations write
+                # a control audit event inside this transaction).
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    yield
+                except BaseException:
+                    self._conn.rollback()
+                    raise
+                self._conn.commit()
 
     def create_workspace_key(
         self,

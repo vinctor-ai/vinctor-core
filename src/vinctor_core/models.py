@@ -142,6 +142,10 @@ class AuditEvent:
     # ADR 0007 Model 2 identity-proof (set only on a proven delegated decision).
     identity_proven: bool = False
     token_id: str | None = None
+    # ADR 0019: event category on the shared chain — "decision" (what an agent
+    # did or asked for) or "control" (an operator changed the rules). Enables
+    # per-category export/retention/access WITHOUT splitting the chain.
+    event_class: str = "decision"
 
     def to_dict(self) -> dict[str, object]:
         event: dict[str, object] = {
@@ -176,4 +180,9 @@ class AuditEvent:
             event["identity_proven"] = True
         if self.token_id is not None:
             event["token_id"] = self.token_id
+        # Omit-when-default (like identity_proven): an absent key reads as
+        # "decision", so pre-event_class rows and new decision rows share one
+        # canonical form and decision-event JSON stays byte-identical.
+        if self.event_class != "decision":
+            event["event_class"] = self.event_class
         return event

@@ -91,7 +91,8 @@ def test_local_admin_drives_request_rule_auto_approve_and_enforce(
         assert request_id in list_out
         assert f"auto-approved grant_request {request_id}" in auto_out
         assert enforce_out.startswith("permit action=execute resource=ci/test")
-        assert [event.event_type for event in handle.service.audit_events] == [
+        assert [event.event_type for event in handle.service.audit_events
+                if event.event_class == "decision"] == [
             "grant_issued",
             "grant_requested",
             "grant_issued",

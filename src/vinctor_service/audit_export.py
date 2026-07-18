@@ -78,6 +78,9 @@ def _otlp_record(event: AuditEvent) -> dict[str, object]:
     attributes = {
         "vinctor.event_id": event.event_id,
         "vinctor.event_type": event.event_type,
+        # ADR 0019: the category attribute is what lets a SIEM route/retain
+        # control events separately from the decision firehose.
+        "vinctor.event_class": event.event_class,
         "vinctor.decision": event.decision,
         "vinctor.workspace_id": event.workspace_id,
         "vinctor.agent_id": event.agent_id,

@@ -18,6 +18,7 @@ from vinctor_core.models import AuditEvent, Grant
 from vinctor_service.audit_anchor import NullAnchor
 from vinctor_service.audit_chain import GENESIS_PREV_HASH, AnchorRecord
 from vinctor_service.audit_export import ExportingAuditWriter
+from vinctor_service.control_audit import ControlPlaneAuditor
 from vinctor_service.key_ops import rotate_workspace_key
 from vinctor_service.models import (
     AgentIssuableBounds,
@@ -85,6 +86,18 @@ def grant() -> Grant:
     )
 
 
+def _control_auditor(conn) -> ControlPlaneAuditor:
+    return ControlPlaneAuditor(PostgresAuditWriter(conn))
+
+
+def _settings_repo(conn) -> PostgresAgentEnforcementSettingsRepository:
+    return PostgresAgentEnforcementSettingsRepository(conn, _control_auditor(conn))
+
+
+def _bounds_repo(conn) -> PostgresAgentIssuableScopeBoundsRepository:
+    return PostgresAgentIssuableScopeBoundsRepository(conn, _control_auditor(conn))
+
+
 def test_postgres_grant_repository_lifecycle() -> None:
     assert DSN is not None
     conn = connect_postgres(DSN)
@@ -103,7 +116,7 @@ def test_postgres_grant_repository_lifecycle() -> None:
 def test_postgres_scope_bounds_combined_read_matches_written_row() -> None:
     assert DSN is not None
     conn = connect_postgres(DSN)
-    repository = PostgresAgentIssuableScopeBoundsRepository(conn)
+    repository = _bounds_repo(conn)
 
     repository.set_bounds(
         workspace_id="ws_main",
@@ -390,7 +403,7 @@ def test_postgres_boundary_and_settings_drive_enforcement() -> None:
 def test_postgres_enforcement_setting_agent_override() -> None:
     assert DSN is not None
     conn = connect_postgres(DSN)
-    repo = PostgresAgentEnforcementSettingsRepository(conn)
+    repo = _settings_repo(conn)
     repo.set_require_boundary(
         workspace_id="ws_main", agent_id="", require_boundary=True, now=NOW
     )
@@ -415,7 +428,7 @@ def test_postgres_enforcement_setting_agent_override() -> None:
 def test_postgres_unrelated_setting_does_not_override_workspace_boundary() -> None:
     assert DSN is not None
     conn = connect_postgres(DSN)
-    repo = PostgresAgentEnforcementSettingsRepository(conn)
+    repo = _settings_repo(conn)
     repo.set_require_boundary(
         workspace_id="ws_main", agent_id="", require_boundary=True, now=NOW
     )
@@ -437,7 +450,7 @@ def test_postgres_unrelated_setting_does_not_drop_workspace_token_and_pop_mandat
     # set the mandate = its default false". Presence-bit gated.
     assert DSN is not None
     conn = connect_postgres(DSN)
-    repo = PostgresAgentEnforcementSettingsRepository(conn)
+    repo = _settings_repo(conn)
     repo.set_require_subject_token(
         workspace_id="ws_main", agent_id="", require_subject_token=True, now=NOW
     )
@@ -457,7 +470,7 @@ def test_postgres_explicit_subject_token_false_still_exempts() -> None:
     # The presence bit must still let an operator EXPLICITLY exempt an agent.
     assert DSN is not None
     conn = connect_postgres(DSN)
-    repo = PostgresAgentEnforcementSettingsRepository(conn)
+    repo = _settings_repo(conn)
     repo.set_require_subject_token(
         workspace_id="ws_main", agent_id="", require_subject_token=True, now=NOW
     )
@@ -510,7 +523,7 @@ def test_postgres_enforcement_presence_migration_fail_closed() -> None:
         conn.execute("DELETE FROM schema_migrations WHERE version = 5")
 
     init_postgres_schema(conn)
-    repo = PostgresAgentEnforcementSettingsRepository(conn)
+    repo = _settings_repo(conn)
 
     # (a) A row that had require_subject_token=TRUE still reads as required.
     assert repo.is_subject_token_required(
@@ -1324,7 +1337,10 @@ def test_postgres_key_rotation_is_atomic_when_revocation_fails() -> None:
     repository.revoke_key = _boom  # type: ignore[method-assign]
     try:
         with pytest.raises(RuntimeError, match="revoke failed"):
-            rotate_workspace_key(repository, workspace_id="ws_main", now=NOW)
+            rotate_workspace_key(
+                repository, workspace_id="ws_main", now=NOW,
+                control_auditor=_control_auditor(conn),
+            )
     finally:
         repository.revoke_key = original_revoke  # type: ignore[method-assign]
 
@@ -1363,7 +1379,10 @@ def test_postgres_rotation_waits_for_another_threads_transaction() -> None:
     def thread_b() -> None:
         a_inside.wait(timeout=2)
         try:
-            rotate_workspace_key(repository, workspace_id="ws_main", now=NOW)
+            rotate_workspace_key(
+                repository, workspace_id="ws_main", now=NOW,
+                control_auditor=_control_auditor(conn),
+            )
             rotated.set()
         except Exception as exc:  # noqa: BLE001 - captured for assertion
             errors.append(exc)
@@ -1392,3 +1411,371 @@ def test_postgres_rotation_waits_for_another_threads_transaction() -> None:
         ta.join(timeout=2)
         tb.join(timeout=2)
         conn.close()
+
+
+# --- PKA-44 / ADR 0019: control-plane mutations are audited ----------------
+
+
+def _control_events(service) -> list:
+    return [e for e in service.audit_writer.list_all() if e.event_class == "control"]
+
+
+def _break_service_audit(service) -> None:
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("audit write failed")
+
+    service.audit_writer.write = _raise  # type: ignore[method-assign]
+
+
+def test_postgres_each_mandate_toggle_emits_one_control_event() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    repo = service.agent_enforcement_settings_repository
+
+    repo.set_require_boundary(
+        workspace_id="ws_main", agent_id="", require_boundary=True, now=NOW
+    )
+    repo.set_require_subject_token(
+        workspace_id="ws_main", agent_id="agent_release",
+        require_subject_token=True, now=NOW,
+    )
+    repo.set_require_pop(
+        workspace_id="ws_main", agent_id="agent_release", require_pop=False, now=NOW
+    )
+
+    events = _control_events(service)
+    assert [(e.event_type, e.action, e.reason, e.agent_id) for e in events] == [
+        ("enforcement_setting_changed", "set_require_boundary",
+         "require_boundary=true", ""),
+        ("enforcement_setting_changed", "set_require_subject_token",
+         "require_subject_token=true", "agent_release"),
+        ("enforcement_setting_changed", "set_require_pop",
+         "require_pop=false", "agent_release"),
+    ]
+    assert all(e.decision == "permit" and e.grant_ref == "" for e in events)
+    assert service.audit_writer.verify_chain().ok is True
+    conn.close()
+
+
+def test_postgres_set_bounds_emits_one_control_event_with_scopes() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main", agent_id="agent_release",
+        scopes=("read:repo/*", "execute:ci/test"), max_ttl_seconds=3600, now=NOW,
+    )
+
+    events = _control_events(service)
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_type == "scope_bounds_set"
+    assert event.resource == "issuable_scope_bounds/agent_release"
+    assert event.scope_attempted == "read:repo/* execute:ci/test"
+    assert event.reason == "max_ttl_seconds=3600"
+    assert service.audit_writer.verify_chain().ok is True
+    conn.close()
+
+
+def test_postgres_mandate_toggle_rolls_back_when_audit_write_fails() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    _break_service_audit(service)
+
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        service.agent_enforcement_settings_repository.set_require_boundary(
+            workspace_id="ws_main", agent_id="agent_release",
+            require_boundary=True, now=NOW,
+        )
+    assert service.agent_enforcement_settings_repository.get_require_boundary_setting(
+        workspace_id="ws_main", agent_id="agent_release"
+    ) is None
+    conn.close()
+
+
+def test_postgres_set_bounds_rolls_back_when_audit_write_fails() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    _break_service_audit(service)
+
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        service.set_agent_issuable_scope_bounds(
+            workspace_id="ws_main", agent_id="agent_release",
+            scopes=("read:repo/*",), now=NOW,
+        )
+    assert service.scope_bounds_repository.get_bounds(
+        workspace_id="ws_main", agent_id="agent_release"
+    ) is None
+    conn.close()
+
+
+def test_postgres_control_repos_cannot_be_built_without_an_auditor() -> None:
+    # No silent un-audited path: dropping the audit writer from a control repo
+    # is a construction-time failure on Postgres exactly as on SQLite.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    with pytest.raises(TypeError):
+        PostgresAgentEnforcementSettingsRepository(conn)
+    with pytest.raises(TypeError):
+        PostgresAgentIssuableScopeBoundsRepository(conn)
+    conn.close()
+
+
+_CONTROL_POLICY_DOC = """
+version: 1
+workspace_id: ws_main
+agent_bounds:
+  - agent_id: agent_a
+    scopes: [read:repo/a]
+auto_approval_rules: []
+require_boundary:
+  workspace: true
+"""
+
+
+def _apply_control_policy(service, tmp_path, applied_by: str = "operator:a"):
+    path = tmp_path / "control_policy.yaml"
+    path.write_text(_CONTROL_POLICY_DOC.strip(), encoding="utf-8")
+    return apply_policy_file(
+        path, service=service, workspace_id="ws_main", applied_by=applied_by, now=NOW
+    )
+
+
+def test_postgres_policy_apply_and_rollback_emit_one_control_event_each(
+    tmp_path,
+) -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+
+    applied = _apply_control_policy(service, tmp_path)
+    rollback_policy_version(
+        service=service, workspace_id="ws_main",
+        version=applied.policy_version, applied_by="operator:b", now=NOW,
+    )
+
+    events = _control_events(service)
+    # The apply drives the audited bounds/settings repos internally; the
+    # OPERATION is the audited unit — one event per apply, one per rollback.
+    assert [e.event_type for e in events] == ["policy_applied", "policy_rolled_back"]
+    assert events[0].resource == f"policy/version/{applied.policy_version}"
+    assert events[0].enforcing_principal == "operator:a"
+    assert events[1].reason == f"restored_version={applied.policy_version}"
+    assert events[1].enforcing_principal == "operator:b"
+    assert service.audit_writer.verify_chain().ok is True
+    conn.close()
+
+
+def test_postgres_policy_apply_rolls_back_whole_apply_when_audit_fails(
+    tmp_path,
+) -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    _break_service_audit(service)
+
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        _apply_control_policy(service, tmp_path)
+
+    # The WHOLE apply unwound with its failed audit event: no bounds, no
+    # mandate, no version snapshot.
+    assert service.scope_bounds_repository.get_bounds(
+        workspace_id="ws_main", agent_id="agent_a"
+    ) is None
+    assert service.agent_enforcement_settings_repository.get_require_boundary_setting(
+        workspace_id="ws_main", agent_id=""
+    ) is None
+    assert list_policy_versions(service=service, workspace_id="ws_main") == ()
+    conn.close()
+
+
+def test_postgres_key_rotation_emits_one_control_event() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    repository = PostgresLocalKeyRepository(conn)
+    repository.create_workspace_key(workspace_id="ws_main", now=NOW)
+
+    result = rotate_workspace_key(
+        repository, workspace_id="ws_main", now=NOW,
+        control_auditor=service.control_auditor,
+    )
+
+    events = _control_events(service)
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_type == "key_rotated"
+    assert event.action == "rotate_workspace_key"
+    assert event.resource == f"key/workspace/{result.new_key_id}"
+    assert event.reason == "revoked=1"
+    serialized = json.dumps(event.to_dict())
+    assert result.raw_key not in serialized
+    assert service.audit_writer.verify_chain().ok is True
+    conn.close()
+
+
+def test_postgres_rotation_rolls_back_when_control_audit_fails() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    repository = PostgresLocalKeyRepository(conn)
+    old = repository.create_workspace_key(workspace_id="ws_main", now=NOW)
+    _break_service_audit(service)
+
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        rotate_workspace_key(
+            repository, workspace_id="ws_main", now=NOW,
+            control_auditor=service.control_auditor,
+        )
+
+    active = [
+        record
+        for record in repository.list_for_workspace("ws_main")
+        if record.status == "active"
+    ]
+    assert [record.key_id for record in active] == [old.record.key_id]
+    conn.close()
+
+
+def test_postgres_control_events_order_before_a_following_decision(tmp_path) -> None:
+    # One chain, one clock: every control event's seq precedes a decision
+    # event recorded after the rule changes — the ordering IS the evidence.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    repository = PostgresLocalKeyRepository(conn)
+
+    repo = service.agent_enforcement_settings_repository
+    repo.set_require_boundary(
+        workspace_id="ws_main", agent_id="", require_boundary=True, now=NOW
+    )
+    repo.set_require_subject_token(
+        workspace_id="ws_main", agent_id="agent_a", require_subject_token=True, now=NOW
+    )
+    repo.set_require_pop(
+        workspace_id="ws_main", agent_id="agent_a", require_pop=True, now=NOW
+    )
+    service.set_agent_issuable_scope_bounds(
+        workspace_id="ws_main", agent_id="agent_a", scopes=("read:repo/a",), now=NOW
+    )
+    applied = _apply_control_policy(service, tmp_path)
+    rollback_policy_version(
+        service=service, workspace_id="ws_main",
+        version=applied.policy_version, applied_by="operator:a", now=NOW,
+    )
+    rotate_workspace_key(
+        repository, workspace_id="ws_main", now=NOW,
+        control_auditor=service.control_auditor,
+    )
+
+    service.enforce(
+        V1EnforceRequest(
+            workspace_id="ws_main", agent_id="agent_a", grant_ref="grt_missing",
+            action="read", resource="repo/a",
+        ),
+        now=NOW,
+    )
+
+    control = _control_events(service)
+    assert [e.event_type for e in control] == [
+        "enforcement_setting_changed",
+        "enforcement_setting_changed",
+        "enforcement_setting_changed",
+        "scope_bounds_set",
+        "policy_applied",
+        "policy_rolled_back",
+        "key_rotated",
+    ]
+    verification = service.audit_writer.verify_chain()
+    assert verification.ok is True and verification.count == 8
+    with conn.transaction():
+        rows = conn.execute(
+            "SELECT seq, event_class FROM audit_events ORDER BY seq"
+        ).fetchall()
+    assert [row[1] for row in rows] == ["control"] * 7 + ["decision"]
+    conn.close()
+
+
+def test_postgres_repos_reject_a_mismatched_or_connectionless_auditor() -> None:
+    # One transaction, one commit: the auditor must write through the SAME
+    # connection as the repository, and must be durably backed at all.
+    assert DSN is not None
+    from vinctor_service.audit import InMemoryAuditWriter
+
+    conn = connect_postgres(DSN)
+    other = connect_postgres(DSN)
+    try:
+        foreign_auditor = ControlPlaneAuditor(PostgresAuditWriter(other))
+        with pytest.raises(ValueError, match="SAME connection"):
+            PostgresAgentEnforcementSettingsRepository(conn, foreign_auditor)
+        with pytest.raises(ValueError, match="SAME connection"):
+            PostgresAgentIssuableScopeBoundsRepository(conn, foreign_auditor)
+        with pytest.raises(ValueError, match="durable"):
+            PostgresAgentEnforcementSettingsRepository(
+                conn, ControlPlaneAuditor(InMemoryAuditWriter())
+            )
+    finally:
+        other.close()
+        conn.close()
+
+
+def test_postgres_v5_rows_migrate_to_decision_class_and_still_verify() -> None:
+    # Chain-affecting migration care (schema v6): a v5-era database — no
+    # event_class column — migrates with every existing row reading as class
+    # "decision" and the chain still verifying, because the stored event_json
+    # (which omits the key for that class) is untouched.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    writer = PostgresAuditWriter(conn)
+    writer.write(_pg_audit_event("evt_v5_1"))
+    writer.write(_pg_audit_event("evt_v5_2"))
+
+    # Reshape the database to its v5 form: drop the column and the version row.
+    with conn.transaction():
+        conn.execute("ALTER TABLE audit_events DROP COLUMN event_class")
+        conn.execute("DELETE FROM schema_migrations WHERE version = 6")
+
+    init_postgres_schema(conn)  # v5 -> v6
+
+    with conn.transaction():
+        versions = [
+            row[0]
+            for row in conn.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            ).fetchall()
+        ]
+        classes = [
+            row[0]
+            for row in conn.execute(
+                "SELECT event_class FROM audit_events ORDER BY seq"
+            ).fetchall()
+        ]
+    assert versions == [1, 2, 3, 4, 5, 6]
+    assert classes == ["decision", "decision"]
+    assert writer.verify_chain().ok is True
+    assert [e.event_class for e in writer.list_all()] == ["decision", "decision"]
+    conn.close()
+
+
+def test_postgres_verify_detects_event_class_column_tamper() -> None:
+    # A DB-write attacker re-classifying a control event as an ordinary
+    # decision (hiding it from per-category readers) without touching the
+    # hashed JSON must break verification on Postgres exactly as on SQLite.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    service.agent_enforcement_settings_repository.set_require_boundary(
+        workspace_id="ws_main", agent_id="", require_boundary=True, now=NOW
+    )
+    with conn.transaction():
+        conn.execute("UPDATE audit_events SET event_class = 'decision' WHERE seq = 1")
+
+    verification = service.audit_writer.verify_chain()
+    assert verification.ok is False
+    assert verification.break_kind == "column_mismatch"
+    assert verification.break_seq == 1
+    conn.close()

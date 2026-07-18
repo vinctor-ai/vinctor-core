@@ -16,6 +16,10 @@ from vinctor_core import (
     get_boundary_for_workspace,
     register_boundary,
 )
+from vinctor_core.audit import (
+    EVENT_ENFORCEMENT_SETTING_CHANGED,
+    EVENT_SCOPE_BOUNDS_SET,
+)
 from vinctor_core.models import AuditEvent, Boundary, BoundaryRegistrationInput, Grant
 from vinctor_service.audit import AuthFailureAuditThrottle
 from vinctor_service.audit_anchor import AuditAnchor, NullAnchor, anchor_from_env
@@ -39,6 +43,7 @@ from vinctor_service.auto_approval import (
     evaluate_auto_approval,
     list_auto_approval_rules,
 )
+from vinctor_service.control_audit import ControlPlaneAuditor
 from vinctor_service.grant_requests import (
     approve_grant_request,
     create_grant_request,
@@ -230,11 +235,16 @@ def init_postgres_schema(conn: Any) -> None:
             last_seen_at TIMESTAMPTZ,
             identity_proven BOOLEAN NOT NULL DEFAULT FALSE,
             token_id TEXT,
+            event_class TEXT NOT NULL DEFAULT 'decision',
             event_json TEXT NOT NULL,
             seq BIGINT NOT NULL UNIQUE,
             prev_hash TEXT NOT NULL,
             row_hash TEXT NOT NULL
         )
+        """,
+        """
+        ALTER TABLE audit_events
+        ADD COLUMN IF NOT EXISTS event_class TEXT NOT NULL DEFAULT 'decision'
         """,
         """
         CREATE INDEX IF NOT EXISTS idx_postgres_audit_workspace_seq
@@ -453,7 +463,7 @@ def init_postgres_schema(conn: Any) -> None:
                 SET require_boundary_set = require_boundary
                 """
             )
-        for version in (1, 2, 3, 4, 5):
+        for version in (1, 2, 3, 4, 5, 6):
             conn.execute(
                 """
                 INSERT INTO schema_migrations (version, applied_at)
@@ -545,8 +555,13 @@ class PostgresGrantRepository:
 
 
 class PostgresAgentIssuableScopeBoundsRepository:
-    def __init__(self, conn: Any) -> None:
+    # ADR 0019: issuable scope bounds are control-plane state, so the repository
+    # cannot exist without an audit path — the auditor is a required argument
+    # and must write through THIS connection (one transaction, one commit).
+    def __init__(self, conn: Any, control_auditor: ControlPlaneAuditor) -> None:
         self._conn = conn
+        control_auditor.require_bound_to(conn)
+        self._control_auditor = control_auditor
 
     def get_bounds(self, *, workspace_id: str, agent_id: str) -> tuple[str, ...] | None:
         with self._conn.transaction():
@@ -619,6 +634,8 @@ class PostgresAgentIssuableScopeBoundsRepository:
         now: datetime,
     ) -> None:
         validate_issuable_scope_bounds(scopes, max_ttl_seconds=max_ttl_seconds)
+        # The bounds change and its control audit event commit as ONE unit (the
+        # audit writer's nested transaction() becomes a savepoint under this).
         with self._conn.transaction():
             self._conn.execute(
                 """
@@ -637,6 +654,17 @@ class PostgresAgentIssuableScopeBoundsRepository:
                     max_ttl_seconds,
                     now,
                 ),
+            )
+            self._control_auditor.record(
+                event_type=EVENT_SCOPE_BOUNDS_SET,
+                workspace_id=workspace_id,
+                agent_id=agent_id,
+                action="set_issuable_scope_bounds",
+                resource=f"issuable_scope_bounds/{agent_id}",
+                reason="max_ttl_seconds="
+                + (str(max_ttl_seconds) if max_ttl_seconds is not None else "none"),
+                scope_attempted=" ".join(scopes),
+                now=now,
             )
 
 
@@ -788,8 +816,13 @@ class PostgresAgentEnforcementSettingsRepository:
     }
     _COLUMNS = frozenset(_PRESENCE)
 
-    def __init__(self, conn: Any) -> None:
+    # ADR 0019: the enforcement mandates are control-plane state, so the
+    # repository cannot exist without an audit path — the auditor is required
+    # and must write through THIS connection (one transaction, one commit).
+    def __init__(self, conn: Any, control_auditor: ControlPlaneAuditor) -> None:
         self._conn = conn
+        control_auditor.require_bound_to(conn)
+        self._control_auditor = control_auditor
 
     def _get(self, column: str, *, workspace_id: str, agent_id: str) -> bool | None:
         if column not in self._COLUMNS:
@@ -832,6 +865,8 @@ class PostgresAgentEnforcementSettingsRepository:
         other_bits = ", ".join(
             bit for name, bit in self._PRESENCE.items() if name != column
         )
+        # The mandate change and its control audit event commit as ONE unit
+        # (the audit writer's nested transaction() becomes a savepoint).
         with self._conn.transaction():
             self._conn.execute(
                 f"""
@@ -845,6 +880,15 @@ class PostgresAgentEnforcementSettingsRepository:
                     updated_at = EXCLUDED.updated_at
                 """,
                 (workspace_id, agent_id, value, now),
+            )
+            self._control_auditor.record(
+                event_type=EVENT_ENFORCEMENT_SETTING_CHANGED,
+                workspace_id=workspace_id,
+                agent_id=agent_id,
+                action=f"set_{column}",
+                resource=f"enforcement_setting/{column}",
+                reason=f"{column}={'true' if value else 'false'}",
+                now=now,
             )
 
     def get_require_boundary(self, *, workspace_id: str, agent_id: str) -> bool:
@@ -951,11 +995,11 @@ class PostgresAuditWriter:
                     boundary_id, runtime, boundary_type, created_at,
                     enforcing_principal, reason_code, occurrence_count,
                     first_seen_at, last_seen_at, identity_proven, token_id,
-                    event_json, seq, prev_hash, row_hash
+                    event_class, event_json, seq, prev_hash, row_hash
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 """,
                 (
@@ -982,6 +1026,7 @@ class PostgresAuditWriter:
                     event.last_seen_at,
                     event.identity_proven,
                     event.token_id,
+                    event.event_class,
                     event_json,
                     seq,
                     previous_hash,
@@ -1001,6 +1046,7 @@ class PostgresAuditWriter:
         "event_id", "event_type", "decision", "reason", "workspace_id", "agent_id",
         "grant_id", "grant_ref", "action", "resource", "scope_attempted",
         "scope_matched", "boundary_id", "runtime", "boundary_type", "created_at",
+        "event_class",
     )
 
     # Postgres additionally materializes these event_json fields as dedicated
@@ -1179,13 +1225,18 @@ class PostgresV1Service:
         export = audit_export_from_env(dict(os.environ))
         if not isinstance(export, NullExport):
             self.audit_writer = ExportingAuditWriter(self.audit_writer, export)
+        # Control-plane mutations audit through the SAME (possibly
+        # export-wrapped) writer as decisions: one chain, one clock (ADR 0019).
+        self.control_auditor = ControlPlaneAuditor(self.audit_writer)
         self.boundary_registry = PostgresBoundaryRegistry(conn)
-        self.scope_bounds_repository = PostgresAgentIssuableScopeBoundsRepository(conn)
+        self.scope_bounds_repository = PostgresAgentIssuableScopeBoundsRepository(
+            conn, self.control_auditor
+        )
         self.grant_request_repository = PostgresGrantRequestRepository(conn)
         self.auto_approval_rule_repository = PostgresAutoApprovalRuleRepository(conn)
         self.subject_token_repository = PostgresSubjectTokenRepository(conn)
         self.agent_enforcement_settings_repository = (
-            PostgresAgentEnforcementSettingsRepository(conn)
+            PostgresAgentEnforcementSettingsRepository(conn, self.control_auditor)
         )
         self._pop_replay = PostgresReplayStore(conn)
         self._auth_failures = AuthFailureAuditThrottle()
@@ -1597,6 +1648,7 @@ def _audit_event_from_json(value: str) -> AuditEvent:
         last_seen_at=_optional_datetime(data.get("last_seen_at")),
         identity_proven=data.get("identity_proven", False),
         token_id=data.get("token_id"),
+        event_class=data.get("event_class", "decision"),
     )
 
 

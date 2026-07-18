@@ -45,7 +45,8 @@ def audit_events(conn: sqlite3.Connection) -> list[str]:
     return [
         row[0]
         for row in conn.execute(
-            "SELECT event_type FROM audit_events ORDER BY rowid"
+            "SELECT event_type FROM audit_events "
+            "WHERE event_class = 'decision' ORDER BY rowid"
         ).fetchall()
     ]
 

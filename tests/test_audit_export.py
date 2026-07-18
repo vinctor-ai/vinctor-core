@@ -134,6 +134,7 @@ def test_otlp_http_export_emits_otlp_json_off_the_caller_thread() -> None:
     } == {
         "vinctor.event_id": "evt_1",
         "vinctor.event_type": "action_permitted",
+        "vinctor.event_class": "decision",
         "vinctor.decision": "permit",
         "vinctor.workspace_id": "ws_main",
         "vinctor.agent_id": "agent_a",

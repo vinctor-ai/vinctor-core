@@ -302,11 +302,12 @@ def test_chain_stays_valid_under_concurrent_enforce(tmp_path) -> None:
 
     conn = connect_sqlite(db_path)
     v = SQLiteAuditWriter(conn).verify_chain()
-    # 401 = the 1 `grant_issued` event that prepare_local_service writes while
-    # bootstrapping the local grant, plus the 400 concurrent enforce events. The
-    # invariant under test is that the chain is valid and gapless (count == head_seq)
-    # despite concurrency, not the exact bootstrap count.
-    assert v.ok is True and v.count == 401 and v.head_seq == 401
+    # 402 = the `scope_bounds_set` control event + the `grant_issued` event
+    # that prepare_local_service writes while bootstrapping the local grant,
+    # plus the 400 concurrent enforce events. The invariant under test is that
+    # the chain is valid and gapless (count == head_seq) despite concurrency,
+    # not the exact bootstrap count.
+    assert v.ok is True and v.count == 402 and v.head_seq == 402
 
 
 def test_postgres_crosscheck_columns_match_sqlite() -> None:
@@ -524,3 +525,98 @@ def test_deferral_is_per_connection_not_per_thread(tmp_path) -> None:
     # NOT drop B's emission (it was never captured by A's scope).
     assert conn_b.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0] == 1
     assert heads_b == [1]
+
+
+# --- PKA-44: event_class column (schema v15) ------------------------------
+
+
+def test_migration_adds_event_class_column_and_registers_v15(tmp_path) -> None:
+    conn = connect_sqlite(tmp_path / "ec.sqlite")
+    init_sqlite_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(audit_events)").fetchall()}
+    assert "event_class" in cols
+    assert 15 in get_sqlite_schema_versions(conn)
+
+
+def test_v14_rows_migrate_to_decision_class_and_still_verify(tmp_path) -> None:
+    """Chain-affecting migration care: a v14-era DB (hash chain present, no
+    event_class) migrates with every existing row reading as class "decision",
+    and the chain still verifies — the stored event_json is untouched."""
+    conn = connect_sqlite(tmp_path / "v14.sqlite")
+    conn.executescript(
+        "CREATE TABLE audit_events (event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL,"
+        " decision TEXT NOT NULL, reason TEXT NOT NULL, workspace_id TEXT NOT NULL,"
+        " agent_id TEXT NOT NULL, grant_id TEXT NOT NULL, grant_ref TEXT NOT NULL,"
+        " action TEXT NOT NULL, resource TEXT NOT NULL, scope_attempted TEXT NOT NULL,"
+        " scope_matched TEXT, boundary_id TEXT, runtime TEXT, boundary_type TEXT,"
+        " created_at TEXT NOT NULL, event_json TEXT NOT NULL,"
+        " seq INTEGER, prev_hash TEXT, row_hash TEXT);"
+        "CREATE UNIQUE INDEX idx_audit_events_seq ON audit_events(seq);"
+        "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);"
+    )
+    for version in range(1, 15):
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+            (version, NOW.isoformat()),
+        )
+    prev = GENESIS_PREV_HASH
+    for seq in (1, 2):
+        ev = _event(f"evt_{seq}")
+        ej = json.dumps(ev.to_dict(), sort_keys=True)
+        rh = row_hash(seq, ej, prev)
+        conn.execute(
+            "INSERT INTO audit_events (event_id,event_type,decision,reason,workspace_id,"
+            "agent_id,grant_id,grant_ref,action,resource,scope_attempted,scope_matched,"
+            "boundary_id,runtime,boundary_type,created_at,event_json,seq,prev_hash,row_hash) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (f"evt_{seq}", ev.event_type, ev.decision, ev.reason, ev.workspace_id,
+             ev.agent_id, ev.grant_id, ev.grant_ref, ev.action, ev.resource,
+             ev.scope_attempted, ev.scope_matched, ev.boundary_id, ev.runtime,
+             ev.boundary_type, ev.created_at.isoformat(), ej, seq, prev, rh),
+        )
+        prev = rh
+    conn.commit()
+
+    init_sqlite_schema(conn)  # v14 -> v15: adds event_class
+
+    assert 15 in get_sqlite_schema_versions(conn)
+    classes = [r[0] for r in conn.execute(
+        "SELECT event_class FROM audit_events ORDER BY seq").fetchall()]
+    assert classes == ["decision", "decision"]
+    w = SQLiteAuditWriter(conn)
+    assert w.verify_chain().ok is True
+    events = w.list_all()
+    assert [e.event_class for e in events] == ["decision", "decision"]
+
+
+def test_mixed_decision_and_control_chain_verifies(tmp_path) -> None:
+    conn, w = _writer(tmp_path)
+    w.write(_event("evt_1"))
+    w.write(replace(_event("evt_2"), event_type="enforcement_setting_changed",
+                    event_class="control"))
+    w.write(_event("evt_3"))
+    v = w.verify_chain()
+    assert v.ok is True and v.count == 3
+    assert [e.event_class for e in w.list_all()] == ["decision", "control", "decision"]
+
+
+def test_verify_detects_event_class_column_tamper_on_control_row(tmp_path) -> None:
+    # A DB-write attacker re-classifying a control event as an ordinary decision
+    # (hiding it from per-category readers) without touching the hashed JSON must
+    # break verification.
+    conn, w = _writer(tmp_path)
+    w.write(_event("evt_1"))
+    w.write(replace(_event("evt_2"), event_type="enforcement_setting_changed",
+                    event_class="control"))
+    conn.execute("UPDATE audit_events SET event_class = 'decision' WHERE seq = 2")
+    conn.commit()
+    v = w.verify_chain()
+    assert v.ok is False and v.break_kind == "column_mismatch" and v.break_seq == 2
+
+
+def test_verify_detects_event_class_column_tamper_on_decision_row(tmp_path) -> None:
+    conn, w = _seed_three(tmp_path)
+    conn.execute("UPDATE audit_events SET event_class = 'control' WHERE seq = 2")
+    conn.commit()
+    v = w.verify_chain()
+    assert v.ok is False and v.break_kind == "column_mismatch" and v.break_seq == 2

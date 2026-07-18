@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from vinctor_core.audit import EVENT_POLICY_APPLIED, EVENT_POLICY_ROLLED_BACK
 from vinctor_core.scope import is_valid_grant_scope
 from vinctor_service.auto_approval import upsert_auto_approval_rule
 from vinctor_service.grants import validate_issuable_scope_bounds
@@ -60,6 +61,11 @@ def apply_policy_file(
     if policy_workspace_id is not None and policy_workspace_id != workspace_id:
         raise ValueError("policy workspace_id does not match selected workspace")
 
+    # Fail closed BEFORE any write: the apply and its control audit event are
+    # one transaction only if the auditor writes through the service's
+    # connection.
+    service.control_auditor.require_bound_to(service.conn)
+
     # The WHOLE apply — validation reads, every write, and the version-snapshot
     # record — runs as ONE unit of work, serialized per workspace: a failure
     # anywhere leaves the store exactly as it was, two concurrent applies queue
@@ -74,13 +80,35 @@ def apply_policy_file(
     else:
         transaction = _sqlite_apply_transaction(service.conn)
     with transaction:
-        return _apply_policy_document(
-            document,
-            service=service,
-            workspace_id=workspace_id,
-            applied_by=applied_by,
-            now=now,
-        )
+        # ONE control event for the whole apply (ADR 0019): the inner
+        # bounds/mandate writes go through audited repositories, whose
+        # per-mutation records are suppressed by this composite — the version
+        # snapshot is the detailed record, the event is the who/when. Written
+        # inside this transaction, so the apply and its audit row commit (or
+        # unwind) together; finishing without the event raises and rolls the
+        # whole apply back.
+        with service.control_auditor.composite() as pending:
+            result = _apply_policy_document(
+                document,
+                service=service,
+                workspace_id=workspace_id,
+                applied_by=applied_by,
+                now=now,
+            )
+            pending.set(
+                event_type=EVENT_POLICY_APPLIED,
+                workspace_id=workspace_id,
+                action="policy_apply",
+                resource=f"policy/version/{result.policy_version}",
+                reason=(
+                    f"bounds_set={result.bounds_set} "
+                    f"rules_created={result.rules_created} "
+                    f"rules_updated={result.rules_updated}"
+                ),
+                now=now,
+                enforcing_principal=applied_by,
+            )
+        return result
 
 
 @contextmanager
@@ -97,7 +125,11 @@ def _sqlite_apply_transaction(conn: sqlite3.Connection) -> Iterator[None]:
     and the service mutators) so concurrent same-connection callers cannot
     collide on BEGIN IMMEDIATE.
     """
-    with conn_txn_lock(conn):
+    with conn_txn_lock(conn), conn.atomic_write_deferral():
+        # The deferral bracket holds the audit events' post-commit anchor and
+        # export emissions until the commit below lands, and drops them on
+        # rollback — a policy transaction now contains audit writes (ADR 0019)
+        # and must not anchor a chain head that a rollback removes.
         conn.execute("BEGIN IMMEDIATE")
         try:
             yield
@@ -261,6 +293,9 @@ def rollback_policy_version(
     applied_by: str,
     now: datetime,
 ) -> PolicyRollbackResult:
+    # Fail closed BEFORE any write (both backends dispatch through here): the
+    # rollback and its control audit event must share one transaction.
+    service.control_auditor.require_bound_to(service.conn)
     if getattr(service, "storage_backend", None) == "postgres":
         from vinctor_service.postgres_policy import rollback_postgres_policy_version
 
@@ -299,6 +334,17 @@ def rollback_policy_version(
             source_version=version,
             applied_by=applied_by,
             now=now,
+        )
+        # The rollback and its ONE control event commit together (the restore
+        # itself is raw SQL, so there are no per-mutation records to collapse).
+        service.control_auditor.record(
+            event_type=EVENT_POLICY_ROLLED_BACK,
+            workspace_id=workspace_id,
+            action="policy_rollback",
+            resource=f"policy/version/{new_version}",
+            reason=f"restored_version={version}",
+            now=now,
+            enforcing_principal=applied_by,
         )
     return PolicyRollbackResult(
         workspace_id=workspace_id,
