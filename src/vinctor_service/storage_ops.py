@@ -16,7 +16,7 @@ from vinctor_service.sqlite import (
     SQLiteV1Service,
     get_sqlite_schema_versions,
 )
-from vinctor_service.sqlite_txn import connect_sqlite
+from vinctor_service.sqlite_txn import connect_sqlite, exclusive_sqlite_database_lease
 
 
 @dataclass(frozen=True)
@@ -138,8 +138,15 @@ def backup_sqlite(
     )
 
 
-def _sqlite_sidecars(db_path: Path) -> tuple[Path, Path]:
-    return (Path(f"{db_path}-wal"), Path(f"{db_path}-shm"))
+def _sqlite_sidecars(db_path: Path) -> tuple[Path, Path, Path]:
+    # -wal/-shm for WAL databases; -journal for the rollback-journal fallback
+    # (connect_sqlite keeps whatever journal mode the filesystem supports, see
+    # the operational runbook). Each is bound to the database by NAME only.
+    return (
+        Path(f"{db_path}-wal"),
+        Path(f"{db_path}-shm"),
+        Path(f"{db_path}-journal"),
+    )
 
 
 def _unlink_sqlite_sidecars(db_path: Path) -> None:
@@ -148,7 +155,12 @@ def _unlink_sqlite_sidecars(db_path: Path) -> None:
 
 
 def _checkpoint_sqlite_wal(db_path: Path) -> None:
-    """Move every committed temp-WAL page into the main file before rename."""
+    """Move every committed WAL page into the main file, then drop the sidecars.
+
+    Opening the database also recovers any hot WAL or rollback journal first,
+    so after a clean return the main file alone carries every committed
+    transaction and the removed sidecars carried nothing.
+    """
     conn = sqlite3.connect(db_path)
     try:
         checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
@@ -159,16 +171,77 @@ def _checkpoint_sqlite_wal(db_path: Path) -> None:
     _unlink_sqlite_sidecars(db_path)
 
 
+def _neutralize_replaced_sidecars(db_path: Path) -> None:
+    """Leave the destination with no WAL/journal sidecar that could replay.
+
+    SQLite binds sidecar files to a database by name, not content: a ``-wal``
+    (or rollback ``-journal``) sitting beside a freshly swapped-in main file
+    is replayed into it by the next opener — silently corrupting the data the
+    swap just installed. There is no atomic multi-file rename, so the
+    sidecars must already be gone when the swap happens.
+
+    Checkpoint first (TRUNCATE) so every committed page the current database
+    keeps in its WAL is moved into its main file: if the swap then never
+    happens, the database has lost nothing. Failure modes:
+
+    - Checkpoint stays busy: raise, destination untouched. The database is in
+      live use, and a swap under a live database corrupts more than sidecars
+      (the runbook's stop-the-service-first ordering is the contract).
+    - Destination unreadable (``sqlite3.DatabaseError``): the corrupt state a
+      restore exists to recover from. Its sidecars are unusable without the
+      main file that is about to be discarded, so remove them and proceed.
+    """
+    if not any(sidecar.exists() for sidecar in _sqlite_sidecars(db_path)):
+        return
+    if not db_path.exists():
+        # Orphaned sidecars with no main file: meaningless without it, but
+        # poisonous next to the new file.
+        _unlink_sqlite_sidecars(db_path)
+        return
+    try:
+        _checkpoint_sqlite_wal(db_path)
+    except sqlite3.OperationalError:
+        # Locked / I/O failures prove nothing about the sidecars; the swap
+        # must not proceed over a database that may still be live.
+        raise
+    except sqlite3.DatabaseError:
+        _unlink_sqlite_sidecars(db_path)
+
+
+def _fsync_dir(dir_path: Path) -> None:
+    """Best-effort directory fsync — not every platform allows one."""
+    try:
+        dir_fd = os.open(dir_path, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
+
+
 def _atomic_replace_sqlite(
     db_path: Path, build: Callable[[Path], tuple[int, ...]]
 ) -> tuple[int, ...]:
     """Populate a fresh database in a sibling temp file and atomically swap it in.
 
     ``build`` writes the new database to the temp path and returns its schema
-    versions; only after it succeeds and the file is flushed to disk does
-    ``os.replace`` move it over ``db_path`` (an atomic rename on the same
-    filesystem). A crash, a failing build, or a verification failure therefore
-    leaves the existing database untouched rather than destroyed or half-written.
+    versions. The sequence keeps one invariant at every step: a crash or
+    failure leaves either the old database intact or the new database intact —
+    never the new main file beside the old database's ``-wal``/``-journal``,
+    which SQLite binds to a database by name, not content, and would replay
+    into the fresh file. A failing build or verification aborts before the
+    destination is touched at all; a busy destination checkpoint aborts after
+    at most a (lossless) partial checkpoint of the old database.
+
+    Order: build, checkpoint and fsync the temp file; acquire exclusive
+    ownership of the stable sibling lock file (failing if any Vinctor
+    connection is open); checkpoint the destination and remove its then-empty
+    sidecars; fsync the directory so the removals cannot be reordered after the
+    rename; ``os.replace`` (an atomic rename on the same filesystem); fsync the
+    directory again for the rename itself. The lease spans that entire
+    destination sequence, including the no-sidecar fast path, so no Vinctor
+    opener can recreate an old-database WAL between checkpoint and rename.
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
@@ -187,22 +260,14 @@ def _atomic_replace_sqlite(
             os.fsync(flush_fd)
         finally:
             os.close(flush_fd)
-        os.replace(tmp_path, db_path)
-        # The destination may have belonged to a live or uncleanly-stopped WAL
-        # database. Its sidecars describe the replaced inode and must never be
-        # replayed against the fresh main file.
-        _unlink_sqlite_sidecars(db_path)
-        # fsync the parent directory so the rename itself is durable across a
-        # crash immediately after replace (best-effort: not all platforms allow
-        # fsync on a directory handle).
-        try:
-            dir_fd = os.open(db_path.parent, os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        except OSError:
-            pass
+        with exclusive_sqlite_database_lease(db_path):
+            _neutralize_replaced_sidecars(db_path)
+            # Make the sidecar removals durable BEFORE the rename can become so:
+            # a crash must never resurrect an old sidecar beside the new main
+            # file.
+            _fsync_dir(db_path.parent)
+            os.replace(tmp_path, db_path)
+            _fsync_dir(db_path.parent)
         return versions
     except BaseException:
         _unlink_sqlite_sidecars(tmp_path)
@@ -220,7 +285,7 @@ def reset_sqlite(db_path: Path, *, anchor: AuditAnchor | None = None) -> ResetRe
     _emit_storage_op_trace("reset", db_path, anchor)
 
     def _build(tmp_path: Path) -> tuple[int, ...]:
-        conn = connect_sqlite(tmp_path)
+        conn = connect_sqlite(tmp_path, _acquire_database_lease=False)
         try:
             return SQLiteV1Service(conn).schema_versions()
         finally:
@@ -259,7 +324,7 @@ def restore_sqlite(
         # database: a readable schema and an intact audit hash-chain, so a
         # corrupt or tampered snapshot is rejected while the existing database
         # is still in place (the atomic swap only happens on success).
-        verify_conn = connect_sqlite(tmp_path)
+        verify_conn = connect_sqlite(tmp_path, _acquire_database_lease=False)
         try:
             restored_versions = get_sqlite_schema_versions(verify_conn)
             chain = SQLiteAuditWriter(verify_conn).verify_chain()

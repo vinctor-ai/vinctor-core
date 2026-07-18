@@ -9,12 +9,15 @@ import.
 """
 from __future__ import annotations
 
+import fcntl
 import os
 import sqlite3
 import sys
 import threading
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
 
@@ -40,7 +43,7 @@ def _run_fail_open(emission: Callable[[], None]) -> None:
         sys.stderr.write(f"vinctor: audit post-commit emission raised: {exc}\n")
 
 
-_OWN_ATTRS = frozenset({"_connection", "_lock", "_deferral"})
+_OWN_ATTRS = frozenset({"_connection", "_lock", "_deferral", "_database_lease"})
 
 # Unsynchronized write / statement channels on sqlite3.Connection that would
 # bypass the scope lock. Rejected outright — no internal caller uses any of them.
@@ -58,6 +61,88 @@ def _is_autocommit(connection: sqlite3.Connection) -> bool:
     if connection.isolation_level is None:
         return True
     return getattr(connection, "autocommit", False) is True
+
+
+def _database_lock_path(database: str | os.PathLike[str]) -> Path | None:
+    """Return the stable sibling lock path for a filesystem SQLite database.
+
+    The lock must not live on the database inode itself: ``os.replace`` changes
+    that inode, which would let a new opener lock the replacement while the
+    storage operation still holds a lock on the old file. A sibling path stays
+    stable across the rename.
+    """
+    value = os.fspath(database)
+    if value == ":memory:":
+        return None
+    if value.startswith("file:"):
+        parsed = urlsplit(value)
+        if parsed.path in {"", ":memory:"}:
+            return None
+        value = unquote(parsed.path)
+    return Path(f"{value}.vinctor.lock")
+
+
+class SQLiteDatabaseLease:
+    """Process-wide cooperative lease used by every Vinctor SQLite opener."""
+
+    def __init__(
+        self,
+        database: str | os.PathLike[str],
+        *,
+        exclusive: bool,
+        blocking: bool,
+    ) -> None:
+        self._path = _database_lock_path(database)
+        self._fd: int | None = None
+        if self._path is None:
+            return
+        fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+        operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        if not blocking:
+            operation |= fcntl.LOCK_NB
+        try:
+            fcntl.flock(fd, operation)
+        except BlockingIOError as error:
+            os.close(fd)
+            raise RuntimeError(
+                f"SQLite database is in use: {database}; stop the service and "
+                "close every Vinctor connection before reset/restore"
+            ) from error
+        except BaseException:
+            os.close(fd)
+            raise
+        self._fd = fd
+
+    def close(self) -> None:
+        fd = self._fd
+        if fd is None:
+            return
+        self._fd = None
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+    def __enter__(self) -> SQLiteDatabaseLease:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        # sqlite3 connections are sometimes consumed through one-shot CLI
+        # helper objects rather than explicitly closed. Match sqlite3's own
+        # finalizer so such a connection cannot leave its cooperative lease
+        # held until process exit.
+        with suppress(Exception):
+            self.close()
+
+
+def exclusive_sqlite_database_lease(
+    database: str | os.PathLike[str],
+) -> SQLiteDatabaseLease:
+    """Acquire reset/restore ownership, failing if any Vinctor handle is open."""
+    return SQLiteDatabaseLease(database, exclusive=True, blocking=False)
 
 
 class SerializedSQLiteConnection:
@@ -87,8 +172,15 @@ class SerializedSQLiteConnection:
     writes); an embedder issuing raw write SQL through it is out of scope.
     """
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        database_lease: SQLiteDatabaseLease | None = None,
+    ) -> None:
         if _is_autocommit(connection):
+            if database_lease is not None:
+                database_lease.close()
             raise ValueError(
                 "SerializedSQLiteConnection requires a connection in the default "
                 "deferred-transaction mode; an autocommit connection "
@@ -98,6 +190,7 @@ class SerializedSQLiteConnection:
         self._connection = connection
         self._lock = threading.RLock()
         self._deferral = threading.local()
+        self._database_lease = database_lease
 
     @property
     def lock(self) -> threading.RLock:
@@ -110,8 +203,13 @@ class SerializedSQLiteConnection:
         return self._lock
 
     def close(self) -> None:
-        with self._lock:
-            self._connection.close()
+        try:
+            with self._lock:
+                self._connection.close()
+        finally:
+            if self._database_lease is not None:
+                self._database_lease.close()
+                self._database_lease = None
 
     def commit(self) -> None:
         with self._lock:
@@ -210,11 +308,30 @@ class SerializedSQLiteConnection:
 
 
 def connect_sqlite(
-    database: str | os.PathLike[str], **kwargs: object
+    database: str | os.PathLike[str],
+    *,
+    _acquire_database_lease: bool = True,
+    **kwargs: object,
 ) -> SerializedSQLiteConnection:
-    """Open a serialized connection configured for bounded writer contention."""
-    connection = sqlite3.connect(database, **kwargs)
+    """Open a serialized connection configured for bounded writer contention.
+
+    A filesystem connection holds a shared lease for its whole lifetime.
+    Reset/restore takes the corresponding exclusive lease before checkpointing,
+    so it either owns the pathname through ``os.replace`` or fails before
+    touching the destination. The lifetime scope is deliberate: an idle
+    connection kept across a rename still points at the old inode and could
+    otherwise recreate an old-database WAL beside the replacement later.
+    ``_acquire_database_lease=False`` is reserved for reset/restore's private,
+    unpredictable temp file, which is never the shared destination pathname.
+    """
+    database_lease = (
+        SQLiteDatabaseLease(database, exclusive=False, blocking=True)
+        if _acquire_database_lease
+        else None
+    )
+    connection = None
     try:
+        connection = sqlite3.connect(database, **kwargs)
         timeout_seconds = float(kwargs.get("timeout", DEFAULT_BUSY_TIMEOUT_MS / 1_000))
         busy_timeout_ms = max(1, int(timeout_seconds * 1_000))
         connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
@@ -231,9 +348,12 @@ def connect_sqlite(
                     "vinctor: SQLite WAL mode could not be enabled "
                     f"(got {mode!r}); continuing with that journal mode\n"
                 )
-        return SerializedSQLiteConnection(connection)
+        return SerializedSQLiteConnection(connection, database_lease=database_lease)
     except BaseException:
-        connection.close()
+        if connection is not None:
+            connection.close()
+        if database_lease is not None:
+            database_lease.close()
         raise
 
 

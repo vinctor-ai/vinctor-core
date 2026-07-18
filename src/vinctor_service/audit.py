@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol
@@ -13,7 +14,7 @@ from vinctor_core.audit import (
 from vinctor_core.models import AuditEvent
 
 # Aggregation window for audit-recorded authentication failures for the same
-# (surface, source). See ADR 0008 item 2.
+# trusted surface. See ADR 0008 item 2.
 AUTH_FAILURE_WINDOW_SECONDS = 60
 
 
@@ -43,7 +44,7 @@ def record_rejection(audit_writer: AuditWriter, event: AuditEvent) -> None:
 
 @dataclass
 class _AuthFailureWindow:
-    """In-memory aggregation state for one (surface, source) window."""
+    """In-memory aggregation state for one trusted surface's window."""
 
     start: datetime
     last_seen: datetime
@@ -67,11 +68,21 @@ class AuthFailureAuditThrottle:
     Repeat failures within a window are counted in memory and do not emit. State
     is in-memory and per-process: it resets on restart, which at worst drops a
     pending summary and allows a small burst right after a restart.
+
+    One instance is deliberately shared by every service in the process — the
+    SQLite pool shares one via SQLiteServiceSharedState so a probe cannot
+    multiply its budget by the pool size, and the single Postgres or in-memory
+    service is driven by every thread of the threaded HTTP runtime — so
+    ``record`` runs concurrently. The window transition is decided under a
+    lock, making exactly one caller the closed window's emitter; the audit
+    writes happen outside the lock so a slow audit store cannot serialize the
+    auth-failure path.
     """
 
     def __init__(self, window_seconds: int = AUTH_FAILURE_WINDOW_SECONDS) -> None:
         self._window = timedelta(seconds=window_seconds)
         self._windows: dict[str, _AuthFailureWindow] = {}
+        self._lock = threading.Lock()
 
     def record(
         self,
@@ -86,30 +97,41 @@ class AuthFailureAuditThrottle:
         # and emit one "timely" audit row per distinct value, defeating the very
         # throttle meant to collapse a probing flood.
         key = surface
-        window = self._windows.get(key)
+        closed: _AuthFailureWindow | None = None
+        with self._lock:
+            window = self._windows.get(key)
 
-        if window is not None and now - window.start < self._window:
-            # Same window: count the repeat in memory, refresh last-seen, emit
-            # nothing (the timely event for this window already fired).
-            window.count += 1
-            window.last_seen = now
-            return
+            if window is not None and now - window.start < self._window:
+                # Same window: count the repeat in memory, refresh last-seen,
+                # emit nothing (the timely event for this window already fired).
+                window.count += 1
+                window.last_seen = now
+                return
 
-        # Window roll (or first failure ever for this key). If the just-closed
-        # window aggregated more than its initial timely event, emit a summary
-        # before opening the new window.
-        if window is not None and window.count > 1:
+            # Window roll (or first failure ever for this key). Deciding the
+            # roll and replacing the window under the lock makes this caller
+            # the closed window's only emitter: a concurrent failure lands as
+            # a count in the fresh window instead of double-emitting a summary
+            # or overwriting the fresh window (which lost its failure).
+            if window is not None and window.count > 1:
+                closed = window
+            self._windows[key] = _AuthFailureWindow(start=now, last_seen=now, count=1)
+
+        # Emit outside the lock: the audit store may be slow or remote, and
+        # holding the lock across the write would serialize every concurrent
+        # auth failure behind it. `closed` was unlinked from the map above, so
+        # no other thread can still reach or mutate it.
+        if closed is not None:
             self._emit(
                 audit_writer,
                 surface=surface,
-                created_at=window.last_seen,
-                occurrence_count=window.count,
-                first_seen_at=window.start,
-                last_seen_at=window.last_seen,
+                created_at=closed.last_seen,
+                occurrence_count=closed.count,
+                first_seen_at=closed.start,
+                last_seen_at=closed.last_seen,
             )
 
-        # Open the new window and emit its timely first event.
-        self._windows[key] = _AuthFailureWindow(start=now, last_seen=now, count=1)
+        # The timely first event of the just-opened window.
         self._emit(
             audit_writer,
             surface=surface,

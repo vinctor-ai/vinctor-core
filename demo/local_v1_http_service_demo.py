@@ -121,13 +121,14 @@ def main() -> None:
                 audit_events = service.audit_events
                 # Timing oracle closed: the unknown grant records a coarse
                 # rejection too, so audit is [permit, deny, unknown-rejection].
-                assert len(audit_events) == 3
-                assert audit_events[0].event_id == permit["audit_event_id"]
-                assert audit_events[0].boundary_id == "bnd_demo"
-                assert audit_events[0].runtime == "claude-code"
-                assert audit_events[0].boundary_type == "pretooluse"
-                assert audit_events[1].event_id == deny["audit_event_id"]
-                assert audit_events[1].decision == "deny"
+                decision_events = audit_events[-3:]
+                assert len(decision_events) == 3
+                assert decision_events[0].event_id == permit["audit_event_id"]
+                assert decision_events[0].boundary_id == "bnd_demo"
+                assert decision_events[0].runtime == "claude-code"
+                assert decision_events[0].boundary_type == "pretooluse"
+                assert decision_events[1].event_id == deny["audit_event_id"]
+                assert decision_events[1].decision == "deny"
             finally:
                 server.shutdown()
                 thread.join(timeout=5)

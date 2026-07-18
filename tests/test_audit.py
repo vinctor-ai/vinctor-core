@@ -1,3 +1,4 @@
+import threading
 from datetime import UTC, datetime, timedelta
 
 from vinctor_core import (
@@ -362,3 +363,106 @@ def test_auth_failure_throttle_window_roll_without_repeats_emits_no_summary() ->
     assert len(writer.events) == 2
     assert [e.occurrence_count for e in writer.events] == [1, 1]
     assert writer.events[1].first_seen_at == NOW + timedelta(seconds=61)
+
+
+def test_auth_failure_throttle_window_roll_is_atomic_under_concurrency() -> None:
+    """Two failures racing a window roll must yield ONE summary, ONE timely
+    event, and lose neither failure.
+
+    One throttle instance is deliberately shared process-wide (the SQLite pool
+    shares one across its services via SQLiteServiceSharedState; the single
+    Postgres/in-memory service is driven by every thread of the threaded HTTP
+    runtime), so ``record`` runs genuinely concurrently. Its read-decide-write
+    spans the audit write: a thread parked in audit I/O mid-roll leaves the
+    closed window in place for a second thread to summarize AGAIN — two
+    summaries, two "first" events, and each thread's fresh window overwrites
+    the other's, so one of the two failures vanishes from the count. That both
+    weakens the flood throttle (extra rows per roll) and breaks the documented
+    aggregation semantics (a failure is never counted).
+
+    Deterministic interleaving, no sleeps: the audit writer parks the first
+    write attempted after ``arm()`` — the roll winner's emit — until the
+    second, concurrent failure has been fully recorded; the clock is the
+    explicit ``now`` argument.
+    """
+    inner = InMemoryAuditWriter()
+    write_parked = threading.Event()
+    release_write = threading.Event()
+
+    class _ParkOneWrite:
+        """Parks the first write() after arm(); every other write passes."""
+
+        def __init__(self) -> None:
+            self._armed = False
+            self._lock = threading.Lock()
+
+        def arm(self) -> None:
+            with self._lock:
+                self._armed = True
+
+        def write(self, event) -> None:
+            with self._lock:
+                parked, self._armed = self._armed, False
+            if parked:
+                write_parked.set()
+                release_write.wait(timeout=10)
+            inner.write(event)
+
+    writer = _ParkOneWrite()
+    throttle = AuthFailureAuditThrottle(window_seconds=60)
+    roll_at = NOW + timedelta(seconds=61)
+
+    # Window 1: a timely first event, then an in-window repeat (counted, no
+    # emit). Both on the main thread, before the gate is armed.
+    throttle.record(writer, surface="enforce", now=NOW)
+    throttle.record(writer, surface="enforce", now=NOW + timedelta(seconds=30))
+    assert len(inner.events) == 1
+
+    # Two failures arrive concurrently at the roll. The winner parks inside
+    # its first audit write; the loser must complete fully in the meantime.
+    writer.arm()
+    winner = threading.Thread(
+        target=throttle.record,
+        args=(writer,),
+        kwargs={"surface": "enforce", "now": roll_at},
+    )
+    winner.start()
+    assert write_parked.wait(timeout=10), "roll winner never reached an audit write"
+
+    loser = threading.Thread(
+        target=throttle.record,
+        args=(writer,),
+        kwargs={"surface": "enforce", "now": roll_at},
+    )
+    loser.start()
+    loser.join(timeout=10)
+    # The concurrent failure must be able to finish while the winner sits in
+    # audit I/O: the throttle must not hold its lock across the audit write,
+    # or a slow audit store serializes the whole auth-failure path.
+    assert not loser.is_alive(), "second failure was blocked behind the winner's audit I/O"
+
+    release_write.set()
+    winner.join(timeout=10)
+    assert not winner.is_alive()
+
+    # A later roll closes window 2; its summary is where a lost failure would
+    # show up as an undercount (or as no summary at all).
+    throttle.record(writer, surface="enforce", now=NOW + timedelta(seconds=122))
+
+    timely = [e for e in inner.events if e.occurrence_count == 1]
+    summaries = [e for e in inner.events if e.occurrence_count > 1]
+    # Exactly one timely event per window — a duplicate here means two threads
+    # both opened the same window.
+    assert [e.first_seen_at for e in timely] == [
+        NOW,
+        roll_at,
+        NOW + timedelta(seconds=122),
+    ]
+    # Exactly one summary per closed window, and every failure counted: window
+    # 1 saw 2 failures; window 2 saw both concurrent roll failures.
+    assert [
+        (e.occurrence_count, e.first_seen_at, e.last_seen_at) for e in summaries
+    ] == [
+        (2, NOW, NOW + timedelta(seconds=30)),
+        (2, roll_at, roll_at),
+    ]

@@ -54,17 +54,20 @@ def main() -> None:
             assert response["decision"] == "permit"
 
             audit_events = handle.service.audit_events
-            # The bootstrap's scope-bounds write is itself audited on the same
-            # chain (ADR 0019): control events and decision events share one
-            # tamper-evident ordering.
-            assert [event.event_type for event in audit_events] == [
-                "scope_bounds_set",
-                "grant_issued",
-                "action_permitted",
+            # Control and decision events share one chain (ADR 0019). Select the
+            # decision by the id returned to the caller instead of assuming a
+            # fixed number of bootstrap control events.
+            assert [event.event_type for event in audit_events].count("grant_issued") == 1
+            decision_events = [
+                event
+                for event in audit_events
+                if event.event_id == response["audit_event_id"]
             ]
-            assert audit_events[-1].boundary_id == handle.boundary.boundary_id
-            assert audit_events[-1].runtime == "claude-code"
-            assert audit_events[-1].boundary_type == "pretooluse"
+            assert len(decision_events) == 1
+            assert decision_events[0].event_type == "action_permitted"
+            assert decision_events[0].boundary_id == handle.boundary.boundary_id
+            assert decision_events[0].runtime == "claude-code"
+            assert decision_events[0].boundary_type == "pretooluse"
         finally:
             handle.server.shutdown()
             thread.join(timeout=5)

@@ -35,11 +35,12 @@ def main() -> None:
             now=now,
             boundary_id="bnd_demo",
         )
+        decision_audit_baseline = _audit_count(conn)
 
         permit = service.enforce(_request(boundary_id=boundary.boundary_id), now=now)
         assert permit.status_code == 200
         assert permit.decision == "permit"
-        assert _audit_count(conn) == 1
+        assert _audit_count(conn) == decision_audit_baseline + 1
 
         deny = service.enforce(
             _request(action="send", resource="email/external", boundary_id=boundary.boundary_id),
@@ -47,7 +48,7 @@ def main() -> None:
         )
         assert deny.status_code == 403
         assert deny.error == "action_denied"
-        assert _audit_count(conn) == 2
+        assert _audit_count(conn) == decision_audit_baseline + 2
 
         missing_grant = service.enforce(
             _request(grant_ref="grt_missing", action="push", resource="repo"),
@@ -57,17 +58,18 @@ def main() -> None:
         assert missing_grant.decision is None
         # Timing oracle closed: unknown grant records the same coarse rejection a
         # foreign grant does, so the count advances (permit, deny, unknown).
-        assert _audit_count(conn) == 3
+        assert _audit_count(conn) == decision_audit_baseline + 3
 
         service.disable_boundary(
             boundary_id=boundary.boundary_id,
             workspace_id="ws_demo",
             now=now + timedelta(seconds=1),
         )
+        inactive_audit_baseline = _audit_count(conn)
         inactive = service.enforce(_request(boundary_id=boundary.boundary_id), now=now)
         assert inactive.status_code == 403
         assert inactive.error == "boundary_unavailable"
-        assert _audit_count(conn) == 4
+        assert _audit_count(conn) == inactive_audit_baseline + 1
 
         conn.close()
 

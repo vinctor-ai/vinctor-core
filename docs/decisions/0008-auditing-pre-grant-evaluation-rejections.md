@@ -27,18 +27,24 @@ are not part of the caller-facing response, so they are not a caller leak:
    records the enforcing PEP separately from the subject).
 2. **authentication failure** → `auth_failed` /
    `reason_code=auth_failed`, **aggregated** by an in-memory
-   `AuthFailureAuditThrottle` per `(surface, source)` window. The first failure
-   of a window emits a timely event immediately (`occurrence_count=1`,
-   `first_seen_at == last_seen_at == now`); in-window repeats are counted in
-   memory and do not emit; when the window rolls, a summary event for the
-   just-closed window is emitted if it saw more than one failure
-   (`occurrence_count`/`first_seen_at`/`last_seen_at` spanning the window). This
-   bounds audit-store writes so a bad-credential probe cannot flood the store,
-   while still giving the operator a prompt signal and an accurate count.
-   Attributed to the surface/boundary only (no resolvable principal). The
-   throttle is in-memory/per-process — it resets on restart (at worst a dropped
-   pending summary and a small post-restart burst); a durable variant can follow
-   if needed.
+   `AuthFailureAuditThrottle` per trusted `surface` window. (Deliberately
+   narrower than the per-source sketch under Decision below: the request's
+   boundary/source id arrives pre-authentication and is attacker-controlled,
+   so keying windows on it would let a probe mint one throttle window and one
+   timely audit row per distinct value — a memory DoS that defeats the very
+   throttle. The server-trusted, low-cardinality surface is the key.) The
+   first failure of a window emits a timely event immediately
+   (`occurrence_count=1`, `first_seen_at == last_seen_at == now`); in-window
+   repeats are counted in memory and do not emit; when the window rolls, a
+   summary event for the just-closed window is emitted if it saw more than one
+   failure (`occurrence_count`/`first_seen_at`/`last_seen_at` spanning the
+   window). This bounds audit-store writes so a bad-credential probe cannot
+   flood the store, while still giving the operator a prompt signal and an
+   accurate count. Attributed to the surface only (no resolvable principal,
+   no attacker-supplied boundary id). The throttle is in-memory/per-process,
+   one thread-safe instance shared by every service in the process — it
+   resets on restart (at worst a dropped pending summary and a small
+   post-restart burst); a durable variant can follow if needed.
 3. **out-of-bounds grant issuance** → `grant_issue_rejected`, for the
    scope-outside-bounds (`reason_code=scope_outside_issuable_bounds`),
    bounds-not-found (`reason_code=issuable_bounds_not_found`), and TTL-over-max
