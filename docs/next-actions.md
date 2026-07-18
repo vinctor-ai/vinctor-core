@@ -386,9 +386,12 @@ it.
 **Shipped 2026-06** — opt-in `require_pop` operator mandate (`#74`, schema v8, the
 third enforcement flag): when set for a (workspace, agent), a delegated enforce
 whose subject token is not PoP-bound (`pop_secret is None`) fails closed with the
-generic 403 + audit `reason_code=pop_required`. Single-purpose (composes with
-`require_subject_token` for "must present a PoP-bound token"); tenant-isolated on
-`trusted_ws`; `operator require-pop enable/disable/show`.
+generic 403 + audit `reason_code=pop_required`. Shipped single-purpose (presented
+non-PoP tokens only, composing with `require_subject_token`); **revised 2026-07-12
+(`#116`)**: `require_pop` now also denies the no-token case — it implies a subject
+token must be presented, subsuming `require_subject_token` rather than composing
+with it. Tenant-isolated on `trusted_ws`; `operator require-pop
+enable/disable/show`.
 
 Remaining (deferred — each needs a founder decision / posture change, NOT
 autonomously taken):

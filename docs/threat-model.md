@@ -240,8 +240,9 @@ credentials or non-instrumentable systems.
 
 The first concrete Phase-1.8 PEP is an MCP stdio proxy
 ([ADR 0011](decisions/0011-mcp-resource-side-pep.md)): the MCP client's config is
-rewritten (`vinctor-mcp-pep install --client-config …`) so every server launches
-*through* the proxy, which spawns the real server as its own child process. Each
+rewritten (`vinctor-mcp-pep install --client-config …`) so every **stdio** server
+launches *through* the proxy, which spawns the real server as its own child
+process. Each
 `tools/call` is mapped to `(action, resource)` and authorized via
 `/v1/enforce/delegated` (PEP key + optional subject token); every non-permit
 outcome — deny, service unreachable, malformed response, unparseable input,
@@ -252,7 +253,13 @@ the server**.
 (a) the client reaches the server *only* through the proxy — with stdio spawning
 this holds structurally, since the child server has no independent address;
 (b) fail-closed behavior on every non-permit path; and (c) every MCP server in
-the client config is proxied (the install rewrite covers all entries).
+the client config is proxied. The install rewrite establishes (c) only for
+stdio (`command`) entries: remote url-based entries (SSE / streamable-HTTP)
+cannot sit behind a stdio proxy, so `install` leaves them untouched, prints a
+stderr warning naming them, and still succeeds. A config with any `url` entry
+does **not** satisfy (c) until the operator removes those servers or gates them
+by other means — an un-proxied remote server is exactly the un-mediated path
+this condition exists to exclude.
 
 **Residual bypasses — stated, not glossed:**
 - **Config rewrite-back.** An agent that can edit its own MCP client config can

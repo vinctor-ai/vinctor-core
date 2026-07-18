@@ -297,8 +297,14 @@ vinctor operator require-boundary show --workspace
 | Mandate | What it denies (403) |
 | --- | --- |
 | `require-subject-token` | a delegated enforce that presents **no** usable subject token |
-| `require-pop` | a **presented** subject token that is **not** proof-of-possession bound — it does *not* govern the no-token case, so it composes with `require-subject-token` |
+| `require-pop` | a delegated enforce that does not present a proof-of-possession (PoP)-bound subject token — a **missing** token is denied too, not just a presented bearer-only one (PoP can only be proven on a token that exists), so enabling it alone makes a subject token mandatory: it **subsumes** `require-subject-token` rather than composing with it |
 | `require-boundary` | an enforce with no `boundary_id` (see [ADR 0009](decisions/0009-mandatory-boundary-enforcement.md)) |
+
+> [!WARNING]
+> Enabling `require-pop` immediately starts denying **tokenless** delegated
+> enforces for the target agent (or workspace), not only presented non-PoP
+> tokens — `enable` prints this warning. Confirm the client/PEP presents
+> PoP-bound subject tokens before relying on it, or the agent is locked out.
 
 ---
 
