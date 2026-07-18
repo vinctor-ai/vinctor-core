@@ -69,6 +69,13 @@ sudo chown vinctor:vinctor /var/lib/vinctor/vinctor.sqlite
 sudo chmod 600 /var/lib/vinctor/vinctor.sqlite
 ```
 
+That lockdown sets the ground rule for the rest of this guide: run every
+`vinctor` command that touches this database **as the `vinctor` user** —
+`sudo -u vinctor /opt/vinctor/.venv/bin/vinctor …`. An ordinary admin account
+cannot open the `0600` file. Plain `sudo` (root) can — but any file root
+creates next to the live database (a restored database, a WAL sidecar) is a
+file the `User=vinctor` service cannot open later.
+
 ### 3. Bootstrap keys into the database
 
 `vinctor service serve` opens existing state but does **not** mint authority, so
@@ -171,7 +178,15 @@ server {
         proxy_pass http://127.0.0.1:8765;
         proxy_set_header Host $host;
         # Vinctor reads X-Workspace-Key / X-Agent-Key / X-Vinctor-Boundary-Id.
-        # Make sure the proxy forwards request headers unchanged.
+        # Forward those request headers unchanged (proxy_pass does by default).
+        #
+        # X-Forwarded-For is the one header that must NOT be forwarded
+        # unchanged. nginx adds nothing to it on its own, so without this line
+        # the client controls the entire header. $proxy_add_x_forwarded_for
+        # appends the address nginx accepted this connection from, so the
+        # header always ends in an address the socket proved. Required if you
+        # enable rate limiting with VINCTOR_TRUSTED_PROXIES (note below).
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 }
 ```
@@ -193,6 +208,24 @@ Notes:
 - Terminate TLS at the proxy; forward to Vinctor over loopback.
 - Do not strip or rewrite the `X-Workspace-Key`, `X-Agent-Key`, or
   `X-Vinctor-Boundary-Id` headers.
+- If you enable per-source rate limiting behind the proxy
+  (`VINCTOR_RATE_LIMIT_PER_MINUTE` plus, for this loopback proxy,
+  `VINCTOR_TRUSTED_PROXIES=127.0.0.1/32` — see
+  [cli-reference.md](../cli-reference.md)), Vinctor resolves the client by
+  walking `X-Forwarded-For` right to left and taking the rightmost entry that
+  is not itself a trusted proxy. That walk is sound only if every proxy you
+  list as trusted **appends the peer address it accepted the connection from**
+  to `X-Forwarded-For` (or replaces the header with that address): the header
+  then ends in a socket-proved suffix, and anything the client fabricated sits
+  further left, beyond the first non-trusted entry where the walk stops. The
+  `$proxy_add_x_forwarded_for` line above is what provides that property in
+  nginx. Without it, nginx forwards the client's own header untouched, every
+  request can claim a fresh source address, and listing the proxy as trusted
+  *disables* the limiter instead of sharpening it. Preserve the same property
+  when adapting this config: Caddy (2.5+, including the block above) and most
+  cloud load balancers append or replace by default; nginx's `realip` module
+  does **not** — it rewrites nginx's own idea of the peer for when nginx sits
+  behind yet another proxy, and is not a substitute for appending here.
 - Certificates are your responsibility. For a public hostname, obtain them with
   an ACME client (certbot, or Caddy's automatic issuance shown above). For an
   internal-only name like `vinctor.example.internal`, public ACME cannot
@@ -353,22 +386,43 @@ quiesce) the service first and checkpoint with
 `PRAGMA wal_checkpoint(TRUNCATE)`, so the main file is complete before you copy
 it. Never copy the files of a live database.
 
-Scheduled backup with cron (consistent snapshot; safe while the service runs):
+Scheduled backup with cron (consistent snapshot; safe while the service runs).
+Create the backup directory once, owned by the service user, and run the cron
+entry as that same user — the snapshots then stay readable for a later
+`sudo -u vinctor … restore`, and no root-owned file is ever created next to
+the live database:
+
+```bash
+sudo install -d -o vinctor -g vinctor -m 750 /var/backups/vinctor
+```
 
 ```cron
-# Daily snapshot at 02:00, kept by date.
-0 2 * * * /opt/vinctor/.venv/bin/vinctor --db /var/lib/vinctor/vinctor.sqlite \
-  operator storage backup --output /var/backups/vinctor/vinctor-$(date +\%Y\%m\%d).sqlite
+# /etc/cron.d/vinctor-backup — daily snapshot at 02:00, kept by date, run as
+# the vinctor service user (the sixth field; crontab entries are single lines).
+0 2 * * * vinctor /opt/vinctor/.venv/bin/vinctor --db /var/lib/vinctor/vinctor.sqlite operator storage backup --output /var/backups/vinctor/vinctor-$(date +\%Y\%m\%d).sqlite
 ```
 
 Restore from a snapshot (validates the input before replacing the live DB):
 
 ```bash
 sudo systemctl stop vinctor.service
-vinctor --db /var/lib/vinctor/vinctor.sqlite operator storage restore \
+sudo -u vinctor /opt/vinctor/.venv/bin/vinctor \
+  --db /var/lib/vinctor/vinctor.sqlite operator storage restore \
   --input /var/backups/vinctor/vinctor-20260611.sqlite --yes
 sudo systemctl start vinctor.service
 ```
+
+> **Run the restore as the service user — `sudo -u vinctor`, not plain
+> `sudo`.** `restore` builds the replacement database as a temp file next to
+> the live one and atomically renames it into place, and the swapped-in file
+> keeps its creator's ownership and `0600` mode. As `vinctor`, that is exactly
+> the `vinctor:vinctor` `0600` state step 2 established. As root, the swap
+> also succeeds — but the live database is now root-owned, the `User=vinctor`
+> service can no longer open it, and the next start fails. As an ordinary
+> admin, it fails outright (the `vinctor`-owned `0750` data directory refuses
+> the temp file). `storage reset` swaps the database the same way; the step 2
+> ground rule — every command that touches this database runs as `vinctor` —
+> covers the rest.
 
 > **Stop the service first — this is not a formality.** `restore` swaps the
 > database file atomically, but a service that is still running holds its own
@@ -411,15 +465,31 @@ database open), using a one-off container that shares the same volume:
 # 1. Stop the running service container.
 docker compose stop vinctor
 
-# 2. Copy a host snapshot into the volume (cp works on the stopped container).
-docker compose cp ./vinctor-backup.sqlite vinctor:/data/restore-source.sqlite
+# 2. Copy a host snapshot into the volume, into a staging path (cp works on
+#    the stopped container). docker cp always writes it root-owned with the
+#    host file's mode. This file holds plaintext pop_secret values and auth
+#    state — it must stay 0600, never chmod'd world-readable to work around
+#    the ownership mismatch.
+docker compose cp ./vinctor-backup.sqlite vinctor:/data/restore-staging.sqlite
 
-# 3. Validate-and-replace the database with a one-off container.
+# 3. Re-stage it at the ownership and mode the restore needs, with a
+#    narrowly-scoped root helper: this one-off invocation's only job is
+#    `install`, never the application or the restore itself.
+docker compose run --rm --user 0 vinctor \
+  install -o 10001 -g 10001 -m 0600 \
+  /data/restore-staging.sqlite /data/restore-source.sqlite
+docker compose run --rm --user 0 vinctor rm -f /data/restore-staging.sqlite
+
+# 4. Validate-and-replace the database with a one-off container. It runs as
+#    the image's non-root user (uid 10001), which is what keeps the replaced
+#    database owned by the service user. Do NOT add --user 0 here (the
+#    Container Hardening idiom): a root-run restore succeeds and leaves a
+#    root-owned database the service container can no longer open.
 docker compose run --rm vinctor \
   vinctor --db /data/vinctor.sqlite operator storage restore \
   --input /data/restore-source.sqlite --yes
 
-# 4. Start the service again.
+# 5. Start the service again.
 docker compose start vinctor
 ```
 

@@ -255,7 +255,19 @@ Restore from a snapshot:
 
 ```bash
 docker compose stop vinctor
-docker compose cp ./vinctor-preview.sqlite vinctor:/data/restore-source.sqlite
+# docker cp writes the file root-owned with the host file's mode. This file
+# holds plaintext pop_secret values and auth state — it must stay 0600, never
+# chmod'd world-readable to work around the ownership mismatch.
+docker compose cp ./vinctor-preview.sqlite vinctor:/data/restore-staging.sqlite
+# Re-stage it at the ownership and mode the restore needs, with a
+# narrowly-scoped root helper: this one-off invocation's only job is
+# `install`, never the application or the restore itself.
+docker compose run --rm --no-deps --user 0 vinctor \
+  install -o 10001 -g 10001 -m 0600 \
+  /data/restore-staging.sqlite /data/restore-source.sqlite
+docker compose run --rm --no-deps --user 0 vinctor rm -f /data/restore-staging.sqlite
+# The restore itself runs as the image's non-root user (uid 10001), which
+# keeps the replaced database owned by the service user — do not add --user 0.
 docker compose run --rm --no-deps vinctor \
   vinctor --db /data/vinctor.sqlite \
   operator storage restore --input /data/restore-source.sqlite --yes

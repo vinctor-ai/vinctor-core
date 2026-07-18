@@ -132,8 +132,15 @@ VINCTOR_RATE_LIMIT_PER_MINUTE=120 vinctor service serve --host 127.0.0.1 --port 
     vinctor service serve --host 127.0.0.1 --port 8765
   ```
 
-  Never trust a broad CIDR containing direct clients. The counter is per-process
-  and in-memory (not shared across multiple service instances).
+  Never trust a broad CIDR containing direct clients. Listing a CIDR asserts
+  that those proxies **append the peer address they accepted each connection
+  from** to `X-Forwarded-For` (nginx: `proxy_set_header X-Forwarded-For
+  $proxy_add_x_forwarded_for;` — see the
+  [reverse-proxy runbook](deployment/operational-runbooks.md#tls--reverse-proxy);
+  Caddy 2.5+ does the equivalent by default). A trusted proxy that forwards the
+  client's header unchanged lets every request claim a fresh source, which
+  turns the limiter off. The counter is per-process and in-memory (not shared
+  across multiple service instances).
 
 **Print the runtime environment bundle:** `vinctor local env` writes the
 `VINCTOR_*` exports from the current or stored values:
