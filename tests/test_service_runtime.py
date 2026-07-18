@@ -25,6 +25,8 @@ from vinctor_service.sqlite import SQLiteV1Service
 from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
+WORKSPACE_KEY = f"wsk_{'w' * 32}"
+AGENT_KEY = f"aak_{'a' * 32}"
 
 
 @contextmanager
@@ -247,8 +249,8 @@ def test_service_runtime_preserves_existing_enforce_routes(tmp_path: Path) -> No
             port=0,
             workspace_id="ws_demo",
             agent_id="agent_runner",
-            workspace_key="wsk_demo",
-            agent_key="aak_demo",
+            workspace_key=WORKSPACE_KEY,
+            agent_key=AGENT_KEY,
             grant_ref="grt_demo",
             scopes=("write:repo/feature/*",),
             boundary_name="codex-local",
@@ -273,7 +275,7 @@ def test_service_runtime_preserves_existing_enforce_routes(tmp_path: Path) -> No
                 "POST",
                 "/v1/enforce",
                 headers={
-                    "X-Agent-Key": "aak_demo",
+                    "X-Agent-Key": AGENT_KEY,
                     "X-Vinctor-Boundary-Id": boundary_id or "",
                 },
                 body={
@@ -287,7 +289,7 @@ def test_service_runtime_preserves_existing_enforce_routes(tmp_path: Path) -> No
                 "POST",
                 "/v1/enforce",
                 headers={
-                    "X-Agent-Key": "aak_demo",
+                    "X-Agent-Key": AGENT_KEY,
                     "X-Vinctor-Boundary-Id": boundary_id or "",
                 },
                 body={
@@ -361,8 +363,8 @@ def test_service_runtime_wires_delegated_pep_enforce(tmp_path: Path) -> None:
             port=0,
             workspace_id="ws_demo",
             agent_id="agent_runner",
-            workspace_key="wsk_demo",
-            agent_key="aak_demo",
+            workspace_key=WORKSPACE_KEY,
+            agent_key=AGENT_KEY,
             grant_ref="grt_demo",
             scopes=("write:repo/feature/*",),
             boundary_name="codex-local",

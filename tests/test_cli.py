@@ -32,6 +32,8 @@ from vinctor_service.models import GrantIssueRequest
 from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
+WORKSPACE_KEY = f"wsk_{'w' * 32}"
+AGENT_KEY = f"aak_{'a' * 32}"
 
 
 def test_vinctor_cli_agent_request_operator_evaluate_and_enforce(
@@ -1794,8 +1796,8 @@ def _start_service(tmp_path: Path, *, scopes: tuple[str, ...]):
             port=0,
             workspace_id="ws_demo",
             agent_id="agent_runner",
-            workspace_key="wsk_demo",
-            agent_key="aak_demo",
+            workspace_key=WORKSPACE_KEY,
+            agent_key=AGENT_KEY,
             grant_ref="grt_bootstrap",
             scopes=scopes,
             boundary_name="claude-code-local",

@@ -63,8 +63,8 @@ def test_preview_smoke_checks_health_enforce_and_audit(tmp_path: Path) -> None:
             port=0,
             workspace_id="ws_preview",
             agent_id="agent_partner",
-            workspace_key="wsk_preview",
-            agent_key="aak_preview",
+            workspace_key=f"wsk_{'w' * 32}",
+            agent_key=f"aak_{'a' * 32}",
             grant_ref="grt_preview",
             scopes=("write:repo/feature/*",),
             boundary_name="codex-preview",
@@ -78,8 +78,8 @@ def test_preview_smoke_checks_health_enforce_and_audit(tmp_path: Path) -> None:
         result = smoke.run_smoke(
             smoke.SmokeConfig(
                 endpoint=handle.endpoint,
-                agent_key="aak_preview",
-                workspace_key="wsk_preview",
+                agent_key=handle.agent_key,
+                workspace_key=handle.workspace_key,
                 grant_ref="grt_preview",
                 permit_action="write",
                 permit_resource="repo/feature/readme",

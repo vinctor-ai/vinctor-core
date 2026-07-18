@@ -36,6 +36,7 @@ def _config() -> OidcConfig:
         issuer="https://identity.example.com",
         audience="vinctor-service",
         jwks_url="https://identity.example.com/.well-known/jwks.json",
+        allowed_workspace_ids=frozenset({"ws_main"}),
     )
 
 
@@ -65,6 +66,7 @@ def test_oidc_config_reads_claim_group_and_algorithm_settings() -> None:
             "VINCTOR_OIDC_AUDITOR_GROUP": "audit",
             "VINCTOR_OIDC_SERVICE_OPERATOR_GROUP": "platform",
             "VINCTOR_OIDC_ALGORITHMS": "RS256,ES256",
+            "VINCTOR_OIDC_ALLOWED_WORKSPACE_IDS": "ws_main, ws_other",
         }
     )
 
@@ -75,6 +77,7 @@ def test_oidc_config_reads_claim_group_and_algorithm_settings() -> None:
     assert config.auditor_group == "audit"
     assert config.service_operator_group == "platform"
     assert config.algorithms == ("RS256", "ES256")
+    assert config.allowed_workspace_ids == frozenset({"ws_main", "ws_other"})
 
 
 def test_oidc_rejects_symmetric_signing_algorithms() -> None:
@@ -101,6 +104,55 @@ def test_claims_map_groups_to_workspace_scoped_roles() -> None:
         subject="user-123",
         workspace_id="ws_main",
         roles=frozenset({"operator", "auditor"}),
+    )
+
+
+def test_workspace_scoped_roles_reject_workspace_outside_issuer_allowlist() -> None:
+    principal = principal_from_claims(
+        _config(),
+        {
+            "sub": "user-123",
+            "vinctor_workspace_id": "ws_untrusted",
+            "groups": ["vinctor-operator", "vinctor-auditor"],
+        },
+    )
+
+    assert principal is None
+
+
+def test_workspace_scoped_roles_fail_closed_without_an_allowlist() -> None:
+    config = OidcConfig(
+        issuer="https://identity.example.com",
+        audience="vinctor-service",
+        jwks_url="https://identity.example.com/.well-known/jwks.json",
+    )
+
+    principal = principal_from_claims(
+        config,
+        {
+            "sub": "user-123",
+            "vinctor_workspace_id": "ws_main",
+            "groups": ["vinctor-operator"],
+        },
+    )
+
+    assert principal is None
+
+
+def test_service_operator_does_not_inherit_an_unvalidated_workspace_claim() -> None:
+    principal = principal_from_claims(
+        _config(),
+        {
+            "sub": "service-operator-123",
+            "vinctor_workspace_id": "ws_untrusted",
+            "groups": ["vinctor-service-operator"],
+        },
+    )
+
+    assert principal == OidcPrincipal(
+        subject="service-operator-123",
+        workspace_id=None,
+        roles=frozenset({"service_operator"}),
     )
 
 

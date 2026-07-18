@@ -91,6 +91,10 @@ Integrate the local launcher with durable key storage:
 
 - If `--workspace-key` or `--agent-key` is supplied, register or reuse the
   matching hashed key record.
+- Explicitly seeded workspace, agent, and PEP keys must keep at least 32
+  characters of secret material after their type prefix. Operators should
+  generate those values with a CSPRNG; the length check preserves the
+  high-entropy assumption required by unsalted SHA-256 storage.
 - If no raw key is supplied, generate a new key, store only its hash, and print
   the raw value once in the launcher exports.
 - Re-running the launcher without supplying previously generated raw keys may

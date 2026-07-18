@@ -1362,7 +1362,7 @@ class FakeDecisionClient(FakeClient):
             **self.create_auto_approval_rule(
                 name="CI",
                 target_agent_id="agent_ci",
-                allowed_scopes=["execute:ci/*"],
+                allowed_scopes=["execute:ci/jobs/*"],
                 max_ttl_seconds=900,
             ),
             "rule_id": rule_id,
@@ -1459,15 +1459,20 @@ def test_auto_approval_rule_write_tools_proxy_and_follow_output_mode() -> None:
     diagnostic_tools = VinctorWriteTools(client, output_mode="diagnostic")
 
     created = safe_tools.create_auto_approval_rule(
-        "CI", "agent_ci", ["execute:ci/*"], 900
+        "CI", "agent_ci", ["execute:ci/jobs/*"], 900
     )
     disabled = diagnostic_tools.disable_auto_approval_rule("apr_x")
 
-    assert client.created_rules[0] == ("CI", "agent_ci", ["execute:ci/*"], 900)
+    assert client.created_rules[0] == (
+        "CI",
+        "agent_ci",
+        ["execute:ci/jobs/*"],
+        900,
+    )
     assert created["created_by"] == "workspace:ws_main"
     assert "allowed_scopes" not in created
     assert disabled["status"] == "disabled"
-    assert disabled["allowed_scopes"] == ["execute:ci/*"]
+    assert disabled["allowed_scopes"] == ["execute:ci/jobs/*"]
     assert "key_hash" not in json.dumps([created, disabled])
 
 
@@ -1510,9 +1515,9 @@ def test_issue_grant_proxies_client_and_returns_allowlisted_fields() -> None:
     client = FakeDecisionClient()
     tools = VinctorWriteTools(client)
 
-    result = tools.issue_grant("aid", ["read:x/*"], 3600)
+    result = tools.issue_grant("aid", ["read:x/path/*"], 3600)
 
-    assert client.issued == [("aid", ["read:x/*"], 3600)]
+    assert client.issued == [("aid", ["read:x/path/*"], 3600)]
     assert result == {
         "grant_id": "grnt_issued",
         "grant_ref": "grt_issued",
@@ -1527,15 +1532,15 @@ def test_issue_grant_proxies_client_and_returns_allowlisted_fields() -> None:
 def test_issue_grant_diagnostic_mode_includes_scope_fields() -> None:
     tools = VinctorWriteTools(FakeDecisionClient(), output_mode="diagnostic")
 
-    result = tools.issue_grant("aid", ["read:x/*"], 3600)
+    result = tools.issue_grant("aid", ["read:x/path/*"], 3600)
 
-    assert result["scopes"] == ["read:x/*"]
+    assert result["scopes"] == ["read:x/path/*"]
 
 
 def test_issue_grant_never_leaks_raw_keys_hashes_or_internals() -> None:
     tools = VinctorWriteTools(FakeDecisionClient(), output_mode="diagnostic")
 
-    blob = json.dumps(tools.issue_grant("aid", ["read:x/*"], 3600))
+    blob = json.dumps(tools.issue_grant("aid", ["read:x/path/*"], 3600))
 
     for forbidden in ("wsk_", "hash_secret", "raw_tool_input", "raw_key"):
         assert forbidden not in blob

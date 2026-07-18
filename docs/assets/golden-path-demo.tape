@@ -21,7 +21,7 @@ Set TypingSpeed 32ms
 Hide
 Type "cd $(mktemp -d)"
 Enter
-Type "vinctor local start --db demo.sqlite --port 0 --scope 'send:net/internal/*' --scope 'deploy:staging/*' --boundary-name claude-code-local > vinctor.env 2>&1 &"
+Type "vinctor local start --db demo.sqlite --port 0 --scope 'send:net/internal/*' --scope 'deploy:env/staging/*' --boundary-name claude-code-local > vinctor.env 2>&1 &"
 Enter
 Sleep 2s
 Type "source vinctor.env && clear"

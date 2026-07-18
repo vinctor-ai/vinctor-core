@@ -274,14 +274,18 @@ def test_chain_stays_valid_under_concurrent_enforce(tmp_path) -> None:
 
     db_path = tmp_path / "conc.sqlite"
     handle = prepare_local_service(
-        LocalLaunchConfig(db_path=db_path, port=0, scopes=("read:test/*",))
+        LocalLaunchConfig(db_path=db_path, port=0, scopes=("read:test/data/*",))
     )
     thread = Thread(target=handle.server.serve_forever, daemon=True)
     thread.start()
 
     def _enforce_once(_i: int) -> int:
         body = _json.dumps(
-            {"grant_ref": handle.grant_ref, "action": "read", "resource": "test/file"}
+            {
+                "grant_ref": handle.grant_ref,
+                "action": "read",
+                "resource": "test/data/file",
+            }
         ).encode("utf-8")
         req = urllib.request.Request(
             f"{handle.endpoint}/v1/enforce",

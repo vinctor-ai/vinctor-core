@@ -130,7 +130,7 @@ def test_postgres_scope_bounds_combined_read_matches_written_row() -> None:
     repository.set_bounds(
         workspace_id="ws_main",
         agent_id="agent_no_ttl",
-        scopes=("read:docs/*",),
+        scopes=("read:docs/public/*",),
         now=NOW,
     )
 
@@ -139,7 +139,10 @@ def test_postgres_scope_bounds_combined_read_matches_written_row() -> None:
     ) == AgentIssuableBounds(scopes=("write:repo/feature/*",), max_ttl_seconds=900)
     assert repository.get_bounds_with_max_ttl(
         workspace_id="ws_main", agent_id="agent_no_ttl"
-    ) == AgentIssuableBounds(scopes=("read:docs/*",), max_ttl_seconds=None)
+    ) == AgentIssuableBounds(
+        scopes=("read:docs/public/*",),
+        max_ttl_seconds=None,
+    )
     assert (
         repository.get_bounds_with_max_ttl(
             workspace_id="ws_main", agent_id="agent_absent"
@@ -178,6 +181,36 @@ def test_postgres_local_key_repository_contract() -> None:
     revoked = repository.revoke_key(agent.record.key_id, now=NOW + timedelta(seconds=1))
     assert revoked is not None and revoked.status == "revoked"
     assert repository.resolve_agent_identity("aak_main", now=NOW) is None
+    conn.close()
+
+
+def test_postgres_local_key_repository_rejects_weak_operator_seeded_keys() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    repository = PostgresLocalKeyRepository(conn)
+
+    with pytest.raises(ValueError, match="at least 32 characters"):
+        repository.ensure_workspace_key(
+            workspace_id="ws_main",
+            raw_key="wsk_hunter2",
+            now=NOW,
+        )
+    with pytest.raises(ValueError, match="at least 32 characters"):
+        repository.ensure_agent_key(
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            raw_key="aak_hunter2",
+            now=NOW,
+        )
+    with pytest.raises(ValueError, match="at least 32 characters"):
+        repository.ensure_pep_key(
+            workspace_id="ws_main",
+            pep_id="pep_release",
+            raw_key="pep_hunter2",
+            now=NOW,
+        )
+
+    assert repository.list_for_workspace("ws_main") == ()
     conn.close()
 
 
@@ -1515,7 +1548,7 @@ def _postgres_control_rule() -> AutoApprovalRule:
         workspace_id="ws_main",
         name="release",
         target_agent_id="agent_release",
-        allowed_scopes=("execute:deploy/*",),
+        allowed_scopes=("execute:deploy/env/*",),
         max_ttl_seconds=1800,
         status="active",
         created_by="operator:a",
@@ -1595,7 +1628,7 @@ def test_postgres_boundary_and_rule_mutations_emit_one_control_event_each() -> N
     assert events[0].runtime is None and events[0].boundary_type is None
     serialized = json.dumps([event.to_dict() for event in events])
     assert "fail_closed" not in serialized
-    assert "execute:deploy/*" not in serialized
+    assert "execute:deploy/env/*" not in serialized
     assert "agent_release" not in serialized
     assert service.audit_writer.verify_chain().ok is True
     conn.close()
@@ -1700,7 +1733,9 @@ def test_postgres_set_bounds_emits_one_control_event_with_scopes() -> None:
 
     service.set_agent_issuable_scope_bounds(
         workspace_id="ws_main", agent_id="agent_release",
-        scopes=("read:repo/*", "execute:ci/test"), max_ttl_seconds=3600, now=NOW,
+        scopes=("read:repo/project/*", "execute:ci/test"),
+        max_ttl_seconds=3600,
+        now=NOW,
     )
 
     events = _control_events(service)
@@ -1708,7 +1743,7 @@ def test_postgres_set_bounds_emits_one_control_event_with_scopes() -> None:
     event = events[0]
     assert event.event_type == "scope_bounds_set"
     assert event.resource == "issuable_scope_bounds/agent_release"
-    assert event.scope_attempted == "read:repo/* execute:ci/test"
+    assert event.scope_attempted == "read:repo/project/* execute:ci/test"
     assert event.reason == "max_ttl_seconds=3600"
     assert service.audit_writer.verify_chain().ok is True
     conn.close()
@@ -1740,7 +1775,7 @@ def test_postgres_set_bounds_rolls_back_when_audit_write_fails() -> None:
     with pytest.raises(RuntimeError, match="audit write failed"):
         service.set_agent_issuable_scope_bounds(
             workspace_id="ws_main", agent_id="agent_release",
-            scopes=("read:repo/*",), now=NOW,
+            scopes=("read:repo/project/*",), now=NOW,
         )
     assert service.scope_bounds_repository.get_bounds(
         workspace_id="ws_main", agent_id="agent_release"

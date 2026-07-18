@@ -176,6 +176,23 @@ def test_issuance_without_agent_bounds_records_rejection_audit(tmp_path: Path) -
     conn.close()
 
 
+def test_issuance_rejects_shallow_terminal_wildcard_before_bounds_lookup(
+    tmp_path: Path,
+) -> None:
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+
+    result = service.issue_grant(
+        issue_request(scopes=("read:a/*",)),
+        now=NOW,
+    )
+
+    assert result.status == "rejected"
+    assert result.reason == "invalid_requested_scope"
+    assert service.lookup_grant(grant_ref="grt_issued", workspace_id="ws_main") is None
+    conn.close()
+
+
 def test_ttl_expiration_is_enforced_for_issued_grants(tmp_path: Path) -> None:
     conn = connect_db(tmp_path)
     service = SQLiteV1Service(conn)

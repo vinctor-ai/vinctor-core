@@ -132,7 +132,7 @@ def test_auto_approve_out_of_bounds_returns_403(tmp_path: Path) -> None:
             workspace_id="ws_main",
             name="deploy auto approval",
             target_agent_id="agent_runner",
-            allowed_scopes=("execute:deploy/*",),
+            allowed_scopes=("execute:deploy/env/*",),
             max_ttl_seconds=3600,
             status="active",
             created_by="workspace:ws_main",
@@ -140,7 +140,7 @@ def test_auto_approve_out_of_bounds_returns_403(tmp_path: Path) -> None:
         )
     )
     service.create_grant_request(
-        create_request(scopes=("execute:deploy/production",)),
+        create_request(scopes=("execute:deploy/env/production",)),
         now=NOW,
     )
 

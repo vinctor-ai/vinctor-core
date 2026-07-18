@@ -17,6 +17,7 @@ from vinctor_service.keys import (
     WORKSPACE_KEY_PREFIX,
     CreatedLocalKey,
     SQLiteLocalKeyRepository,
+    validate_seeded_key,
 )
 from vinctor_service.local_http import create_v1_http_server
 from vinctor_service.models import GrantIssueRequest
@@ -427,6 +428,10 @@ def _validate_config(config: LocalLaunchConfig) -> None:
         raise ValueError(f"workspace_key must start with {WORKSPACE_KEY_PREFIX}")
     if config.agent_key is not None and not config.agent_key.startswith(AGENT_KEY_PREFIX):
         raise ValueError(f"agent_key must start with {AGENT_KEY_PREFIX}")
+    if config.workspace_key is not None:
+        validate_seeded_key(config.workspace_key, WORKSPACE_KEY_PREFIX)
+    if config.agent_key is not None:
+        validate_seeded_key(config.agent_key, AGENT_KEY_PREFIX)
 
 
 def _raw_key(created: CreatedLocalKey) -> str:

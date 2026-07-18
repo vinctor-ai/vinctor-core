@@ -118,6 +118,7 @@ values before starting the service:
 export VINCTOR_OIDC_ISSUER="https://identity.example.com"
 export VINCTOR_OIDC_AUDIENCE="vinctor-service"
 export VINCTOR_OIDC_JWKS_URL="https://identity.example.com/.well-known/jwks.json"
+export VINCTOR_OIDC_ALLOWED_WORKSPACE_IDS="ws_production,ws_staging"
 vinctor service serve --mode self_hosted
 ```
 
@@ -136,6 +137,10 @@ Override those names with `VINCTOR_OIDC_GROUPS_CLAIM`,
 `VINCTOR_OIDC_AUDITOR_GROUP`, and `VINCTOR_OIDC_SERVICE_OPERATOR_GROUP`.
 `VINCTOR_OIDC_ALGORITHMS` is a comma-separated asymmetric allow-list and
 defaults to `RS256`. Tokens are sent as `Authorization: Bearer <token>`.
+`VINCTOR_OIDC_ALLOWED_WORKSPACE_IDS` is a comma-separated, issuer-specific
+allow-list. Workspace-scoped operator and auditor tokens fail closed when their
+workspace claim is absent from it; an omitted or empty allow-list grants no
+workspace-scoped OIDC role.
 
 OIDC is disabled when the issuer, audience, and JWKS URL are all absent. A
 partial configuration is rejected at startup. Local keys remain enabled for

@@ -17,6 +17,8 @@ from vinctor_service.sqlite import init_sqlite_schema
 from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
+STRONG_AGENT_SEED = f"{AGENT_KEY_PREFIX}{'a' * 32}"
+STRONG_PEP_SEED = f"{PEP_KEY_PREFIX}{'p' * 32}"
 
 
 def connect_db(tmp_path: Path) -> sqlite3.Connection:
@@ -144,18 +146,49 @@ def test_local_key_repository_ensure_reuses_active_key(tmp_path: Path) -> None:
     first = repository.ensure_agent_key(
         workspace_id="ws_main",
         agent_id="agent_release",
-        raw_key="aak_test_secret",
+        raw_key=STRONG_AGENT_SEED,
         now=NOW,
     )
     second = repository.ensure_agent_key(
         workspace_id="ws_main",
         agent_id="agent_release",
-        raw_key="aak_test_secret",
+        raw_key=STRONG_AGENT_SEED,
         now=NOW,
     )
 
     assert first == second
     assert len(repository.list_for_workspace("ws_main")) == 1
+    conn.close()
+
+
+def test_local_key_repository_rejects_weak_operator_seeded_keys(
+    tmp_path: Path,
+) -> None:
+    conn = connect_db(tmp_path)
+    repository = SQLiteLocalKeyRepository(conn)
+
+    with pytest.raises(ValueError, match="at least 32 characters"):
+        repository.ensure_workspace_key(
+            workspace_id="ws_main",
+            raw_key="wsk_hunter2",
+            now=NOW,
+        )
+    with pytest.raises(ValueError, match="at least 32 characters"):
+        repository.ensure_agent_key(
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            raw_key="aak_hunter2",
+            now=NOW,
+        )
+    with pytest.raises(ValueError, match="at least 32 characters"):
+        repository.ensure_pep_key(
+            workspace_id="ws_main",
+            pep_id="pep_git_host",
+            raw_key="pep_hunter2",
+            now=NOW,
+        )
+
+    assert repository.list_for_workspace("ws_main") == ()
     conn.close()
 
 
@@ -237,13 +270,13 @@ def test_local_key_repository_ensure_pep_reuses_active_key(tmp_path: Path) -> No
     first = repository.ensure_pep_key(
         workspace_id="ws_main",
         pep_id="pep_git_host",
-        raw_key="pep_test_secret",
+        raw_key=STRONG_PEP_SEED,
         now=NOW,
     )
     second = repository.ensure_pep_key(
         workspace_id="ws_main",
         pep_id="pep_git_host",
-        raw_key="pep_test_secret",
+        raw_key=STRONG_PEP_SEED,
         now=NOW,
     )
 
@@ -254,3 +287,7 @@ def test_local_key_repository_ensure_pep_reuses_active_key(tmp_path: Path) -> No
 
 def test_mask_key_preserves_prefix_and_suffix() -> None:
     assert mask_key("aak_abcdefghijklmnopqrstuvwxyz") == "aak_abcd...wxyz"
+
+
+def test_mask_key_never_returns_short_key_verbatim() -> None:
+    assert mask_key("aak_short") == "aak_***"

@@ -101,6 +101,9 @@ write:repo/docs/*
 read:github/acme/api/*
 ```
 
+The wildcard must follow at least two concrete resource segments. For example,
+`read:repo/project/*` is valid, while `read:repo/*` is rejected.
+
 Do not use wildcards in hook config resources.
 
 ## What To Map

@@ -313,7 +313,7 @@ def test_client_creates_and_disables_auto_approval_rules() -> None:
     client.create_auto_approval_rule(
         name="CI",
         target_agent_id="agent_ci",
-        allowed_scopes=["execute:ci/*"],
+        allowed_scopes=["execute:ci/jobs/*"],
         max_ttl_seconds=900,
     )
     client.disable_auto_approval_rule("apr_x")
@@ -325,7 +325,7 @@ def test_client_creates_and_disables_auto_approval_rules() -> None:
     assert json.loads(conn.requests[0]["body"]) == {
         "name": "CI",
         "target_agent_id": "agent_ci",
-        "allowed_scopes": ["execute:ci/*"],
+        "allowed_scopes": ["execute:ci/jobs/*"],
         "max_ttl_seconds": 900,
     }
     assert conn.requests[1]["body"] is None
@@ -395,7 +395,7 @@ def test_client_issues_grant_sends_exact_body() -> None:
     )
 
     body = client.issue_grant(
-        agent_id="aid", scopes=["read:x/*"], ttl_seconds=3600
+        agent_id="aid", scopes=["read:x/path/*"], ttl_seconds=3600
     )
 
     assert body == {
@@ -409,7 +409,7 @@ def test_client_issues_grant_sends_exact_body() -> None:
     assert request["headers"]["X-Workspace-Key"] == "wsk_demo"
     assert json.loads(request["body"]) == {
         "agent_id": "aid",
-        "scopes": ["read:x/*"],
+        "scopes": ["read:x/path/*"],
         "ttl_seconds": 3600,
     }
 

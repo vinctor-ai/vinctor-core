@@ -23,6 +23,9 @@ with audit-only users.
     view only.
 - Require a non-empty workspace claim for `operator` and `auditor`. The
   `service_operator` role is global and does not require one.
+- Require workspace claims to match the issuer configuration's explicit
+  workspace allow-list before granting any workspace-scoped role. An empty
+  allow-list grants no workspace-scoped OIDC role.
 - Prefer any explicitly supplied local-key header over a bearer token. Bearer
   tokens do not authenticate agent or PEP enforcement routes.
 - Reject incomplete OIDC configuration at service startup. Reject tokens when

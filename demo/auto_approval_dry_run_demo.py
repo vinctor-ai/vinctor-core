@@ -24,7 +24,7 @@ def main() -> None:
                     workspace_id="ws_demo",
                     name="CI dry-run approval",
                     target_agent_id="agent_runner",
-                    allowed_scopes=("execute:ci/*",),
+                    allowed_scopes=("execute:ci/jobs/*",),
                     max_ttl_seconds=3600,
                     status="active",
                     created_by="workspace:ws_demo",
@@ -35,7 +35,7 @@ def main() -> None:
                 GrantRequestCreateRequest(
                     workspace_id="ws_demo",
                     requester_agent_id="agent_runner",
-                    requested_scopes=("execute:ci/test",),
+                    requested_scopes=("execute:ci/jobs/test",),
                     requested_ttl_seconds=1800,
                     reason="run CI validation for the current task",
                     request_id="grq_ci",
@@ -54,7 +54,11 @@ def main() -> None:
                 request_id="grq_ci",
                 workspace_id="ws_demo",
             ).status == "pending"
-            assert [event.event_type for event in service.audit_events] == [
+            assert [
+                event.event_type
+                for event in service.audit_events
+                if event.event_class == "decision"
+            ] == [
                 "grant_requested",
             ]
         finally:

@@ -88,7 +88,7 @@ def _is_valid_resource(resource: str, *, allow_terminal_wildcard: bool) -> bool:
             and len(wildcard_segments) == 1
             and wildcard_segments[0] == len(segments) - 1
             and segments[-1] == "*"
-            and len(segments) > 1
+            and len(segments) >= 3
         )
 
     return all(_RESOURCE_SEGMENT_RE.fullmatch(segment) is not None for segment in segments)

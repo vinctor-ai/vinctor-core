@@ -104,13 +104,18 @@ def test_validates_exact_and_terminal_wildcard_grant_scopes() -> None:
         assert is_valid_grant_scope(scope)
 
 
+def test_terminal_wildcard_requires_two_concrete_resource_segments() -> None:
+    assert not is_valid_grant_scope("read:a/*")
+    assert is_valid_grant_scope("read:a/b/*")
+
+
 def test_scope_subsumes_exact_and_terminal_wildcards() -> None:
     assert scope_subsumes("write:repo/feature/readme", "write:repo/feature/readme")
-    assert scope_subsumes("write:repo/*", "write:repo/a/b")
-    assert scope_subsumes("write:repo/*", "write:repo/feature/*")
+    assert scope_subsumes("write:repo/project/*", "write:repo/project/a/b")
+    assert scope_subsumes("write:repo/project/*", "write:repo/project/feature/*")
     assert scope_subsumes("write:repo/feature/*", "write:repo/feature/readme")
-    assert not scope_subsumes("write:repo/feature/*", "write:repo/*")
-    assert not scope_subsumes("read:repo/*", "write:repo/a/b")
+    assert not scope_subsumes("write:repo/feature/*", "write:repo/project/*")
+    assert not scope_subsumes("read:repo/project/*", "write:repo/project/a/b")
     assert not scope_subsumes("write:repo/feature/readme", "write:repo/feature/other")
 
 

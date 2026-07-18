@@ -67,7 +67,7 @@ It only models authorization decisions for inputs explicitly passed to it.
 ## See it
 
 The clip below runs the real CLI. The agent holds a single grant —
-`send:net/internal/*, deploy:staging/*` — and you watch the **same kind of action
+`send:net/internal/*, deploy:env/staging/*` — and you watch the **same kind of action
 get opposite verdicts depending on context**:
 
 ![Vinctor golden-path demo: the same action allowed or denied by context](docs/assets/golden-path-demo.gif)
@@ -75,7 +75,8 @@ get opposite verdicts depending on context**:
 - `send` → `net/internal/orders-api` is **permitted** — an internal call the grant covers.
 - `send` → `net/external/pastebin.com` is **denied** — the *same* `send` action, but an
   external destination (the exfiltration path) the grant never covered.
-- `deploy` → `production/web` is **denied** — the grant covers `deploy:staging/*`, never production.
+- `deploy` → `env/production/web` is **denied** — the grant covers
+  `deploy:env/staging/*`, never production.
 
 Nothing is on a denylist. Each tool call is mapped to an `(action, resource)` pair
 and checked against the grant **before it runs** — permit and it proceeds, deny and
@@ -361,8 +362,9 @@ Valid action verbs are `read`, `write`, `execute`, `deploy`, `delete`, and
 `_`, and `-`, with at least two segments such as `repo/feature`.
 
 Grant scopes may use one terminal resource wildcard such as
-`write:repo/feature/*`. Requested action/resource pairs must be concrete and
-cannot contain wildcards.
+`write:repo/feature/*`. A wildcard requires at least two concrete resource
+segments before `/*`; `read:repo/*` is invalid. Requested action/resource pairs
+must be concrete and cannot contain wildcards.
 
 Malformed requested actions return `invalid_action`. Malformed requested
 resources return `invalid_resource`. Malformed grant scopes return

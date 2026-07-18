@@ -26,7 +26,7 @@ Check:
 
 Check:
 
-- broad grant scopes such as `write:repo/*`
+- broad grant scopes such as `write:repo/project/*`
 - operator rules overriding built-in mappings
 - resources that are less specific than intended
 - the active `VINCTOR_GRANT_REF`

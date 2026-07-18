@@ -22,6 +22,7 @@ class OidcConfig:
     auditor_group: str = "vinctor-auditor"
     service_operator_group: str = "vinctor-service-operator"
     algorithms: tuple[str, ...] = ("RS256",)
+    allowed_workspace_ids: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         required = {
@@ -41,6 +42,11 @@ class OidcConfig:
             algorithm not in _ASYMMETRIC_ALGORITHMS for algorithm in self.algorithms
         ):
             raise ValueError("OIDC algorithms must be supported asymmetric algorithms")
+        if any(
+            not workspace_id or workspace_id.strip() != workspace_id
+            for workspace_id in self.allowed_workspace_ids
+        ):
+            raise ValueError("OIDC allowed workspace ids must be non-empty and trimmed")
 
 
 @dataclass(frozen=True)
@@ -100,6 +106,11 @@ def load_oidc_config(env: Mapping[str, str]) -> OidcConfig | None:
         for value in env.get("VINCTOR_OIDC_ALGORITHMS", "RS256").split(",")
         if value.strip()
     )
+    allowed_workspace_ids = frozenset(
+        value.strip()
+        for value in env.get("VINCTOR_OIDC_ALLOWED_WORKSPACE_IDS", "").split(",")
+        if value.strip()
+    )
     return OidcConfig(
         issuer=env["VINCTOR_OIDC_ISSUER"],
         audience=env["VINCTOR_OIDC_AUDIENCE"],
@@ -112,6 +123,7 @@ def load_oidc_config(env: Mapping[str, str]) -> OidcConfig | None:
             "VINCTOR_OIDC_SERVICE_OPERATOR_GROUP", "vinctor-service-operator"
         ),
         algorithms=algorithms,
+        allowed_workspace_ids=allowed_workspace_ids,
     )
 
 
@@ -128,6 +140,14 @@ def principal_from_claims(
         return None
     if workspace_id is not None and (not isinstance(workspace_id, str) or not workspace_id):
         return None
+    workspace_role_requested = (
+        config.operator_group in groups or config.auditor_group in groups
+    )
+    if workspace_role_requested:
+        if workspace_id is None or workspace_id not in config.allowed_workspace_ids:
+            return None
+    else:
+        workspace_id = None
 
     roles: set[OidcRole] = set()
     if workspace_id is not None and config.operator_group in groups:

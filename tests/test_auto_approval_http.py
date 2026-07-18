@@ -22,7 +22,7 @@ def create_body(
     return {
         "name": "CI auto approval",
         "target_agent_id": "agent_runner",
-        "allowed_scopes": allowed_scopes or ["execute:ci/*"],
+        "allowed_scopes": allowed_scopes or ["execute:ci/jobs/*"],
         "max_ttl_seconds": 3600,
     }
 

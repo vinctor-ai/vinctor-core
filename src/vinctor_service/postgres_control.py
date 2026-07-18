@@ -18,6 +18,7 @@ from vinctor_service.keys import (
     CreatedLocalKey,
     KeyType,
     LocalKeyRecord,
+    validate_seeded_key,
 )
 from vinctor_service.models import GrantRequest, SubjectToken
 from vinctor_service.v1_http import AgentIdentity, PepIdentity
@@ -168,7 +169,7 @@ class PostgresLocalKeyRepository:
         self, *, key_type: KeyType, workspace_id: str, agent_id: str | None,
         raw_key: str, expected_prefix: str, now: datetime | None,
     ) -> LocalKeyRecord:
-        _validate_prefix(raw_key, expected_prefix)
+        validate_seeded_key(raw_key, expected_prefix)
         existing = self.get_by_raw_key(raw_key, touch=False)
         if existing is not None:
             _require_compatible(

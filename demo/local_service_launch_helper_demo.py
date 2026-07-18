@@ -13,6 +13,9 @@ from vinctor_service.local_launcher import (
     render_env_exports,
 )
 
+WORKSPACE_KEY = f"wsk_{'w' * 32}"
+AGENT_KEY = f"aak_{'a' * 32}"
+
 
 def main() -> None:
     now = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
@@ -23,8 +26,8 @@ def main() -> None:
                 port=0,
                 workspace_id="ws_demo",
                 agent_id="agent_release",
-                workspace_key="wsk_demo",
-                agent_key="aak_demo",
+                workspace_key=WORKSPACE_KEY,
+                agent_key=AGENT_KEY,
                 grant_ref="grt_demo",
                 scopes=("write:repo/feature/*",),
                 boundary_name="claude-code-local",
@@ -36,9 +39,9 @@ def main() -> None:
         try:
             exports = render_env_exports(handle)
             assert 'export VINCTOR_ENDPOINT="' in exports
-            assert 'export VINCTOR_AGENT_KEY="aak_demo"' in exports
+            assert f'export VINCTOR_AGENT_KEY="{AGENT_KEY}"' in exports
             assert 'export VINCTOR_GRANT_REF="grt_demo"' in exports
-            assert 'export VINCTOR_WORKSPACE_KEY="wsk_demo"' in exports
+            assert f'export VINCTOR_WORKSPACE_KEY="{WORKSPACE_KEY}"' in exports
             assert 'export VINCTOR_BOUNDARY_ID="' in exports
 
             # This mirrors the HTTP shape a local runtime hook can send after

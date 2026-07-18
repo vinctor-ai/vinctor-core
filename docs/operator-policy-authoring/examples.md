@@ -14,7 +14,7 @@ allow secrets, release, or deploy.
 Grant scopes:
 
 ```text
-read:repo/*
+read:repo/project/*
 write:repo/docs/*
 execute:ci/test
 execute:shell/build
@@ -70,7 +70,7 @@ secret/app
 Grant without secret access:
 
 ```text
-read:repo/*
+read:repo/project/*
 write:repo/docs/*
 execute:ci/test
 ```
@@ -79,7 +79,7 @@ Grant with explicit environment-secret read:
 
 ```text
 read:secret/env
-read:repo/*
+read:repo/project/*
 execute:ci/test
 ```
 

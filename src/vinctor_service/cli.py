@@ -1938,8 +1938,8 @@ def _demo(args: argparse.Namespace, *, stdout: TextIO) -> None:
                 port=0,
                 workspace_id="ws_demo",
                 agent_id="agent_runner",
-                workspace_key="wsk_demo",
-                agent_key="aak_demo",
+                workspace_key=_DEMO_WORKSPACE_KEY,
+                agent_key=_DEMO_AGENT_KEY,
                 grant_ref="grt_bootstrap",
                 scopes=("execute:ci/test",),
                 boundary_name="claude-code-local",
@@ -2027,8 +2027,8 @@ def _demo_service(args: argparse.Namespace, *, stdout: TextIO) -> None:
                 port=0,
                 workspace_id="ws_demo",
                 agent_id="agent_runner",
-                workspace_key="wsk_demo",
-                agent_key="aak_demo",
+                workspace_key=_DEMO_WORKSPACE_KEY,
+                agent_key=_DEMO_AGENT_KEY,
                 grant_ref="grt_bootstrap",
                 scopes=("execute:ci/test",),
                 boundary_name="codex-local",
@@ -2285,7 +2285,9 @@ def _demo_service_text(body: dict[str, object]) -> str:
 # resource + environment), not by a denylist. Packages existing parts
 # (prepare_local_service + enforce); adds no new authorization behavior. See
 # docs/superpowers/specs/2026-06-25-golden-path-demo-design.md.
-_DEMO_BLOCK_GRANT_SCOPES = ("send:net/internal/*", "deploy:staging/*")
+_DEMO_WORKSPACE_KEY = f"wsk_{'w' * 32}"
+_DEMO_AGENT_KEY = f"aak_{'a' * 32}"
+_DEMO_BLOCK_GRANT_SCOPES = ("send:net/internal/*", "deploy:env/staging/*")
 _DEMO_BLOCK_BEATS = (
     {
         "action": "send",
@@ -2301,9 +2303,9 @@ _DEMO_BLOCK_BEATS = (
     },
     {
         "action": "deploy",
-        "resource": "production/web",
-        "headline": "agent runs     deploy -> production/web",
-        "note": "granted deploy:staging/*, never production",
+        "resource": "env/production/web",
+        "headline": "agent runs     deploy -> env/production/web",
+        "note": "granted deploy:env/staging/*, never production",
     },
 )
 
@@ -2316,8 +2318,8 @@ def _demo_block(args: argparse.Namespace, *, stdout: TextIO) -> None:
                 port=0,
                 workspace_id="ws_demo",
                 agent_id="agent_runner",
-                workspace_key="wsk_demo",
-                agent_key="aak_demo",
+                workspace_key=_DEMO_WORKSPACE_KEY,
+                agent_key=_DEMO_AGENT_KEY,
                 grant_ref="grt_bootstrap",
                 scopes=_DEMO_BLOCK_GRANT_SCOPES,
                 boundary_name="claude-code-local",

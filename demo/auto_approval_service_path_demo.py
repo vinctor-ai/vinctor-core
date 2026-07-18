@@ -22,7 +22,7 @@ def main() -> None:
             service.set_agent_issuable_scope_bounds(
                 workspace_id="ws_demo",
                 agent_id="agent_runner",
-                scopes=("execute:ci/test",),
+                scopes=("execute:ci/jobs/test",),
                 now=now,
             )
             service.create_auto_approval_rule(
@@ -31,7 +31,7 @@ def main() -> None:
                     workspace_id="ws_demo",
                     name="CI auto approval",
                     target_agent_id="agent_runner",
-                    allowed_scopes=("execute:ci/*",),
+                    allowed_scopes=("execute:ci/jobs/*",),
                     max_ttl_seconds=3600,
                     status="active",
                     created_by="workspace:ws_demo",
@@ -42,7 +42,7 @@ def main() -> None:
                 GrantRequestCreateRequest(
                     workspace_id="ws_demo",
                     requester_agent_id="agent_runner",
-                    requested_scopes=("execute:ci/test",),
+                    requested_scopes=("execute:ci/jobs/test",),
                     requested_ttl_seconds=1800,
                     reason="run CI validation for the current task",
                     request_id="grq_ci",
@@ -67,12 +67,16 @@ def main() -> None:
                     agent_id="agent_runner",
                     grant_ref=approved.grant.grant_ref,
                     action="execute",
-                    resource="ci/test",
+                    resource="ci/jobs/test",
                 ),
                 now=now + timedelta(seconds=2),
             )
             assert permit.status_code == 200
-            assert [event.event_type for event in service.audit_events] == [
+            assert [
+                event.event_type
+                for event in service.audit_events
+                if event.event_class == "decision"
+            ] == [
                 "grant_requested",
                 "grant_issued",
                 "grant_request_auto_approved",

@@ -46,6 +46,7 @@ AUDITOR_KEY_PREFIX = "auk_"
 SERVICE_OPERATOR_KEY_PREFIX = "sok_"
 AGENT_KEY_PREFIX = "aak_"
 PEP_KEY_PREFIX = "pep_"
+MIN_SEEDED_KEY_SECRET_LENGTH = 32
 
 
 @dataclass(frozen=True)
@@ -218,7 +219,7 @@ class SQLiteLocalKeyRepository:
         raw_key: str,
         now: datetime | None = None,
     ) -> LocalKeyRecord:
-        _validate_prefix(raw_key, WORKSPACE_KEY_PREFIX)
+        validate_seeded_key(raw_key, WORKSPACE_KEY_PREFIX)
         existing = self.get_by_raw_key(raw_key, touch=False)
         if existing is not None:
             _require_compatible(
@@ -242,7 +243,7 @@ class SQLiteLocalKeyRepository:
         raw_key: str,
         now: datetime | None = None,
     ) -> LocalKeyRecord:
-        _validate_prefix(raw_key, AGENT_KEY_PREFIX)
+        validate_seeded_key(raw_key, AGENT_KEY_PREFIX)
         existing = self.get_by_raw_key(raw_key, touch=False)
         if existing is not None:
             _require_compatible(
@@ -267,7 +268,7 @@ class SQLiteLocalKeyRepository:
         raw_key: str,
         now: datetime | None = None,
     ) -> LocalKeyRecord:
-        _validate_prefix(raw_key, PEP_KEY_PREFIX)
+        validate_seeded_key(raw_key, PEP_KEY_PREFIX)
         existing = self.get_by_raw_key(raw_key, touch=False)
         if existing is not None:
             _require_compatible(
@@ -501,7 +502,7 @@ class SQLiteLocalKeyRepository:
 
 def mask_key(raw_key: str) -> str:
     if len(raw_key) <= 12:
-        return raw_key
+        return f"{_key_prefix(raw_key)}***"
     return f"{raw_key[:8]}...{raw_key[-4:]}"
 
 
@@ -521,6 +522,16 @@ def _key_prefix(raw_key: str) -> str:
 def _validate_prefix(raw_key: str, expected_prefix: str) -> None:
     if not raw_key.startswith(expected_prefix):
         raise ValueError(f"key must start with {expected_prefix}")
+
+
+def validate_seeded_key(raw_key: str, expected_prefix: str) -> None:
+    _validate_prefix(raw_key, expected_prefix)
+    secret = raw_key.removeprefix(expected_prefix)
+    if len(secret) < MIN_SEEDED_KEY_SECRET_LENGTH:
+        raise ValueError(
+            "seeded key secret must be at least "
+            f"{MIN_SEEDED_KEY_SECRET_LENGTH} characters"
+        )
 
 
 def _require_compatible(

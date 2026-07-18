@@ -20,10 +20,11 @@ def active_grant(*, scopes: tuple[str, ...] = ("write:repo/feature/*",)) -> Gran
 
 def test_v1_resource_paths_require_at_least_two_segments() -> None:
     assert is_valid_requested_resource("repo/feature")
-    assert is_valid_grant_scope("write:repo/*")
+    assert is_valid_grant_scope("write:repo/feature/*")
 
     assert not is_valid_requested_resource("repo")
     assert not is_valid_grant_scope("write:repo")
+    assert not is_valid_grant_scope("write:repo/*")
 
 
 def test_v1_requested_resources_cannot_use_grant_wildcards() -> None:

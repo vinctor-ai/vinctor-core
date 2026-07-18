@@ -335,7 +335,7 @@ def test_sqlite_boundary_and_rule_mutations_emit_one_control_event_each() -> Non
     assert events[0].runtime is None and events[0].boundary_type is None
     serialized = json.dumps([event.to_dict() for event in events])
     assert "fail_closed" not in serialized
-    assert "execute:deploy/*" not in serialized
+    assert "execute:deploy/env/*" not in serialized
     assert "agent_release" not in serialized
     assert service.audit_writer.verify_chain().ok is True
 

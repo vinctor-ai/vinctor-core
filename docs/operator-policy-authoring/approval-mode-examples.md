@@ -53,7 +53,7 @@ Why: bounded repository area and limited blast radius.
 Avoid auto-approving broad variants such as:
 
 ```text
-write:repo/*
+write:repo/project/*
 ```
 
 ## Staging Deploy
@@ -116,7 +116,7 @@ Recommended mode: human/operator review or reject.
 Request:
 
 ```text
-delete:repo/*
+delete:repo/project/*
 TTL: 1 hour
 Reason: clean up files
 ```

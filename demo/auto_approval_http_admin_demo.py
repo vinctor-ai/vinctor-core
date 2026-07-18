@@ -21,7 +21,7 @@ def main() -> None:
         body={
             "name": "CI admin rule",
             "target_agent_id": "agent_runner",
-            "allowed_scopes": ["execute:ci/*"],
+            "allowed_scopes": ["execute:ci/jobs/*"],
             "max_ttl_seconds": 3600,
         },
         workspace_identities=workspace_identities,
@@ -37,7 +37,7 @@ def main() -> None:
         body={
             "name": "Agent self rule",
             "target_agent_id": "agent_runner",
-            "allowed_scopes": ["execute:ci/*"],
+            "allowed_scopes": ["execute:ci/jobs/*"],
             "max_ttl_seconds": 3600,
         },
         workspace_identities=workspace_identities,

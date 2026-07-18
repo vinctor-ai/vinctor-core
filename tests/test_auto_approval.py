@@ -22,7 +22,7 @@ def connect_db(tmp_path: Path) -> sqlite3.Connection:
 def rule(
     *,
     rule_id: str = "apr_ci",
-    allowed_scopes: tuple[str, ...] = ("execute:ci/*",),
+    allowed_scopes: tuple[str, ...] = ("execute:ci/jobs/*",),
     max_ttl_seconds: int = 3600,
     target_agent_id: str = "agent_runner",
     status: str = "active",
@@ -42,7 +42,7 @@ def rule(
 
 def request(
     *,
-    scopes: tuple[str, ...] = ("execute:ci/test",),
+    scopes: tuple[str, ...] = ("execute:ci/jobs/test",),
     ttl_seconds: int = 1800,
 ):
     return GrantRequestCreateRequest(
@@ -106,10 +106,10 @@ def test_auto_approval_dry_run_matches_scope_and_ttl(tmp_path: Path) -> None:
 def test_auto_approval_dry_run_rejects_scope_outside_rule(tmp_path: Path) -> None:
     conn = connect_db(tmp_path)
     service = SQLiteV1Service(conn)
-    service.create_auto_approval_rule(rule(allowed_scopes=("execute:ci/test",)))
+    service.create_auto_approval_rule(rule(allowed_scopes=("execute:ci/jobs/test",)))
     grant_request = pending_request(
         service,
-        request_body=request(scopes=("execute:deploy/production",)),
+        request_body=request(scopes=("execute:deploy/env/production",)),
     )
 
     result = service.evaluate_auto_approval(request=grant_request)
@@ -190,7 +190,7 @@ def test_auto_approval_service_path_approves_and_issues_grant(
     service.set_agent_issuable_scope_bounds(
         workspace_id="ws_main",
         agent_id="agent_runner",
-        scopes=("execute:ci/test",),
+        scopes=("execute:ci/jobs/test",),
         now=NOW,
     )
     service.create_auto_approval_rule(rule())
@@ -219,7 +219,7 @@ def test_auto_approval_service_path_approves_and_issues_grant(
             agent_id="agent_runner",
             grant_ref=approved.grant.grant_ref,
             action="execute",
-            resource="ci/test",
+            resource="ci/jobs/test",
         ),
         now=NOW + timedelta(seconds=2),
     )
@@ -244,13 +244,13 @@ def test_auto_approval_service_path_leaves_non_matching_request_pending(
     service.set_agent_issuable_scope_bounds(
         workspace_id="ws_main",
         agent_id="agent_runner",
-        scopes=("execute:deploy/production",),
+        scopes=("execute:deploy/env/production",),
         now=NOW,
     )
-    service.create_auto_approval_rule(rule(allowed_scopes=("execute:ci/test",)))
+    service.create_auto_approval_rule(rule(allowed_scopes=("execute:ci/jobs/test",)))
     pending_request(
         service,
-        request_body=request(scopes=("execute:deploy/production",)),
+        request_body=request(scopes=("execute:deploy/env/production",)),
     )
 
     result = service.auto_approve_grant_request(
@@ -277,7 +277,7 @@ def test_auto_approval_service_path_ignores_disabled_rule(tmp_path: Path) -> Non
     service.set_agent_issuable_scope_bounds(
         workspace_id="ws_main",
         agent_id="agent_runner",
-        scopes=("execute:ci/test",),
+        scopes=("execute:ci/jobs/test",),
         now=NOW,
     )
     service.create_auto_approval_rule(rule(status="disabled"))
@@ -306,7 +306,7 @@ def test_auto_approval_service_path_rejects_rule_ttl_excess(tmp_path: Path) -> N
     service.set_agent_issuable_scope_bounds(
         workspace_id="ws_main",
         agent_id="agent_runner",
-        scopes=("execute:ci/test",),
+        scopes=("execute:ci/jobs/test",),
         now=NOW,
     )
     service.create_auto_approval_rule(rule(max_ttl_seconds=900))
@@ -337,13 +337,15 @@ def test_auto_approval_service_path_still_requires_agent_issuable_bounds(
     service.set_agent_issuable_scope_bounds(
         workspace_id="ws_main",
         agent_id="agent_runner",
-        scopes=("execute:ci/test",),
+        scopes=("execute:ci/jobs/test",),
         now=NOW,
     )
-    service.create_auto_approval_rule(rule(allowed_scopes=("execute:deploy/*",)))
+    service.create_auto_approval_rule(
+        rule(allowed_scopes=("execute:deploy/env/*",))
+    )
     pending_request(
         service,
-        request_body=request(scopes=("execute:deploy/production",)),
+        request_body=request(scopes=("execute:deploy/env/production",)),
     )
 
     result = service.auto_approve_grant_request(
