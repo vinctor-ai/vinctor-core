@@ -296,7 +296,7 @@ def test_sqlite_v1_service_fails_closed_for_disabled_boundary(
     assert response.status_code == 403
     assert response.decision == "deny"
     assert response.error == "boundary_unavailable"
-    assert audit_count(conn) == 1
+    assert audit_count(conn) == 3
     conn.close()
 
 

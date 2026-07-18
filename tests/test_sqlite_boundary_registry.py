@@ -21,6 +21,7 @@ from vinctor_service import (
     init_sqlite_schema,
     insert_grant,
 )
+from vinctor_service.control_audit import ControlPlaneAuditor
 from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
@@ -30,6 +31,12 @@ def connect_db(tmp_path: Path) -> sqlite3.Connection:
     conn = connect_sqlite(tmp_path / "vinctor.sqlite")
     init_sqlite_schema(conn)
     return conn
+
+
+def boundary_registry(conn: sqlite3.Connection) -> SQLiteBoundaryRegistry:
+    return SQLiteBoundaryRegistry(
+        conn, ControlPlaneAuditor(SQLiteAuditWriter(conn))
+    )
 
 
 def grant() -> Grant:
@@ -84,7 +91,7 @@ def test_sqlite_boundary_registry_registers_and_lists_boundaries(
     tmp_path: Path,
 ) -> None:
     conn = connect_db(tmp_path)
-    registry = SQLiteBoundaryRegistry(conn)
+    registry = boundary_registry(conn)
 
     boundary = register_boundary(
         registry,
@@ -103,7 +110,7 @@ def test_sqlite_boundary_registry_rejects_duplicate_names_in_workspace(
     tmp_path: Path,
 ) -> None:
     conn = connect_db(tmp_path)
-    registry = SQLiteBoundaryRegistry(conn)
+    registry = boundary_registry(conn)
     register_boundary(registry, registration(), now=NOW, boundary_id="bnd_one")
 
     try:
@@ -120,7 +127,7 @@ def test_sqlite_boundary_registry_allows_same_name_in_different_workspaces(
     tmp_path: Path,
 ) -> None:
     conn = connect_db(tmp_path)
-    registry = SQLiteBoundaryRegistry(conn)
+    registry = boundary_registry(conn)
 
     first = register_boundary(
         registry,
@@ -144,7 +151,7 @@ def test_sqlite_boundary_registry_disable_and_enable_persist_status(
     tmp_path: Path,
 ) -> None:
     conn = connect_db(tmp_path)
-    registry = SQLiteBoundaryRegistry(conn)
+    registry = boundary_registry(conn)
     register_boundary(registry, registration(), now=NOW, boundary_id="bnd_main")
 
     disabled = disable_boundary(
@@ -173,7 +180,7 @@ def test_sqlite_boundary_context_is_persisted_in_audit_event(
     tmp_path: Path,
 ) -> None:
     conn = connect_db(tmp_path)
-    registry = SQLiteBoundaryRegistry(conn)
+    registry = boundary_registry(conn)
     insert_grant(conn, grant())
     register_boundary(registry, registration(), now=NOW, boundary_id="bnd_main")
 
@@ -201,7 +208,7 @@ def test_sqlite_disabled_boundary_fails_closed_and_writes_audit(
     tmp_path: Path,
 ) -> None:
     conn = connect_db(tmp_path)
-    registry = SQLiteBoundaryRegistry(conn)
+    registry = boundary_registry(conn)
     insert_grant(conn, grant())
     register_boundary(registry, registration(), now=NOW, boundary_id="bnd_main")
     disable_boundary(
@@ -235,7 +242,7 @@ def test_sqlite_missing_boundary_fails_closed_with_attempted_id_only(
     tmp_path: Path,
 ) -> None:
     conn = connect_db(tmp_path)
-    registry = SQLiteBoundaryRegistry(conn)
+    registry = boundary_registry(conn)
     insert_grant(conn, grant())
 
     response = enforce_v1_contract(

@@ -563,7 +563,11 @@ def test_vinctor_demo_check_runs_smoke_flow() -> None:
 
     assert result["ok"] is True
     assert result["decision"] == "permit"
-    assert result["audit_event_count"] == 6
+    # +2 vs. the prior baseline: boundary registration and auto-approval rule
+    # creation are now audited control-plane events (see the two new control
+    # surfaces this test flow exercises: bootstrap boundary registration and
+    # the /v1/auto-approval-rules POST).
+    assert result["audit_event_count"] == 8
 
 
 def test_vinctor_demo_service_runs_user_facing_flow() -> None:

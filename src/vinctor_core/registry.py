@@ -11,7 +11,9 @@ from vinctor_core.models import Boundary, BoundaryRegistrationInput
 class BoundaryRegistry:
     _boundaries: dict[str, Boundary] = field(default_factory=dict)
 
-    def add(self, boundary: Boundary) -> Boundary:
+    def add(self, boundary: Boundary, *, operation: str = "register") -> Boundary:
+        # Durable registries use the caller's operation to select their control
+        # event. The pure registry intentionally has no auditor and ignores it.
         self._boundaries[boundary.boundary_id] = boundary
         return boundary
 
@@ -52,7 +54,10 @@ def register_boundary(
         created_at=timestamp,
         updated_at=timestamp,
     )
-    return registry.add(boundary)
+    # Registration intent wins even when a durable registry's boundary-id
+    # upsert replaces an existing row: re-registration is still recorded as
+    # one boundary_registered operation, not inferred from the prior row.
+    return registry.add(boundary, operation="register")
 
 
 def get_boundary_for_workspace(
@@ -78,7 +83,7 @@ def disable_boundary(
         return None
 
     disabled = boundary.with_status("disabled", updated_at=now or datetime.now(UTC))
-    return registry.add(disabled)
+    return registry.add(disabled, operation="disable")
 
 
 def enable_boundary(
@@ -92,10 +97,10 @@ def enable_boundary(
     if boundary is None:
         return None
     if boundary.status == "active":
-        return boundary
+        return registry.add(boundary, operation="enable")
 
     enabled = boundary.with_status("active", updated_at=now or datetime.now(UTC))
-    return registry.add(enabled)
+    return registry.add(enabled, operation="enable")
 
 
 def _new_boundary_id() -> str:

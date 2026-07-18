@@ -157,6 +157,10 @@ EVENT_SCOPE_BOUNDS_SET = "scope_bounds_set"
 EVENT_POLICY_APPLIED = "policy_applied"
 EVENT_POLICY_ROLLED_BACK = "policy_rolled_back"
 EVENT_KEY_ROTATED = "key_rotated"
+EVENT_BOUNDARY_REGISTERED = "boundary_registered"
+EVENT_BOUNDARY_STATUS_CHANGED = "boundary_status_changed"
+EVENT_AUTO_APPROVAL_RULE_CREATED = "auto_approval_rule_created"
+EVENT_AUTO_APPROVAL_RULE_DISABLED = "auto_approval_rule_disabled"
 
 
 def build_control_audit_event(
@@ -169,6 +173,7 @@ def build_control_audit_event(
     created_at: datetime,
     agent_id: str = "",
     scope_attempted: str = "",
+    boundary_id: str | None = None,
     enforcing_principal: str | None = None,
     event_id: str | None = None,
 ) -> AuditEvent:
@@ -178,7 +183,8 @@ def build_control_audit_event(
     did. ``action`` names the operation (e.g. ``set_require_boundary``),
     ``resource`` the object acted on, ``reason`` the operator-visible change
     summary, and ``agent_id`` the TARGET agent for per-agent settings (empty
-    for workspace-level). The acting principal, when known, goes in
+    for workspace-level). ``boundary_id`` identifies a boundary mutation when
+    applicable. The acting principal, when known, goes in
     ``enforcing_principal``. No grant is involved and nothing here reaches an
     agent-facing response: grant identifiers stay empty and the coarse
     ``reason_code`` deny surface is never set.
@@ -196,7 +202,7 @@ def build_control_audit_event(
         resource=resource,
         scope_attempted=scope_attempted,
         scope_matched=None,
-        boundary_id=None,
+        boundary_id=boundary_id,
         runtime=None,
         boundary_type=None,
         created_at=created_at,

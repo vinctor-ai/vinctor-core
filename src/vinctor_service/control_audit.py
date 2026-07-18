@@ -1,11 +1,12 @@
 """Control-plane audit recording (ADR 0019 / PKA-44).
 
 ``ControlPlaneAuditor`` is the single funnel through which control-plane
-mutations — mandate toggles, issuable scope bounds, policy apply/rollback, key
-rotation — reach the audit chain. The control repositories REQUIRE one at
-construction, so no repository can exist without an audit path, and every
-mutation method calls :meth:`record` inside its own transaction so the rule
-change and its audit row commit as one unit.
+mutations — mandate toggles, issuable scope bounds, boundary changes,
+auto-approval rule changes, policy apply/rollback, and key rotation — reach the
+audit chain. The control repositories REQUIRE one at construction, so no
+repository can exist without an audit path, and every mutation method calls
+:meth:`record` inside its own transaction so the rule change and its audit row
+commit as one unit.
 
 Composite operations (policy apply drives the audited bounds/settings
 repositories internally) must emit exactly ONE event for the whole operation:
@@ -141,6 +142,7 @@ class ControlPlaneAuditor:
         now: datetime,
         agent_id: str = "",
         scope_attempted: str = "",
+        boundary_id: str | None = None,
         enforcing_principal: str | None = None,
     ) -> None:
         """Write one control event — the caller's open transaction makes the
@@ -159,6 +161,7 @@ class ControlPlaneAuditor:
                 created_at=now,
                 agent_id=agent_id,
                 scope_attempted=scope_attempted,
+                boundary_id=boundary_id,
                 enforcing_principal=enforcing_principal,
             )
         )

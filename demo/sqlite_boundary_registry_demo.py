@@ -14,6 +14,7 @@ from vinctor_service import (
     init_sqlite_schema,
     insert_grant,
 )
+from vinctor_service.control_audit import ControlPlaneAuditor
 from vinctor_service.sqlite_txn import connect_sqlite
 
 
@@ -36,7 +37,9 @@ def main() -> None:
             ),
         )
 
-        registry = SQLiteBoundaryRegistry(conn)
+        registry = SQLiteBoundaryRegistry(
+            conn, ControlPlaneAuditor(SQLiteAuditWriter(conn))
+        )
         boundary = register_boundary(
             registry,
             BoundaryRegistrationInput(

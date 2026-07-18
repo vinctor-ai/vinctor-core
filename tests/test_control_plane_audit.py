@@ -10,7 +10,8 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from vinctor_core.models import AuditEvent
+from vinctor_core.models import AuditEvent, BoundaryRegistrationInput
+from vinctor_service.models import AutoApprovalRule
 
 NOW = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
 
@@ -248,6 +249,154 @@ def _break_audit(service) -> None:
     service.audit_writer.write = _raise  # type: ignore[method-assign]
 
 
+def _auto_approval_rule(*, status: str = "active") -> AutoApprovalRule:
+    return AutoApprovalRule(
+        rule_id="apr_release",
+        workspace_id="ws_main",
+        name="release",
+        target_agent_id="agent_release",
+        allowed_scopes=("execute:deploy/*",),
+        max_ttl_seconds=1800,
+        status=status,
+        created_by="operator:a",
+        created_at=NOW,
+    )
+
+
+def test_sqlite_boundary_and_rule_mutations_emit_one_control_event_each() -> None:
+    import json
+
+    service = _sqlite_service()
+    service.register_boundary(
+        BoundaryRegistrationInput(
+            workspace_id="ws_main",
+            name="claude-code",
+            runtime="claude-code",
+            boundary_type="pretooluse",
+        ),
+        boundary_id="bnd_main",
+        now=NOW,
+    )
+    service.disable_boundary(
+        boundary_id="bnd_main", workspace_id="ws_main", now=NOW
+    )
+    service.enable_boundary(
+        boundary_id="bnd_main", workspace_id="ws_main", now=NOW
+    )
+    service.create_auto_approval_rule(_auto_approval_rule())
+    service.disable_auto_approval_rule(
+        rule_id="apr_release",
+        workspace_id="ws_main",
+        disabled_by="operator:b",
+        now=NOW,
+    )
+
+    events = _control_events(service)
+    assert [
+        (event.event_type, event.action, event.resource, event.reason)
+        for event in events
+    ] == [
+        (
+            "boundary_registered",
+            "register_boundary",
+            "boundary/bnd_main",
+            "status=active",
+        ),
+        (
+            "boundary_status_changed",
+            "disable_boundary",
+            "boundary/bnd_main",
+            "status=disabled",
+        ),
+        (
+            "boundary_status_changed",
+            "enable_boundary",
+            "boundary/bnd_main",
+            "status=active",
+        ),
+        (
+            "auto_approval_rule_created",
+            "create_auto_approval_rule",
+            "auto_approval_rule/apr_release",
+            "status=active",
+        ),
+        (
+            "auto_approval_rule_disabled",
+            "disable_auto_approval_rule",
+            "auto_approval_rule/apr_release",
+            "status=disabled",
+        ),
+    ]
+    assert all(event.event_class == "control" for event in events)
+    assert events[0].boundary_id == "bnd_main"
+    assert all(event.workspace_id == "ws_main" for event in events)
+    assert all(event.agent_id == "" and event.scope_attempted == "" for event in events)
+    assert events[0].runtime is None and events[0].boundary_type is None
+    serialized = json.dumps([event.to_dict() for event in events])
+    assert "fail_closed" not in serialized
+    assert "execute:deploy/*" not in serialized
+    assert "agent_release" not in serialized
+    assert service.audit_writer.verify_chain().ok is True
+
+
+def test_sqlite_boundary_mutation_rolls_back_when_audit_write_fails() -> None:
+    import pytest
+
+    service = _sqlite_service()
+    service.register_boundary(
+        BoundaryRegistrationInput(
+            workspace_id="ws_main",
+            name="claude-code",
+            runtime="claude-code",
+            boundary_type="pretooluse",
+        ),
+        boundary_id="bnd_main",
+        now=NOW,
+    )
+    _break_audit(service)
+
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        service.disable_boundary(
+            boundary_id="bnd_main", workspace_id="ws_main", now=NOW
+        )
+
+    boundary = service.get_boundary(
+        boundary_id="bnd_main", workspace_id="ws_main"
+    )
+    assert boundary is not None and boundary.status == "active"
+
+
+def test_sqlite_rule_create_rolls_back_when_audit_write_fails() -> None:
+    import pytest
+
+    service = _sqlite_service()
+    _break_audit(service)
+
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        service.create_auto_approval_rule(_auto_approval_rule())
+
+    assert service.list_auto_approval_rules(workspace_id="ws_main") == ()
+
+
+def test_sqlite_rule_disable_rolls_back_when_audit_write_fails() -> None:
+    import pytest
+
+    service = _sqlite_service()
+    service.create_auto_approval_rule(_auto_approval_rule())
+    _break_audit(service)
+
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        service.disable_auto_approval_rule(
+            rule_id="apr_release",
+            workspace_id="ws_main",
+            disabled_by="operator:b",
+            now=NOW,
+        )
+
+    rules = service.list_auto_approval_rules(workspace_id="ws_main")
+    assert len(rules) == 1 and rules[0].status == "active"
+
+
 def test_sqlite_set_require_boundary_emits_one_control_event() -> None:
     service = _sqlite_service()
     service.agent_enforcement_settings_repository.set_require_boundary(
@@ -343,6 +492,8 @@ def test_sqlite_control_repos_cannot_be_built_without_an_auditor(tmp_path) -> No
     from vinctor_service.sqlite import (
         SQLiteAgentEnforcementSettingsRepository,
         SQLiteAgentIssuableScopeBoundsRepository,
+        SQLiteAutoApprovalRuleRepository,
+        SQLiteBoundaryRegistry,
         init_sqlite_schema,
     )
     from vinctor_service.sqlite_txn import connect_sqlite
@@ -353,6 +504,10 @@ def test_sqlite_control_repos_cannot_be_built_without_an_auditor(tmp_path) -> No
         SQLiteAgentEnforcementSettingsRepository(conn)
     with pytest.raises(TypeError):
         SQLiteAgentIssuableScopeBoundsRepository(conn)
+    with pytest.raises(TypeError):
+        SQLiteBoundaryRegistry(conn)
+    with pytest.raises(TypeError):
+        SQLiteAutoApprovalRuleRepository(conn)
 
 
 # --- policy apply / rollback: exactly ONE control event each ---------------
@@ -690,6 +845,8 @@ def test_sqlite_repos_reject_an_auditor_on_a_different_connection() -> None:
         SQLiteAgentEnforcementSettingsRepository,
         SQLiteAgentIssuableScopeBoundsRepository,
         SQLiteAuditWriter,
+        SQLiteAutoApprovalRuleRepository,
+        SQLiteBoundaryRegistry,
     )
 
     service = _sqlite_service()
@@ -699,6 +856,10 @@ def test_sqlite_repos_reject_an_auditor_on_a_different_connection() -> None:
         SQLiteAgentEnforcementSettingsRepository(service.conn, foreign_auditor)
     with pytest.raises(ValueError, match="SAME connection"):
         SQLiteAgentIssuableScopeBoundsRepository(service.conn, foreign_auditor)
+    with pytest.raises(ValueError, match="SAME connection"):
+        SQLiteBoundaryRegistry(service.conn, foreign_auditor)
+    with pytest.raises(ValueError, match="SAME connection"):
+        SQLiteAutoApprovalRuleRepository(service.conn, foreign_auditor)
 
 
 def test_sqlite_repos_reject_a_connectionless_auditor() -> None:

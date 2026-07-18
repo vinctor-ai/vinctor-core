@@ -22,6 +22,7 @@ from vinctor_service.control_audit import ControlPlaneAuditor
 from vinctor_service.key_ops import rotate_workspace_key
 from vinctor_service.models import (
     AgentIssuableBounds,
+    AutoApprovalRule,
     GrantRequest,
     GrantRequestCreateRequest,
     SubjectToken,
@@ -39,6 +40,7 @@ from vinctor_service.postgres import (
     PostgresAgentEnforcementSettingsRepository,
     PostgresAgentIssuableScopeBoundsRepository,
     PostgresAuditWriter,
+    PostgresAutoApprovalRuleRepository,
     PostgresBoundaryRegistry,
     PostgresGrantRepository,
     PostgresV1Service,
@@ -913,7 +915,7 @@ def test_postgres_grant_request_approval_locks_and_issues_a_single_grant(
 def test_postgres_boundary_name_is_unique_per_workspace() -> None:
     assert DSN is not None
     conn = connect_postgres(DSN)
-    registry = PostgresBoundaryRegistry(conn)
+    registry = PostgresBoundaryRegistry(conn, _control_auditor(conn))
     registration = BoundaryRegistrationInput(
         workspace_id="ws_main",
         name="claude-code",
@@ -1485,6 +1487,159 @@ def _break_service_audit(service) -> None:
     service.audit_writer.write = _raise  # type: ignore[method-assign]
 
 
+def _postgres_control_rule() -> AutoApprovalRule:
+    return AutoApprovalRule(
+        rule_id="apr_release",
+        workspace_id="ws_main",
+        name="release",
+        target_agent_id="agent_release",
+        allowed_scopes=("execute:deploy/*",),
+        max_ttl_seconds=1800,
+        status="active",
+        created_by="operator:a",
+        created_at=NOW,
+    )
+
+
+def test_postgres_boundary_and_rule_mutations_emit_one_control_event_each() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+
+    service.register_boundary(
+        BoundaryRegistrationInput(
+            workspace_id="ws_main",
+            name="claude-code",
+            runtime="claude-code",
+            boundary_type="pretooluse",
+        ),
+        boundary_id="bnd_main",
+        now=NOW,
+    )
+    service.disable_boundary(
+        boundary_id="bnd_main", workspace_id="ws_main", now=NOW
+    )
+    service.enable_boundary(
+        boundary_id="bnd_main", workspace_id="ws_main", now=NOW
+    )
+    service.create_auto_approval_rule(_postgres_control_rule())
+    service.disable_auto_approval_rule(
+        rule_id="apr_release",
+        workspace_id="ws_main",
+        disabled_by="operator:b",
+        now=NOW,
+    )
+
+    events = _control_events(service)
+    assert [
+        (event.event_type, event.action, event.resource, event.reason)
+        for event in events
+    ] == [
+        (
+            "boundary_registered",
+            "register_boundary",
+            "boundary/bnd_main",
+            "status=active",
+        ),
+        (
+            "boundary_status_changed",
+            "disable_boundary",
+            "boundary/bnd_main",
+            "status=disabled",
+        ),
+        (
+            "boundary_status_changed",
+            "enable_boundary",
+            "boundary/bnd_main",
+            "status=active",
+        ),
+        (
+            "auto_approval_rule_created",
+            "create_auto_approval_rule",
+            "auto_approval_rule/apr_release",
+            "status=active",
+        ),
+        (
+            "auto_approval_rule_disabled",
+            "disable_auto_approval_rule",
+            "auto_approval_rule/apr_release",
+            "status=disabled",
+        ),
+    ]
+    assert all(event.event_class == "control" for event in events)
+    assert events[0].boundary_id == "bnd_main"
+    assert all(event.workspace_id == "ws_main" for event in events)
+    assert all(event.agent_id == "" and event.scope_attempted == "" for event in events)
+    assert events[0].runtime is None and events[0].boundary_type is None
+    serialized = json.dumps([event.to_dict() for event in events])
+    assert "fail_closed" not in serialized
+    assert "execute:deploy/*" not in serialized
+    assert "agent_release" not in serialized
+    assert service.audit_writer.verify_chain().ok is True
+    conn.close()
+
+
+def test_postgres_boundary_mutation_rolls_back_when_audit_write_fails() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    service.register_boundary(
+        BoundaryRegistrationInput(
+            workspace_id="ws_main",
+            name="claude-code",
+            runtime="claude-code",
+            boundary_type="pretooluse",
+        ),
+        boundary_id="bnd_main",
+        now=NOW,
+    )
+    _break_service_audit(service)
+
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        service.disable_boundary(
+            boundary_id="bnd_main", workspace_id="ws_main", now=NOW
+        )
+
+    boundary = service.get_boundary(
+        boundary_id="bnd_main", workspace_id="ws_main"
+    )
+    assert boundary is not None and boundary.status == "active"
+    conn.close()
+
+
+def test_postgres_rule_create_rolls_back_when_audit_write_fails() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    _break_service_audit(service)
+
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        service.create_auto_approval_rule(_postgres_control_rule())
+
+    assert service.list_auto_approval_rules(workspace_id="ws_main") == ()
+    conn.close()
+
+
+def test_postgres_rule_disable_rolls_back_when_audit_write_fails() -> None:
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    service.create_auto_approval_rule(_postgres_control_rule())
+    _break_service_audit(service)
+
+    with pytest.raises(RuntimeError, match="audit write failed"):
+        service.disable_auto_approval_rule(
+            rule_id="apr_release",
+            workspace_id="ws_main",
+            disabled_by="operator:b",
+            now=NOW,
+        )
+
+    rules = service.list_auto_approval_rules(workspace_id="ws_main")
+    assert len(rules) == 1 and rules[0].status == "active"
+    conn.close()
+
+
 def test_postgres_each_mandate_toggle_emits_one_control_event() -> None:
     assert DSN is not None
     conn = connect_postgres(DSN)
@@ -1580,6 +1735,10 @@ def test_postgres_control_repos_cannot_be_built_without_an_auditor() -> None:
         PostgresAgentEnforcementSettingsRepository(conn)
     with pytest.raises(TypeError):
         PostgresAgentIssuableScopeBoundsRepository(conn)
+    with pytest.raises(TypeError):
+        PostgresBoundaryRegistry(conn)
+    with pytest.raises(TypeError):
+        PostgresAutoApprovalRuleRepository(conn)
     conn.close()
 
 
@@ -1772,6 +1931,10 @@ def test_postgres_repos_reject_a_mismatched_or_connectionless_auditor() -> None:
             PostgresAgentEnforcementSettingsRepository(conn, foreign_auditor)
         with pytest.raises(ValueError, match="SAME connection"):
             PostgresAgentIssuableScopeBoundsRepository(conn, foreign_auditor)
+        with pytest.raises(ValueError, match="SAME connection"):
+            PostgresBoundaryRegistry(conn, foreign_auditor)
+        with pytest.raises(ValueError, match="SAME connection"):
+            PostgresAutoApprovalRuleRepository(conn, foreign_auditor)
         with pytest.raises(ValueError, match="durable"):
             PostgresAgentEnforcementSettingsRepository(
                 conn, ControlPlaneAuditor(InMemoryAuditWriter())

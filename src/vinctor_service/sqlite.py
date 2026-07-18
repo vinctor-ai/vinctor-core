@@ -15,6 +15,10 @@ from vinctor_core import (
     register_boundary,
 )
 from vinctor_core.audit import (
+    EVENT_AUTO_APPROVAL_RULE_CREATED,
+    EVENT_AUTO_APPROVAL_RULE_DISABLED,
+    EVENT_BOUNDARY_REGISTERED,
+    EVENT_BOUNDARY_STATUS_CHANGED,
     EVENT_ENFORCEMENT_SETTING_CHANGED,
     EVENT_SCOPE_BOUNDS_SET,
 )
@@ -1428,13 +1432,17 @@ class SQLiteSubjectTokenRepository:
 
 
 class SQLiteAutoApprovalRuleRepository:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(
+        self, conn: sqlite3.Connection, control_auditor: ControlPlaneAuditor
+    ) -> None:
         self._conn = require_serialized(conn)
+        control_auditor.require_bound_to(self._conn)
+        self._control_auditor = control_auditor
 
     def add_rule(self, rule: AutoApprovalRule) -> None:
         if self.get_rule(rule.rule_id) is not None:
             raise ValueError(f"duplicate auto-approval rule_id: {rule.rule_id}")
-        with _write_scope(self._conn):
+        with _atomic_write(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO auto_approval_rules (
@@ -1444,6 +1452,14 @@ class SQLiteAutoApprovalRuleRepository:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 _auto_approval_rule_values(rule),
+            )
+            self._control_auditor.record(
+                event_type=EVENT_AUTO_APPROVAL_RULE_CREATED,
+                workspace_id=rule.workspace_id,
+                action="create_auto_approval_rule",
+                resource=f"auto_approval_rule/{rule.rule_id}",
+                reason=f"status={rule.status}",
+                now=rule.created_at,
             )
 
     def get_rule(self, rule_id: str) -> AutoApprovalRule | None:
@@ -1480,7 +1496,7 @@ class SQLiteAutoApprovalRuleRepository:
     def update_rule(self, rule: AutoApprovalRule) -> None:
         if self.get_rule(rule.rule_id) is None:
             raise ValueError(f"unknown auto-approval rule_id: {rule.rule_id}")
-        with _write_scope(self._conn):
+        with _atomic_write(self._conn):
             self._conn.execute(
                 """
                 UPDATE auto_approval_rules
@@ -1510,6 +1526,15 @@ class SQLiteAutoApprovalRuleRepository:
                     rule.rule_id,
                 ),
             )
+            if rule.status == "disabled":
+                self._control_auditor.record(
+                    event_type=EVENT_AUTO_APPROVAL_RULE_DISABLED,
+                    workspace_id=rule.workspace_id,
+                    action="disable_auto_approval_rule",
+                    resource=f"auto_approval_rule/{rule.rule_id}",
+                    reason="status=disabled",
+                    now=rule.updated_at or rule.created_at,
+                )
 
 
 class SQLiteAuditWriter:
@@ -1769,12 +1794,27 @@ class SQLiteAuditWriter:
         return AnchorVerification(True, len(records), covered)
 
 
-class SQLiteBoundaryRegistry:
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        self._conn = require_serialized(conn)
+def _boundary_control_operation(operation: str) -> tuple[str, str]:
+    if operation == "register":
+        return EVENT_BOUNDARY_REGISTERED, "register_boundary"
+    if operation == "enable":
+        return EVENT_BOUNDARY_STATUS_CHANGED, "enable_boundary"
+    if operation == "disable":
+        return EVENT_BOUNDARY_STATUS_CHANGED, "disable_boundary"
+    raise ValueError(f"unknown boundary operation: {operation}")
 
-    def add(self, boundary: Boundary) -> Boundary:
-        with _write_scope(self._conn):
+
+class SQLiteBoundaryRegistry:
+    def __init__(
+        self, conn: sqlite3.Connection, control_auditor: ControlPlaneAuditor
+    ) -> None:
+        self._conn = require_serialized(conn)
+        control_auditor.require_bound_to(self._conn)
+        self._control_auditor = control_auditor
+
+    def add(self, boundary: Boundary, *, operation: str = "register") -> Boundary:
+        event_type, action = _boundary_control_operation(operation)
+        with _atomic_write(self._conn):
             self._conn.execute(
                 """
                 INSERT INTO boundaries (
@@ -1802,6 +1842,15 @@ class SQLiteBoundaryRegistry:
                     boundary.created_at.isoformat(),
                     boundary.updated_at.isoformat(),
                 ),
+            )
+            self._control_auditor.record(
+                event_type=event_type,
+                workspace_id=boundary.workspace_id,
+                action=action,
+                resource=f"boundary/{boundary.boundary_id}",
+                reason=f"status={boundary.status}",
+                boundary_id=boundary.boundary_id,
+                now=boundary.updated_at,
             )
         return boundary
 
@@ -1910,12 +1959,16 @@ class SQLiteV1Service:
         # export-wrapped) writer as decisions: one chain, one clock (ADR 0019).
         self.control_auditor = ControlPlaneAuditor(self.audit_writer)
         self._auth_failures = shared_state.auth_failures
-        self.boundary_registry = SQLiteBoundaryRegistry(self.conn)
+        self.boundary_registry = SQLiteBoundaryRegistry(
+            self.conn, self.control_auditor
+        )
         self.scope_bounds_repository = SQLiteAgentIssuableScopeBoundsRepository(
             self.conn, self.control_auditor
         )
         self.grant_request_repository = SQLiteGrantRequestRepository(self.conn)
-        self.auto_approval_rule_repository = SQLiteAutoApprovalRuleRepository(self.conn)
+        self.auto_approval_rule_repository = SQLiteAutoApprovalRuleRepository(
+            self.conn, self.control_auditor
+        )
         self.subject_token_repository = SQLiteSubjectTokenRepository(self.conn)
         self.agent_enforcement_settings_repository = SQLiteAgentEnforcementSettingsRepository(
             self.conn, self.control_auditor

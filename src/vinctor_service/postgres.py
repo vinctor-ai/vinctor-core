@@ -17,6 +17,10 @@ from vinctor_core import (
     register_boundary,
 )
 from vinctor_core.audit import (
+    EVENT_AUTO_APPROVAL_RULE_CREATED,
+    EVENT_AUTO_APPROVAL_RULE_DISABLED,
+    EVENT_BOUNDARY_REGISTERED,
+    EVENT_BOUNDARY_STATUS_CHANGED,
     EVENT_ENFORCEMENT_SETTING_CHANGED,
     EVENT_SCOPE_BOUNDS_SET,
 )
@@ -686,8 +690,10 @@ class PostgresAgentIssuableScopeBoundsRepository:
 
 
 class PostgresAutoApprovalRuleRepository:
-    def __init__(self, conn: Any) -> None:
+    def __init__(self, conn: Any, control_auditor: ControlPlaneAuditor) -> None:
         self._conn = conn
+        control_auditor.require_bound_to(conn)
+        self._control_auditor = control_auditor
 
     def add_rule(self, rule: AutoApprovalRule) -> None:
         with self._conn.transaction():
@@ -700,6 +706,14 @@ class PostgresAutoApprovalRuleRepository:
                 ) VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)
                 """,
                 _postgres_auto_approval_values(rule),
+            )
+            self._control_auditor.record(
+                event_type=EVENT_AUTO_APPROVAL_RULE_CREATED,
+                workspace_id=rule.workspace_id,
+                action="create_auto_approval_rule",
+                resource=f"auto_approval_rule/{rule.rule_id}",
+                reason=f"status={rule.status}",
+                now=rule.created_at,
             )
 
     def get_rule(self, rule_id: str) -> AutoApprovalRule | None:
@@ -749,14 +763,37 @@ class PostgresAutoApprovalRuleRepository:
                 """,
                 (*_postgres_auto_approval_values(rule)[1:], rule.rule_id),
             ).fetchone()
-        if row is None:
-            raise ValueError(f"unknown auto-approval rule_id: {rule.rule_id}")
+            if row is None:
+                raise ValueError(f"unknown auto-approval rule_id: {rule.rule_id}")
+            if rule.status == "disabled":
+                self._control_auditor.record(
+                    event_type=EVENT_AUTO_APPROVAL_RULE_DISABLED,
+                    workspace_id=rule.workspace_id,
+                    action="disable_auto_approval_rule",
+                    resource=f"auto_approval_rule/{rule.rule_id}",
+                    reason="status=disabled",
+                    now=rule.updated_at or rule.created_at,
+                )
+
+
+def _boundary_control_operation(operation: str) -> tuple[str, str]:
+    if operation == "register":
+        return EVENT_BOUNDARY_REGISTERED, "register_boundary"
+    if operation == "enable":
+        return EVENT_BOUNDARY_STATUS_CHANGED, "enable_boundary"
+    if operation == "disable":
+        return EVENT_BOUNDARY_STATUS_CHANGED, "disable_boundary"
+    raise ValueError(f"unknown boundary operation: {operation}")
+
 
 class PostgresBoundaryRegistry:
-    def __init__(self, conn: Any) -> None:
+    def __init__(self, conn: Any, control_auditor: ControlPlaneAuditor) -> None:
         self._conn = conn
+        control_auditor.require_bound_to(conn)
+        self._control_auditor = control_auditor
 
-    def add(self, boundary: Boundary) -> Boundary:
+    def add(self, boundary: Boundary, *, operation: str = "register") -> Boundary:
+        event_type, action = _boundary_control_operation(operation)
         try:
             with self._conn.transaction():
                 self._conn.execute(
@@ -786,6 +823,15 @@ class PostgresBoundaryRegistry:
                         boundary.created_at,
                         boundary.updated_at,
                     ),
+                )
+                self._control_auditor.record(
+                    event_type=event_type,
+                    workspace_id=boundary.workspace_id,
+                    action=action,
+                    resource=f"boundary/{boundary.boundary_id}",
+                    reason=f"status={boundary.status}",
+                    boundary_id=boundary.boundary_id,
+                    now=boundary.updated_at,
                 )
         except Exception as exc:
             if getattr(exc, "sqlstate", None) == "23505":
@@ -1245,12 +1291,16 @@ class PostgresV1Service:
         # Control-plane mutations audit through the SAME (possibly
         # export-wrapped) writer as decisions: one chain, one clock (ADR 0019).
         self.control_auditor = ControlPlaneAuditor(self.audit_writer)
-        self.boundary_registry = PostgresBoundaryRegistry(conn)
+        self.boundary_registry = PostgresBoundaryRegistry(
+            conn, self.control_auditor
+        )
         self.scope_bounds_repository = PostgresAgentIssuableScopeBoundsRepository(
             conn, self.control_auditor
         )
         self.grant_request_repository = PostgresGrantRequestRepository(conn)
-        self.auto_approval_rule_repository = PostgresAutoApprovalRuleRepository(conn)
+        self.auto_approval_rule_repository = PostgresAutoApprovalRuleRepository(
+            conn, self.control_auditor
+        )
         self.subject_token_repository = PostgresSubjectTokenRepository(conn)
         self.agent_enforcement_settings_repository = (
             PostgresAgentEnforcementSettingsRepository(conn, self.control_auditor)
