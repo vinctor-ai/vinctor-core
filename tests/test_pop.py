@@ -244,6 +244,8 @@ def test_pop_wrong_secret_denies() -> None:
     )
     assert r.status_code == 403
     assert r.decision is None
+    # PoP verification failures keep the generic leak-free message.
+    assert r.reason == "subject token is not valid"
 
 
 def test_pop_stale_ts_denies() -> None:
@@ -257,6 +259,7 @@ def test_pop_stale_ts_denies() -> None:
         pep_workspace_id="ws_main",
     )
     assert r.status_code == 403
+    assert r.reason == "subject token is not valid"
 
 
 def test_pop_far_future_ts_denies() -> None:

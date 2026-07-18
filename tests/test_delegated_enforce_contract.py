@@ -411,6 +411,8 @@ def test_expired_token_fails_closed() -> None:
     )
     assert response.status_code == 403
     assert response.error == "forbidden"
+    # Every non-require-pop token failure keeps the generic leak-free message.
+    assert response.reason == "subject token is not valid"
     assert audit.events[0].reason_code == REASON_SUBJECT_TOKEN_INVALID
 
 
@@ -426,6 +428,7 @@ def test_audience_mismatch_fails_closed() -> None:
         subject_token_repository=repo,
     )
     assert response.status_code == 403
+    assert response.reason == "subject token is not valid"
 
 
 def test_token_subject_mismatch_with_body_fails_closed() -> None:
@@ -441,6 +444,7 @@ def test_token_subject_mismatch_with_body_fails_closed() -> None:
         subject_token_repository=repo,
     )
     assert response.status_code == 403
+    assert response.reason == "subject token is not valid"
 
 
 def test_token_store_error_fails_closed_not_503() -> None:
@@ -459,6 +463,7 @@ def test_token_store_error_fails_closed_not_503() -> None:
         subject_token_repository=Boom(),
     )
     assert response.status_code == 403  # NOT 503, NOT a permit
+    assert response.reason == "subject token is not valid"
 
 
 def test_no_token_legacy_path_unchanged() -> None:
@@ -477,10 +482,14 @@ def test_no_token_legacy_path_unchanged() -> None:
 
 
 # ---- require_pop mandate ---------------------------------------------------
-# require_pop denies a PRESENTED non-PoP subject token (pop_secret is None). It is
-# single-purpose: it does NOT govern the no-token case (that stays under
-# require_subject_token). The deny is the SAME leak-free generic 403 forbidden as the
-# other token denies; only the audit reason_code (pop_required) distinguishes it.
+# require_pop denies a PRESENTED non-PoP subject token (pop_secret is None) AND
+# governs the no-token case: PoP can only be proven on a token that exists, so a
+# missing/blank token fails closed too (attributed to subject_token_required when
+# that mandate is also on, pop_required otherwise). The presented-non-PoP deny
+# honors the SAME uniform no-disclosure contract as every other token deny: the
+# generic "subject token is not valid" — never revealing that PoP specifically
+# was the missing piece. Only the operator-only audit reason_code (pop_required)
+# distinguishes this cause.
 
 
 def _require_pop_settings() -> InMemoryAgentEnforcementSettingsRepository:
@@ -492,8 +501,11 @@ def _require_pop_settings() -> InMemoryAgentEnforcementSettingsRepository:
 
 
 def test_require_pop_denies_presented_non_pop_token() -> None:
-    # require_pop ON + a valid-but-non-PoP token (pop_secret is None) => generic
-    # 403 forbidden, audited pop_required, identity NOT proven.
+    # require_pop ON + a valid-but-non-PoP token (pop_secret is None) => 403
+    # forbidden with the SAME generic reason as every other token deny, audited
+    # pop_required, identity NOT proven. The uniform no-disclosure contract means
+    # the agent-facing response never reveals that PoP specifically was missing;
+    # only the operator-only audit reason_code distinguishes this cause.
     audit = InMemoryAuditWriter()
     raw, _token, repo = _raw_and_repo()
     response = delegated_enforce_v1_contract(
@@ -509,10 +521,9 @@ def test_require_pop_denies_presented_non_pop_token() -> None:
     assert response.error == "forbidden"
     assert response.decision is None
     assert audit.events[-1].reason_code == REASON_POP_REQUIRED
-    # The deny must not leak that PoP specifically was the missing piece.
-    assert "pop" not in (response.reason or "").lower() or "possession" in (
-        response.reason or ""
-    ).lower()
+    # Positively pin the generic message: it must be identical to the other
+    # token-deny reasons below, never naming PoP.
+    assert response.reason == "subject token is not valid"
     # identity was never proven on a denied non-PoP token.
     assert audit.events[-1].subject_token_verified is not True
 
@@ -642,6 +653,9 @@ def test_sqlite_require_pop_denies_presented_non_pop_token(tmp_path) -> None:
     assert r.status_code == 403
     assert r.error == "forbidden"
     assert r.decision is None
+    # The generic, leak-free message reaches the presenter on the SQLite wiring
+    # too — identical to every other token deny, never naming PoP.
+    assert r.reason == "subject token is not valid"
     # On the SQLite path the operator-only rejection code round-trips via the
     # persisted ``reason`` field (reason_code is mirrored into it on rejection).
     assert service.audit_events[-1].reason == REASON_POP_REQUIRED

@@ -9,6 +9,19 @@
 > `tests/test_delegated_enforce_contract.py::test_require_pop_alone_denies_missing_token`.
 > This doc is kept as the historical record of the original decision.
 
+> **SUPERSEDED 2026-07-18 (no-disclosure uniformity):** the "acceptable to name
+> the mandate class" call below was reversed. The presented-non-PoP deny now
+> returns the SAME generic `"subject token is not valid"` as every other
+> token-validity failure — it no longer surfaces
+> `"subject token must be proof-of-possession bound"` to the agent. A review
+> concluded the uniform no-disclosure contract must hold even for this
+> operator-policy deny, not just the token-validity denies. `reason_code ==
+> "pop_required"` remains the operator-only audit signal for diagnosing this
+> cause — operators should consult the audit trail, not the agent-facing error,
+> to remediate a require_pop mismatch. See `v1_enforce.py` (the require_pop deny
+> slot) and
+> `tests/test_delegated_enforce_contract.py::test_require_pop_denies_presented_non_pop_token`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development.
 
 **Goal:** Add a third opt-in, operator-controlled enforcement mandate `require_pop`

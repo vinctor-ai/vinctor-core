@@ -65,4 +65,6 @@ def test_revoked_token_fails_closed_as_invalid() -> None:
     )
     assert response.status_code == 403
     assert response.error == "forbidden"
+    # Revoked keeps the generic message (never reveal revoked vs expired).
+    assert response.reason == "subject token is not valid"
     assert audit.events[0].reason_code == REASON_SUBJECT_TOKEN_INVALID

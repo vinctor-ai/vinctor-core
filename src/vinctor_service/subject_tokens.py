@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from secrets import token_urlsafe
 
-from vinctor_core.audit import EVENT_SUBJECT_TOKEN_MINTED
+from vinctor_core.audit import (
+    EVENT_SUBJECT_TOKEN_MINTED,
+    REASON_AGENT_GRANT_MISMATCH,
+    build_rejection_audit_event,
+)
 from vinctor_core.models import AuditEvent, Grant
-from vinctor_service.audit import AuditWriter
+from vinctor_service.audit import AuditWriter, record_rejection
 from vinctor_service.keys import _hash_key, _new_key
 from vinctor_service.models import SubjectToken
 from vinctor_service.repositories import GrantRepository, SubjectTokenRepository
@@ -44,7 +50,14 @@ def mint_subject_token(
     bound_action: str | None = None,
     bound_resource: str | None = None,
     pop: bool = False,
+    atomic: Callable[[], AbstractContextManager[object]] = nullcontext,
 ) -> SubjectTokenMintResult:
+    # ``atomic`` opens the all-or-nothing transaction that binds the successful
+    # mint's state write (token insert) and its ``subject_token_minted`` audit row
+    # together — the SQLite/Postgres services pass their real transaction scope;
+    # in-memory (and direct callers) use the default no-op. The FORBIDDEN
+    # rejection audit deliberately runs OUTSIDE it (see below).
+    #
     # Both-or-neither: a binding is an (action, resource) pair. Reject a half
     # binding before any grant lookup or audit write (contract-level ValueError;
     # the HTTP layer maps this to 400 invalid_request).
@@ -59,6 +72,38 @@ def mint_subject_token(
         or grant.workspace_id != workspace_id
         or not _grant_is_valid(grant, now)
     ):
+        # ADR 0008: the caller still gets only the generic forbidden below (no
+        # oracle), but the probe is no longer invisible to the operator — mirror
+        # the enforce/simulate mismatch paths EXACTLY. ONE identical event for
+        # every deny cause (unknown ref, foreign grant, revoked/expired grant):
+        # its fields derive only from the request, and the single write happens on
+        # all branches of this collapsed condition, so auditing introduces no
+        # timing or side-effect oracle between the cases. Attribution is the
+        # caller's own authenticated identity (workspace_id/agent_id are
+        # key-derived by the HTTP handler), and grant_id/grant_ref stay empty so
+        # the probed ref is never echoed into the trail.
+        #
+        # This rejection audit runs OUTSIDE ``atomic`` — a standalone best-effort
+        # write, structurally identical to enforce/simulate's ``record_rejection``
+        # (self-committing scope, exception suppressed). No state is written on
+        # this path, so there is nothing to be atomic with; keeping it out of the
+        # mint transaction means an audit-store failure (or its commit) never
+        # turns the generic forbidden into an error, and the forbidden path opens
+        # no fallible outer commit of its own.
+        record_rejection(
+            audit_writer,
+            build_rejection_audit_event(
+                reason_code=REASON_AGENT_GRANT_MISMATCH,
+                workspace_id=workspace_id,
+                agent_id=agent_id,
+                created_at=now,
+                action="mint_subject_token",
+                resource=f"audience/{audience}",
+                scope_attempted=(
+                    f"{bound_action}:{bound_resource}" if bound_action is not None else ""
+                ),
+            ),
+        )
         return SubjectTokenMintResult(status="forbidden")
 
     expires_at = now + timedelta(seconds=ttl_seconds)
@@ -82,8 +127,9 @@ def mint_subject_token(
         bound_resource=bound_resource,
         pop_secret=pop_secret,
     )
-    subject_token_repository.insert(token)
-    audit_writer.write(_subject_token_minted_event(token=token, now=now))
+    with atomic():
+        subject_token_repository.insert(token)
+        audit_writer.write(_subject_token_minted_event(token=token, now=now))
     return SubjectTokenMintResult(
         status="minted",
         token=raw_token,

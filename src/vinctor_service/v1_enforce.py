@@ -350,9 +350,13 @@ def delegated_enforce_v1_contract(
                 return _pre_audit_error(403, "forbidden", "subject token is not valid")
         # require_pop mandate: a PRESENTED token that is NOT proof-of-possession
         # bound (pop_secret IS None — a strict identity check, never `not ...`) is
-        # denied when the operator has hardened this (workspace, agent). The external
-        # response is the SAME generic leak-free `forbidden` as the other token denies;
-        # only the operator-only audit reason_code (pop_required) reveals the cause.
+        # denied when the operator has hardened this (workspace, agent). The
+        # agent-facing response honors the SAME uniform no-disclosure contract as
+        # every other token deny above: the generic `subject token is not valid`,
+        # never revealing that PoP specifically was the missing piece (operators
+        # who need to remediate a require_pop mismatch should consult the
+        # operator-only audit trail, not the agent-facing error). Only the
+        # operator-only audit reason_code (pop_required) distinguishes this cause.
         if is_pop_required and token.pop_secret is None:
             _record_rejection(
                 audit_writer,
@@ -365,9 +369,7 @@ def delegated_enforce_v1_contract(
                 now=now,
                 enforcing_principal=request.pep_id,
             )
-            return _pre_audit_error(
-                403, "forbidden", "subject token must be proof-of-possession bound"
-            )
+            return _pre_audit_error(403, "forbidden", "subject token is not valid")
         subject_token_verified = True
         proven_token_id = token.token_id
 

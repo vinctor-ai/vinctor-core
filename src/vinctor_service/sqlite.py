@@ -2027,15 +2027,20 @@ class SQLiteV1Service:
         self, *, workspace_id, agent_id, grant_ref, audience, ttl_seconds, now,
         bound_action=None, bound_resource=None, pop=False,
     ):
-        with _atomic_write(self.conn):
-            return mint_subject_token(
-                grant_repository=self.grant_repository,
-                subject_token_repository=self.subject_token_repository,
-                audit_writer=self.audit_writer,
-                workspace_id=workspace_id, agent_id=agent_id, grant_ref=grant_ref,
-                audience=audience, ttl_seconds=ttl_seconds, now=now,
-                bound_action=bound_action, bound_resource=bound_resource, pop=pop,
-            )
+        # Only the SUCCESSFUL mint's state+audit pair is wrapped in _atomic_write
+        # (injected via ``atomic``); the FORBIDDEN path writes its best-effort
+        # rejection audit standalone, exactly like the enforce/simulate rejection
+        # audits — so a forbidden probe opens no fallible outer commit and its
+        # audit failure never changes the generic forbidden result.
+        return mint_subject_token(
+            grant_repository=self.grant_repository,
+            subject_token_repository=self.subject_token_repository,
+            audit_writer=self.audit_writer,
+            workspace_id=workspace_id, agent_id=agent_id, grant_ref=grant_ref,
+            audience=audience, ttl_seconds=ttl_seconds, now=now,
+            bound_action=bound_action, bound_resource=bound_resource, pop=pop,
+            atomic=lambda: _atomic_write(self.conn),
+        )
 
     def lookup_grant_request(
         self,

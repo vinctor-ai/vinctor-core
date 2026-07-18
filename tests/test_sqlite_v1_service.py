@@ -4,6 +4,8 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from vinctor_core import BoundaryRegistrationInput, Grant, register_boundary
 from vinctor_service import (
     SQLiteV1Service,
@@ -12,7 +14,7 @@ from vinctor_service import (
     V1ObserveRequest,
     V1SimulateRequest,
 )
-from vinctor_service.sqlite_txn import connect_sqlite
+from vinctor_service.sqlite_txn import SerializedSQLiteConnection, connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
 
@@ -404,6 +406,122 @@ def test_sqlite_v1_service_delegated_enforce_persists_proven_identity(
     assert persisted is not None
     assert persisted.subject_token_verified is True
     assert persisted.token_id == minted.token_id
+    conn.close()
+
+
+def test_sqlite_v1_service_forbidden_mint_persists_rejection_audit(
+    tmp_path: Path,
+) -> None:
+    # The /v1/tokens grant_ref-probing surface is operator-visible on the
+    # production (SQLite) wiring too: a forbidden mint persists the same
+    # agent_grant_mismatch rejection event the enforce/simulate paths write,
+    # while the caller-facing result stays the generic forbidden.
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.insert_grant(grant(agent_id="agent_other"))
+
+    result = service.mint_subject_token(
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        grant_ref="grt_main",
+        audience="pep_git_host",
+        ttl_seconds=300,
+        now=NOW,
+    )
+    assert result.status == "forbidden"
+    events = service.audit_events
+    assert [e.event_type for e in events] == ["access_rejected"]
+    # The operator-only rejection code round-trips via the persisted ``reason``
+    # field (reason_code is mirrored into it on rejection).
+    assert events[0].reason == "agent_grant_mismatch"
+    assert events[0].grant_id == ""
+    assert events[0].grant_ref == ""
+    conn.close()
+
+
+def test_sqlite_forbidden_mint_survives_audit_commit_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The rejection audit is best-effort ALL the way down: a forbidden mint's
+    # transaction contains only the rejection audit row, so even a failing
+    # COMMIT must not turn the generic forbidden into an error (the mint is
+    # denied regardless; the operator merely loses one best-effort event).
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.insert_grant(grant(agent_id="agent_other"))
+
+    def broken_commit(self: SerializedSQLiteConnection) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(SerializedSQLiteConnection, "commit", broken_commit)
+    result = service.mint_subject_token(
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        grant_ref="grt_main",
+        audience="pep_git_host",
+        ttl_seconds=300,
+        now=NOW,
+    )
+    assert result.status == "forbidden"
+    monkeypatch.undo()
+    conn.close()
+
+
+def test_sqlite_forbidden_mint_survives_double_commit_and_rollback_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The forbidden mint path opens no transaction of its own: its rejection
+    # audit is a standalone _write_scope write, identical to the enforce/simulate
+    # rejection paths (test_sqlite_forbidden_mint_persists_rejection_audit). Even
+    # a double fault (commit AND rollback both fail) is therefore best-effort —
+    # never re-raised, never turning the generic forbidden into an error — same
+    # as any other rejection-audit failure on those paths.
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.insert_grant(grant(agent_id="agent_other"))
+
+    def broken(self: SerializedSQLiteConnection) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(SerializedSQLiteConnection, "commit", broken)
+    monkeypatch.setattr(SerializedSQLiteConnection, "rollback", broken)
+    result = service.mint_subject_token(
+        workspace_id="ws_main",
+        agent_id="agent_release",
+        grant_ref="grt_main",
+        audience="pep_git_host",
+        ttl_seconds=300,
+        now=NOW,
+    )
+    assert result.status == "forbidden"
+    monkeypatch.undo()
+    conn.close()
+
+
+def test_sqlite_minted_path_commit_failure_still_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Guard against over-suppression: a MINTED result whose transaction cannot
+    # commit must still raise — a mint is never reported without its durable
+    # state-plus-audit pair (see test_state_audit_atomicity).
+    conn = connect_db(tmp_path)
+    service = SQLiteV1Service(conn)
+    service.insert_grant(grant())
+
+    def broken_commit(self: SerializedSQLiteConnection) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(SerializedSQLiteConnection, "commit", broken_commit)
+    with pytest.raises(sqlite3.OperationalError):
+        service.mint_subject_token(
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            grant_ref="grt_main",
+            audience="pep_git_host",
+            ttl_seconds=300,
+            now=NOW,
+        )
+    monkeypatch.undo()
     conn.close()
 
 

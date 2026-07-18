@@ -329,6 +329,35 @@ def test_postgres_runtime_selection_initializes_and_reports_ready() -> None:
         handle.close()
 
 
+def test_postgres_forbidden_mint_persists_rejection_audit() -> None:
+    # Parity with the SQLite service: a forbidden mint (here a foreign grant) is
+    # operator-visible on the Postgres backend too — it persists the same
+    # agent_grant_mismatch rejection event the enforce/simulate paths write, while
+    # the caller-facing result stays the generic forbidden and no grant identifier
+    # is disclosed.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    service.insert_grant(replace(grant(), agent_id="agent_other"))
+    try:
+        result = service.mint_subject_token(
+            workspace_id="ws_main",
+            agent_id="agent_release",
+            grant_ref="grt_main",
+            audience="pep_git_host",
+            ttl_seconds=300,
+            now=NOW,
+        )
+        assert result.status == "forbidden"
+        events = service.audit_writer.list_all()
+        assert [e.event_type for e in events] == ["access_rejected"]
+        assert events[0].reason == "agent_grant_mismatch"
+        assert events[0].grant_id == ""
+        assert events[0].grant_ref == ""
+    finally:
+        conn.close()
+
+
 def test_postgres_boundary_and_settings_drive_enforcement() -> None:
     assert DSN is not None
     conn = connect_postgres(DSN)
