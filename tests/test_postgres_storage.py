@@ -58,22 +58,8 @@ from vinctor_service.service_runtime import prepare_service_runtime
 from vinctor_service.storage_runtime import prepare_decision_storage
 
 DSN = os.environ.get("VINCTOR_TEST_POSTGRES_DSN")
-pytestmark = pytest.mark.skipif(not DSN, reason="VINCTOR_TEST_POSTGRES_DSN is not set")
+pytestmark = pytest.mark.usefixtures("requires_postgres")
 NOW = datetime(2026, 7, 14, 12, 0, tzinfo=UTC)
-
-
-@pytest.fixture(autouse=True)
-def clean_database():
-    assert DSN is not None
-    conn = connect_postgres(DSN)
-    init_postgres_schema(conn)
-    with conn.transaction():
-        conn.execute(
-            "TRUNCATE TABLE pop_replay_nonces, subject_tokens, grant_requests, "
-            "local_keys, audit_events, grants, boundaries, agent_enforcement_settings, "
-            "agent_issuable_scope_bounds, auto_approval_rules, policy_versions"
-        )
-    conn.close()
 
 
 def grant() -> Grant:

@@ -873,22 +873,16 @@ def test_backup_still_works_against_newer_database(tmp_path: Path) -> None:
     assert future in result.schema_versions
 
 
-_POSTGRES_DSN = os.environ.get("VINCTOR_TEST_POSTGRES_DSN")
-requires_postgres = pytest.mark.skipif(
-    not _POSTGRES_DSN, reason="VINCTOR_TEST_POSTGRES_DSN is not set"
-)
-
-
-@requires_postgres
-def test_postgres_init_refuses_database_newer_than_binary() -> None:
+def test_postgres_init_refuses_database_newer_than_binary(
+    requires_postgres: str,
+) -> None:
     from vinctor_service.postgres import (
         POSTGRES_SCHEMA_VERSION_MAX,
         connect_postgres,
         init_postgres_schema,
     )
 
-    assert _POSTGRES_DSN is not None
-    conn = connect_postgres(_POSTGRES_DSN)
+    conn = connect_postgres(requires_postgres)
     try:
         init_postgres_schema(conn)
         future = POSTGRES_SCHEMA_VERSION_MAX + 1
@@ -920,8 +914,9 @@ def test_postgres_init_refuses_database_newer_than_binary() -> None:
         conn.close()
 
 
-@requires_postgres
-def test_postgres_schema_gate_covers_services_that_skip_schema_apply() -> None:
+def test_postgres_schema_gate_covers_services_that_skip_schema_apply(
+    requires_postgres: str,
+) -> None:
     # Mirror of the SQLite invariant: a service constructed with
     # initialize_schema=False skips the schema APPLY, not the version gate — a
     # database newer than this binary must be refused on every construction
@@ -933,8 +928,7 @@ def test_postgres_schema_gate_covers_services_that_skip_schema_apply() -> None:
         init_postgres_schema,
     )
 
-    assert _POSTGRES_DSN is not None
-    conn = connect_postgres(_POSTGRES_DSN)
+    conn = connect_postgres(requires_postgres)
     try:
         init_postgres_schema(conn)
         future = POSTGRES_SCHEMA_VERSION_MAX + 1
@@ -966,16 +960,16 @@ def test_postgres_schema_gate_covers_services_that_skip_schema_apply() -> None:
         conn.close()
 
 
-@requires_postgres
-def test_postgres_known_max_schema_version_matches_applied_migrations() -> None:
+def test_postgres_known_max_schema_version_matches_applied_migrations(
+    requires_postgres: str,
+) -> None:
     from vinctor_service.postgres import (
         POSTGRES_SCHEMA_VERSION_MAX,
         connect_postgres,
         init_postgres_schema,
     )
 
-    assert _POSTGRES_DSN is not None
-    conn = connect_postgres(_POSTGRES_DSN)
+    conn = connect_postgres(requires_postgres)
     try:
         init_postgres_schema(conn)
         with conn.transaction():
@@ -985,3 +979,48 @@ def test_postgres_known_max_schema_version_matches_applied_migrations() -> None:
 
     assert row is not None
     assert row[0] == POSTGRES_SCHEMA_VERSION_MAX
+
+
+def test_postgres_cleanup_discovers_dynamic_tables_and_preserves_migrations(
+    requires_postgres: str,
+) -> None:
+    from conftest import _clean_postgres_database
+
+    from vinctor_service.postgres import connect_postgres, init_postgres_schema
+
+    conn = connect_postgres(requires_postgres)
+    try:
+        init_postgres_schema(conn)
+        with conn.transaction():
+            conn.execute("DROP TABLE IF EXISTS pka71_dynamic_cleanup")
+            conn.execute(
+                "CREATE TABLE pka71_dynamic_cleanup (marker TEXT NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO pka71_dynamic_cleanup (marker) VALUES (%s)",
+                ("leftover",),
+            )
+            migration_row = conn.execute(
+                "SELECT MAX(version) FROM schema_migrations"
+            ).fetchone()
+    finally:
+        conn.close()
+
+    assert migration_row is not None
+    _clean_postgres_database(requires_postgres)
+
+    conn = connect_postgres(requires_postgres)
+    try:
+        with conn.transaction():
+            dynamic_row = conn.execute(
+                "SELECT COUNT(*) FROM pka71_dynamic_cleanup"
+            ).fetchone()
+            current_migration_row = conn.execute(
+                "SELECT MAX(version) FROM schema_migrations"
+            ).fetchone()
+            conn.execute("DROP TABLE pka71_dynamic_cleanup")
+    finally:
+        conn.close()
+
+    assert dynamic_row == (0,)
+    assert current_migration_row == migration_row
