@@ -10,9 +10,11 @@ services:
       VINCTOR_LOG_LEVEL: "info"
     ports:
       # Bind host-local only: `docker compose up` + `curl localhost:8765` works,
-      # but the raw server is not network-exposed. For network exposure, put a
-      # reverse proxy (TLS termination + request-body cap) in front — see
-      # docs/deployment/operational-runbooks.md.
+      # but the raw server is not network-exposed. This is the minimal single-box
+      # quickstart; it does NOT terminate TLS. For a real network deployment use
+      # the tested reference topology (TLS-terminating proxy + Postgres backend +
+      # independent audit-anchor sink) under deploy/reference/, documented in
+      # docs/deployment/production-topology.md.
       - "127.0.0.1:8765:8765"
     volumes:
       - vinctor-data:/data

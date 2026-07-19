@@ -1,0 +1,136 @@
+name: ${COMPOSE_PROJECT_NAME:-vinctor-reference}
+
+# Production reference topology (PKA-33):
+#
+#   client --HTTPS--> caddy (TLS termination) --HTTP--> vinctor --> postgres
+#                                                           |
+#                                                           +--> audit-anchor volume
+#
+# - caddy terminates TLS and is the only network entry point (80/443).
+# - vinctor runs the stdlib service with the Postgres storage backend and is
+#   reachable only inside the compose network (never publishes 8765 to the host).
+# - postgres holds the durable control-plane state and the single global
+#   tamper-evident audit chain shared across service instances.
+# - the audit chain-head anchor is written to a DEDICATED volume, independent of
+#   the database (Postgres), so it survives and can be shipped to an external
+#   WORM/SIEM sink. It is mounted at /data (image-chowned, unused under Postgres)
+#   so the non-root service user can write it.
+#
+# Horizontal scale: run this vinctor service on additional hosts against the SAME
+# Postgres (separate processes coordinate through Postgres constraints + advisory
+# locks — see docs/deployment/postgres.md) behind a load balancer that routes
+# only to instances returning 200 from /readyz. One anchor destination per
+# process; do not point two processes at one shared file.
+#
+# Secrets: copy .env.example to .env and fill it. Never commit .env. Vinctor
+# workspace/agent keys are NOT set here — they are bootstrapped through the
+# operator CLI after first boot (see docs/deployment/production-topology.md).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-vinctor}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
+      POSTGRES_DB: "${POSTGRES_DB:-vinctor}"
+    expose:
+      - "5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "${POSTGRES_USER:-vinctor}" -d "${POSTGRES_DB:-vinctor}"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks:
+      - vinctor-net
+
+  vinctor:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    command: ["vinctor", "service", "serve"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      VINCTOR_HOST: "0.0.0.0"
+      VINCTOR_PORT: "8765"
+      VINCTOR_SERVICE_MODE: "self_hosted"
+      VINCTOR_LOG_LEVEL: "${VINCTOR_LOG_LEVEL:-info}"
+      VINCTOR_STORAGE_BACKEND: "postgres"
+      VINCTOR_POSTGRES_DSN: "postgresql://${POSTGRES_USER:-vinctor}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-vinctor}"
+      # Expose the Prometheus text endpoint. Caddy blocks /metrics at the edge
+      # (it is unauthenticated); scrape it in-network at http://vinctor:8765/metrics.
+      VINCTOR_METRICS: "true"
+      # Availability guard. Resolving the real client requires trusting the proxy
+      # hop so X-Forwarded-For can be walked right-to-left. Trust ONLY the compose
+      # network subnet defined below — never 0.0.0.0/0. This is what PKA-22
+      # (proxy-aware per-tenant rate limiting) builds on.
+      VINCTOR_RATE_LIMIT_PER_MINUTE: "${VINCTOR_RATE_LIMIT_PER_MINUTE:-600}"
+      VINCTOR_TRUSTED_PROXIES: "${VINCTOR_TRUSTED_PROXIES:-172.28.0.0/16}"
+      # Independent chain-head anchor sink on its own volume (see notes above).
+      # Written under /data, which the image creates and chowns to the non-root
+      # service user (uid 10001) and which is otherwise UNUSED here — the sqlite
+      # DB path is inert under the Postgres backend. A fresh named volume mounted
+      # onto that pre-chowned path inherits its ownership, so the service user can
+      # write the anchor. (A path the image does not create, e.g. /anchor, would
+      # be root-owned and every append would fail-open into an empty stream.)
+      VINCTOR_AUDIT_ANCHOR: "file:/data/chain-heads.jsonl"
+    expose:
+      - "8765"
+    volumes:
+      - audit-anchor:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          response = urllib.request.urlopen('http://127.0.0.1:8765/readyz', timeout=5);
+          raise SystemExit(0 if json.load(response).get('status') == 'ready' else 1)
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    networks:
+      - vinctor-net
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      vinctor:
+        condition: service_healthy
+    environment:
+      VINCTOR_PUBLIC_HOSTNAME: "${VINCTOR_PUBLIC_HOSTNAME:-localhost}"
+    ports:
+      - "${VINCTOR_HTTP_PORT:-80}:80"
+      - "${VINCTOR_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - vinctor-net
+
+networks:
+  vinctor-net:
+    # Fixed subnet so VINCTOR_TRUSTED_PROXIES can name it exactly. The address
+    # Caddy connects from always falls inside this range, so vinctor trusts the
+    # proxy hop and no other.
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  pg-data:
+  audit-anchor:
+  caddy-data:
+  caddy-config:
