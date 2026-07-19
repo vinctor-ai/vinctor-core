@@ -14,7 +14,7 @@ from vinctor_core import (
     disable_boundary,
     register_boundary,
 )
-from vinctor_core.models import AuditEvent, Grant
+from vinctor_core.models import AuditEvent, Boundary, Grant
 from vinctor_service.audit_anchor import NullAnchor
 from vinctor_service.audit_chain import GENESIS_PREV_HASH, AnchorRecord, row_hash
 from vinctor_service.audit_export import ExportingAuditWriter
@@ -425,6 +425,7 @@ def test_postgres_boundary_and_settings_drive_enforcement() -> None:
         ),
         boundary_id="bnd_main",
         now=NOW,
+        enforcing_principal="workspace:ws_main",
     )
     permit = service.enforce(
         V1EnforceRequest(
@@ -442,6 +443,7 @@ def test_postgres_boundary_and_settings_drive_enforcement() -> None:
         boundary_id=boundary.boundary_id,
         workspace_id="ws_main",
         now=NOW + timedelta(seconds=1),
+        enforcing_principal="workspace:ws_main",
     )
     disabled = service.enforce(
         V1EnforceRequest(
@@ -955,10 +957,16 @@ def test_postgres_boundary_name_is_unique_per_workspace() -> None:
         runtime="claude-code",
         boundary_type="pretooluse",
     )
-    first = register_boundary(registry, registration, boundary_id="bnd_one", now=NOW)
+    first = register_boundary(
+        registry, registration, boundary_id="bnd_one", now=NOW,
+        enforcing_principal="workspace:ws_main",
+    )
 
     with pytest.raises(ValueError, match="boundary name must be unique"):
-        register_boundary(registry, registration, boundary_id="bnd_two", now=NOW)
+        register_boundary(
+            registry, registration, boundary_id="bnd_two", now=NOW,
+            enforcing_principal="workspace:ws_main",
+        )
 
     assert registry.get(first.boundary_id) == first
     assert registry.list_for_workspace("ws_main") == [first]
@@ -1570,12 +1578,15 @@ def test_postgres_boundary_and_rule_mutations_emit_one_control_event_each() -> N
         ),
         boundary_id="bnd_main",
         now=NOW,
+        enforcing_principal="workspace:ws_main",
     )
     service.disable_boundary(
-        boundary_id="bnd_main", workspace_id="ws_main", now=NOW
+        boundary_id="bnd_main", workspace_id="ws_main", now=NOW,
+        enforcing_principal="workspace:ws_main",
     )
     service.enable_boundary(
-        boundary_id="bnd_main", workspace_id="ws_main", now=NOW
+        boundary_id="bnd_main", workspace_id="ws_main", now=NOW,
+        enforcing_principal="workspace:ws_main",
     )
     service.create_auto_approval_rule(_postgres_control_rule())
     service.disable_auto_approval_rule(
@@ -1647,18 +1658,112 @@ def test_postgres_boundary_mutation_rolls_back_when_audit_write_fails() -> None:
         ),
         boundary_id="bnd_main",
         now=NOW,
+        enforcing_principal="workspace:ws_main",
     )
     _break_service_audit(service)
 
     with pytest.raises(RuntimeError, match="audit write failed"):
         service.disable_boundary(
-            boundary_id="bnd_main", workspace_id="ws_main", now=NOW
+            boundary_id="bnd_main", workspace_id="ws_main", now=NOW,
+            enforcing_principal="workspace:ws_main",
         )
 
     boundary = service.get_boundary(
         boundary_id="bnd_main", workspace_id="ws_main"
     )
     assert boundary is not None and boundary.status == "active"
+    conn.close()
+
+
+def test_postgres_durable_registry_fails_loud_without_attribution() -> None:
+    # Mirror of the SQLite fail-loud guard: a durable registry must never write
+    # an unattributed control event (PKA-56 B4). Bare add() raises, and
+    # add_audited rejects a missing/empty principal — each before any mutation.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    registry = PostgresBoundaryRegistry(conn, _control_auditor(conn))
+
+    def counts() -> tuple[int, int]:
+        with conn.transaction():
+            boundaries = conn.execute("SELECT COUNT(*) FROM boundaries").fetchone()[0]
+            events = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+        return (boundaries, events)
+
+    assert hasattr(registry, "add_audited")
+    boundary = Boundary(
+        boundary_id="bnd_x",
+        workspace_id="ws_main",
+        name="claude-code-local",
+        runtime="claude-code",
+        boundary_type="pretooluse",
+        mode="fail_closed",
+        status="active",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    before = counts()
+
+    try:
+        registry.add(boundary)  # type: ignore[attr-defined]
+    except NotImplementedError:
+        pass
+    else:
+        raise AssertionError("expected durable bare add() to fail loudly")
+    assert counts() == before
+
+    try:
+        registry.add_audited(boundary, operation="register")  # type: ignore[call-arg]
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("expected add_audited to require enforcing_principal")
+    assert counts() == before
+
+    try:
+        registry.add_audited(boundary, operation="register", enforcing_principal="")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected add_audited to reject an empty principal")
+    assert counts() == before
+    conn.close()
+
+
+def test_postgres_boundary_control_events_carry_enforcing_principal() -> None:
+    # PKA-56 B4 held through the add_audited channel: the principal reaches the
+    # control auditor without widening the overridable core add() contract.
+    assert DSN is not None
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+
+    service.register_boundary(
+        BoundaryRegistrationInput(
+            workspace_id="ws_main",
+            name="claude-code",
+            runtime="claude-code",
+            boundary_type="pretooluse",
+        ),
+        boundary_id="bnd_main",
+        now=NOW,
+        enforcing_principal="workspace:ws_main",
+    )
+    service.disable_boundary(
+        boundary_id="bnd_main", workspace_id="ws_main", now=NOW,
+        enforcing_principal="workspace:ws_main",
+    )
+    service.enable_boundary(
+        boundary_id="bnd_main", workspace_id="ws_main", now=NOW,
+        enforcing_principal="workspace:ws_main",
+    )
+
+    events = _control_events(service)
+    assert [e.action for e in events] == [
+        "register_boundary",
+        "disable_boundary",
+        "enable_boundary",
+    ]
+    assert all(e.enforcing_principal == "workspace:ws_main" for e in events)
+    assert service.audit_writer.verify_chain().ok is True
     conn.close()
 
 

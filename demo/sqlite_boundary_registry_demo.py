@@ -50,6 +50,7 @@ def main() -> None:
             ),
             now=now,
             boundary_id="bnd_demo",
+            enforcing_principal="workspace:ws_demo",
         )
 
         permit = enforce_v1_contract(
@@ -71,6 +72,7 @@ def main() -> None:
             boundary_id=boundary.boundary_id,
             workspace_id="ws_demo",
             now=now + timedelta(seconds=1),
+            enforcing_principal="workspace:ws_demo",
         )
         inactive = enforce_v1_contract(
             _request(boundary_id=boundary.boundary_id),

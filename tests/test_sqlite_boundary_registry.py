@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from vinctor_core import (
+    Boundary,
     BoundaryRegistrationInput,
     Grant,
     disable_boundary,
@@ -98,6 +99,7 @@ def test_sqlite_boundary_registry_registers_and_lists_boundaries(
         registration(),
         now=NOW,
         boundary_id="bnd_main",
+        enforcing_principal="workspace:ws_main",
     )
 
     assert registry.get("bnd_main") == boundary
@@ -111,10 +113,16 @@ def test_sqlite_boundary_registry_rejects_duplicate_names_in_workspace(
 ) -> None:
     conn = connect_db(tmp_path)
     registry = boundary_registry(conn)
-    register_boundary(registry, registration(), now=NOW, boundary_id="bnd_one")
+    register_boundary(
+        registry, registration(), now=NOW, boundary_id="bnd_one",
+        enforcing_principal="workspace:ws_main",
+    )
 
     try:
-        register_boundary(registry, registration(), now=NOW, boundary_id="bnd_two")
+        register_boundary(
+        registry, registration(), now=NOW, boundary_id="bnd_two",
+        enforcing_principal="workspace:ws_main",
+    )
     except ValueError as error:
         assert "boundary name must be unique" in str(error)
     else:
@@ -134,12 +142,14 @@ def test_sqlite_boundary_registry_allows_same_name_in_different_workspaces(
         registration(workspace_id="ws_main"),
         now=NOW,
         boundary_id="bnd_main",
+        enforcing_principal="workspace:ws_main",
     )
     second = register_boundary(
         registry,
         registration(workspace_id="ws_other"),
         now=NOW,
         boundary_id="bnd_other",
+        enforcing_principal="workspace:ws_other",
     )
 
     assert registry.list_for_workspace("ws_main") == [first]
@@ -152,13 +162,17 @@ def test_sqlite_boundary_registry_disable_and_enable_persist_status(
 ) -> None:
     conn = connect_db(tmp_path)
     registry = boundary_registry(conn)
-    register_boundary(registry, registration(), now=NOW, boundary_id="bnd_main")
+    register_boundary(
+        registry, registration(), now=NOW, boundary_id="bnd_main",
+        enforcing_principal="workspace:ws_main",
+    )
 
     disabled = disable_boundary(
         registry,
         boundary_id="bnd_main",
         workspace_id="ws_main",
         now=NOW + timedelta(seconds=1),
+        enforcing_principal="workspace:ws_main",
     )
     assert disabled is not None
     assert disabled.status == "disabled"
@@ -169,10 +183,70 @@ def test_sqlite_boundary_registry_disable_and_enable_persist_status(
         boundary_id="bnd_main",
         workspace_id="ws_main",
         now=NOW + timedelta(seconds=2),
+        enforcing_principal="workspace:ws_main",
     )
     assert enabled is not None
     assert enabled.status == "active"
     assert registry.get("bnd_main") == enabled
+    conn.close()
+
+
+def test_sqlite_durable_registry_fails_loud_without_attribution(
+    tmp_path: Path,
+) -> None:
+    # A durable registry must NEVER write an unattributed control event
+    # (PKA-56 B4). The core helpers always reach it through the add_audited
+    # probe, so these paths only fire on misuse — and each must fail loudly and
+    # write NOTHING, never a NULL-principal row on the tamper-evident chain.
+    conn = connect_db(tmp_path)
+    registry = boundary_registry(conn)
+
+    def counts() -> tuple[int, int]:
+        boundaries = conn.execute("SELECT COUNT(*) FROM boundaries").fetchone()[0]
+        events = conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0]
+        return (boundaries, events)
+
+    assert hasattr(registry, "add_audited")
+    boundary = Boundary(
+        boundary_id="bnd_x",
+        workspace_id="ws_main",
+        name="claude-code-local",
+        runtime="claude-code",
+        boundary_type="pretooluse",
+        mode="fail_closed",
+        status="active",
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    before = counts()
+
+    # Bare BoundaryRegistry.add() carries no principal: a durable registry
+    # must raise rather than delegate to an unattributed audited write.
+    try:
+        registry.add(boundary)  # type: ignore[attr-defined]
+    except NotImplementedError:
+        pass
+    else:
+        raise AssertionError("expected durable bare add() to fail loudly")
+    assert counts() == before
+
+    # Omitted principal: the keyword is required.
+    try:
+        registry.add_audited(boundary, operation="register")  # type: ignore[call-arg]
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("expected add_audited to require enforcing_principal")
+    assert counts() == before
+
+    # Empty principal: rejected before any mutation, not written as NULL/"".
+    try:
+        registry.add_audited(boundary, operation="register", enforcing_principal="")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected add_audited to reject an empty principal")
+    assert counts() == before
     conn.close()
 
 
@@ -182,7 +256,10 @@ def test_sqlite_boundary_context_is_persisted_in_audit_event(
     conn = connect_db(tmp_path)
     registry = boundary_registry(conn)
     insert_grant(conn, grant())
-    register_boundary(registry, registration(), now=NOW, boundary_id="bnd_main")
+    register_boundary(
+        registry, registration(), now=NOW, boundary_id="bnd_main",
+        enforcing_principal="workspace:ws_main",
+    )
 
     response = enforce_v1_contract(
         request(boundary_id="bnd_main"),
@@ -210,12 +287,16 @@ def test_sqlite_disabled_boundary_fails_closed_and_writes_audit(
     conn = connect_db(tmp_path)
     registry = boundary_registry(conn)
     insert_grant(conn, grant())
-    register_boundary(registry, registration(), now=NOW, boundary_id="bnd_main")
+    register_boundary(
+        registry, registration(), now=NOW, boundary_id="bnd_main",
+        enforcing_principal="workspace:ws_main",
+    )
     disable_boundary(
         registry,
         boundary_id="bnd_main",
         workspace_id="ws_main",
         now=NOW + timedelta(seconds=1),
+        enforcing_principal="workspace:ws_main",
     )
 
     response = enforce_v1_contract(

@@ -11,16 +11,14 @@ from vinctor_core.models import Boundary, BoundaryRegistrationInput
 class BoundaryRegistry:
     _boundaries: dict[str, Boundary] = field(default_factory=dict)
 
-    def add(
-        self,
-        boundary: Boundary,
-        *,
-        operation: str = "register",
-        enforcing_principal: str | None = None,
-    ) -> Boundary:
-        # Durable registries use the caller's operation to select their control
-        # event and the enforcing_principal to attribute it. The pure registry
-        # intentionally has no auditor and ignores both.
+    def add(self, boundary: Boundary) -> Boundary:
+        # Released (v0.3.0) public contract: (self, boundary), no keywords.
+        # The register/enable/disable status is carried on the Boundary the
+        # helper passes in. Registries that audit control-plane mutations
+        # expose a distinctly-named add_audited() instead; the helpers route
+        # the operation and enforcing_principal there (see _dispatch_add), so
+        # this overridable signature never grows keywords an external subclass
+        # would not implement.
         self._boundaries[boundary.boundary_id] = boundary
         return boundary
 
@@ -65,8 +63,8 @@ def register_boundary(
     # Registration intent wins even when a durable registry's boundary-id
     # upsert replaces an existing row: re-registration is still recorded as
     # one boundary_registered operation, not inferred from the prior row.
-    return registry.add(
-        boundary, operation="register", enforcing_principal=enforcing_principal
+    return _dispatch_add(
+        registry, boundary, operation="register", enforcing_principal=enforcing_principal
     )
 
 
@@ -94,8 +92,8 @@ def disable_boundary(
         return None
 
     disabled = boundary.with_status("disabled", updated_at=now or datetime.now(UTC))
-    return registry.add(
-        disabled, operation="disable", enforcing_principal=enforcing_principal
+    return _dispatch_add(
+        registry, disabled, operation="disable", enforcing_principal=enforcing_principal
     )
 
 
@@ -111,14 +109,36 @@ def enable_boundary(
     if boundary is None:
         return None
     if boundary.status == "active":
-        return registry.add(
-            boundary, operation="enable", enforcing_principal=enforcing_principal
+        return _dispatch_add(
+            registry, boundary, operation="enable", enforcing_principal=enforcing_principal
         )
 
     enabled = boundary.with_status("active", updated_at=now or datetime.now(UTC))
-    return registry.add(
-        enabled, operation="enable", enforcing_principal=enforcing_principal
+    return _dispatch_add(
+        registry, enabled, operation="enable", enforcing_principal=enforcing_principal
     )
+
+
+def _dispatch_add(
+    registry: BoundaryRegistry,
+    boundary: Boundary,
+    *,
+    operation: str,
+    enforcing_principal: str | None,
+) -> Boundary:
+    # The overridable add() contract is (self, boundary) — the released v0.3.0
+    # signature — so external registries keep working. Registries that audit
+    # control-plane mutations expose the distinctly-named add_audited(), which
+    # takes both the operation (to select its control event) and the acting
+    # principal (to attribute it) as explicit params and performs the atomic
+    # row-write + control-event. We probe for it and route attribution there;
+    # a registry without it (the pure/in-memory reference store) has no auditor
+    # and takes the bare add(). The same getattr capability-probe idiom is used
+    # for the auditor bind check and the export-close hook.
+    add_audited = getattr(registry, "add_audited", None)
+    if add_audited is not None:
+        return add_audited(boundary, operation=operation, enforcing_principal=enforcing_principal)
+    return registry.add(boundary)
 
 
 def _new_boundary_id() -> str:

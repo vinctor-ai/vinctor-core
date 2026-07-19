@@ -8,6 +8,7 @@ from vinctor_core import (
     get_boundary_for_workspace,
     register_boundary,
 )
+from vinctor_core.models import Boundary
 
 
 def test_register_boundary_creates_active_fail_closed_boundary() -> None:
@@ -294,6 +295,65 @@ def test_enable_boundary_returns_active_boundary_without_updating_timestamp() ->
 
     assert enabled == boundary
     assert enabled.updated_at == created_at
+
+
+def test_helpers_never_pass_extra_keywords_into_the_overridable_add() -> None:
+    # Regression for the Codex review of #176 (finding 6): BoundaryRegistry is
+    # publicly exported, and its RELEASED (v0.3.0) overridable contract is
+    # add(self, boundary) with NO keywords — operation= was added unreleased in
+    # #171, enforcing_principal= in #176. An external subclass on the released
+    # signature must still drive all three helpers without TypeError, so the
+    # helpers deliver both operation and enforcing_principal through a dedicated
+    # channel, never by widening the overridable add() signature.
+    class _ExtRegistry(BoundaryRegistry):
+        def add(self, boundary: Boundary) -> Boundary:
+            self._boundaries[boundary.boundary_id] = boundary
+            return boundary
+
+    registry = _ExtRegistry()
+    now = datetime(2026, 6, 10, tzinfo=UTC)
+
+    boundary = register_boundary(
+        registry,
+        BoundaryRegistrationInput(
+            workspace_id="ws_main",
+            name="external-local",
+            runtime="custom",
+            boundary_type="wrapper",
+        ),
+        now=now,
+        boundary_id="bnd_ext",
+        enforcing_principal="workspace:ws_main",
+    )
+    assert boundary.boundary_id == "bnd_ext"
+
+    disabled = disable_boundary(
+        registry,
+        boundary_id="bnd_ext",
+        workspace_id="ws_main",
+        now=now,
+        enforcing_principal="workspace:ws_main",
+    )
+    assert disabled is not None and disabled.status == "disabled"
+
+    enabled = enable_boundary(
+        registry,
+        boundary_id="bnd_ext",
+        workspace_id="ws_main",
+        now=now,
+        enforcing_principal="workspace:ws_main",
+    )
+    assert enabled is not None and enabled.status == "active"
+
+    # The already-active early return threads through add() too.
+    still_active = enable_boundary(
+        registry,
+        boundary_id="bnd_ext",
+        workspace_id="ws_main",
+        now=now,
+        enforcing_principal="workspace:ws_main",
+    )
+    assert still_active is not None and still_active.status == "active"
 
 
 def test_enable_boundary_returns_none_for_wrong_workspace() -> None:

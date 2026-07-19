@@ -256,6 +256,7 @@ def test_sqlite_v1_service_uses_boundary_registry(tmp_path: Path) -> None:
         ),
         now=NOW,
         boundary_id="bnd_main",
+        enforcing_principal="workspace:ws_main",
     )
 
     response = service.enforce(request(boundary_id=boundary.boundary_id), now=NOW)
@@ -284,11 +285,13 @@ def test_sqlite_v1_service_fails_closed_for_disabled_boundary(
         ),
         now=NOW,
         boundary_id="bnd_main",
+        enforcing_principal="workspace:ws_main",
     )
     service.disable_boundary(
         boundary_id="bnd_main",
         workspace_id="ws_main",
         now=NOW + timedelta(seconds=1),
+        enforcing_principal="workspace:ws_main",
     )
 
     response = service.enforce(request(boundary_id="bnd_main"), now=NOW)
@@ -313,6 +316,7 @@ def test_sqlite_v1_service_manages_boundaries(tmp_path: Path) -> None:
         ),
         now=NOW,
         boundary_id="bnd_main",
+        enforcing_principal="workspace:ws_main",
     )
 
     assert service.list_boundaries("ws_main") == (boundary,)
@@ -322,6 +326,7 @@ def test_sqlite_v1_service_manages_boundaries(tmp_path: Path) -> None:
         boundary_id="bnd_main",
         workspace_id="ws_main",
         now=NOW + timedelta(seconds=1),
+        enforcing_principal="workspace:ws_main",
     )
     assert disabled is not None
     assert disabled.status == "disabled"
@@ -330,6 +335,7 @@ def test_sqlite_v1_service_manages_boundaries(tmp_path: Path) -> None:
         boundary_id="bnd_main",
         workspace_id="ws_main",
         now=NOW + timedelta(seconds=2),
+        enforcing_principal="workspace:ws_main",
     )
     assert enabled is not None
     assert enabled.status == "active"

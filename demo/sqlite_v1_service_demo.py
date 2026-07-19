@@ -34,6 +34,7 @@ def main() -> None:
             ),
             now=now,
             boundary_id="bnd_demo",
+            enforcing_principal="workspace:ws_demo",
         )
         decision_audit_baseline = _audit_count(conn)
 
@@ -64,6 +65,7 @@ def main() -> None:
             boundary_id=boundary.boundary_id,
             workspace_id="ws_demo",
             now=now + timedelta(seconds=1),
+            enforcing_principal="workspace:ws_demo",
         )
         inactive_audit_baseline = _audit_count(conn)
         inactive = service.enforce(_request(boundary_id=boundary.boundary_id), now=now)

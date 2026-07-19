@@ -277,12 +277,15 @@ def test_sqlite_boundary_and_rule_mutations_emit_one_control_event_each() -> Non
         ),
         boundary_id="bnd_main",
         now=NOW,
+        enforcing_principal="workspace:ws_main",
     )
     service.disable_boundary(
-        boundary_id="bnd_main", workspace_id="ws_main", now=NOW
+        boundary_id="bnd_main", workspace_id="ws_main", now=NOW,
+        enforcing_principal="workspace:ws_main",
     )
     service.enable_boundary(
-        boundary_id="bnd_main", workspace_id="ws_main", now=NOW
+        boundary_id="bnd_main", workspace_id="ws_main", now=NOW,
+        enforcing_principal="workspace:ws_main",
     )
     service.create_auto_approval_rule(_auto_approval_rule())
     service.disable_auto_approval_rule(
@@ -353,12 +356,14 @@ def test_sqlite_boundary_mutation_rolls_back_when_audit_write_fails() -> None:
         ),
         boundary_id="bnd_main",
         now=NOW,
+        enforcing_principal="workspace:ws_main",
     )
     _break_audit(service)
 
     with pytest.raises(RuntimeError, match="audit write failed"):
         service.disable_boundary(
-            boundary_id="bnd_main", workspace_id="ws_main", now=NOW
+            boundary_id="bnd_main", workspace_id="ws_main", now=NOW,
+            enforcing_principal="workspace:ws_main",
         )
 
     boundary = service.get_boundary(
@@ -505,12 +510,17 @@ def test_sqlite_control_events_carry_enforcing_principal(tmp_path) -> None:
         boundary_id="bnd_main", workspace_id="ws_main", now=NOW,
         enforcing_principal="workspace:ws_main",
     )
+    service.enable_boundary(
+        boundary_id="bnd_main", workspace_id="ws_main", now=NOW,
+        enforcing_principal="workspace:ws_main",
+    )
     events = _control_events(service)
     assert [e.action for e in events] == [
         "set_require_boundary",
         "set_issuable_scope_bounds",
         "register_boundary",
         "disable_boundary",
+        "enable_boundary",
     ]
     assert all(e.enforcing_principal == "workspace:ws_main" for e in events)
     assert service.audit_writer.verify_chain().ok is True

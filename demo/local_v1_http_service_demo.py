@@ -48,6 +48,7 @@ def main() -> None:
                 ),
                 now=now,
                 boundary_id="bnd_demo",
+                enforcing_principal="workspace:ws_demo",
             )
             pool = SQLiteServicePool(
                 db_path,

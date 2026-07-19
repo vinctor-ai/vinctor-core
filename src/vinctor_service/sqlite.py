@@ -1838,13 +1838,35 @@ class SQLiteBoundaryRegistry:
         control_auditor.require_bound_to(self._conn)
         self._control_auditor = control_auditor
 
-    def add(
+    def add(self, boundary: Boundary) -> Boundary:
+        # The bare BoundaryRegistry.add() contract carries no principal, so a
+        # durable registry cannot honor it without emitting a NULL-principal
+        # control event — the exact PKA-56 B4 regression this design prevents.
+        # The core helpers always reach durable registries through the
+        # add_audited probe; a direct bare add() is misuse and must fail loudly.
+        raise NotImplementedError(
+            "SQLiteBoundaryRegistry is audited: use add_audited(boundary, "
+            "operation=..., enforcing_principal=...); bare add() would drop "
+            "PKA-56 B4 attribution"
+        )
+
+    def add_audited(
         self,
         boundary: Boundary,
         *,
-        operation: str = "register",
-        enforcing_principal: str | None = None,
+        operation: str,
+        enforcing_principal: str,
     ) -> Boundary:
+        # Durable, audited channel. The core helpers route here (they probe for
+        # add_audited) so the overridable BoundaryRegistry.add() contract stays
+        # (self, boundary): both the operation (selects the control event) and
+        # the enforcing_principal (attributes it, PKA-56 B4) arrive as explicit
+        # params. enforcing_principal is REQUIRED and a missing/empty value is
+        # rejected before any write, so a durable control event is never left
+        # unattributed. Row write and control event share one transaction so
+        # the event is atomic with the mutation.
+        if not enforcing_principal:
+            raise ValueError("enforcing_principal is required for an audited boundary mutation")
         event_type, action = _boundary_control_operation(operation)
         with _atomic_write(self._conn):
             self._conn.execute(
