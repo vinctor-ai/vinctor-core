@@ -21,6 +21,7 @@ from vinctor_service.keys import (
     validate_seeded_key,
 )
 from vinctor_service.models import GrantRequest, SubjectToken
+from vinctor_service.service_config import load_pop_replay_caps
 from vinctor_service.v1_http import AgentIdentity, PepIdentity
 
 POP_REPLAY_LOCK_ID = 0x56494E50
@@ -471,8 +472,20 @@ class PostgresSubjectTokenRepository:
 
 
 class PostgresReplayStore:
-    def __init__(self, conn: Any, max_entries: int = 10000, max_per_token: int = 256) -> None:
+    def __init__(
+        self,
+        conn: Any,
+        max_entries: int | None = None,
+        max_per_token: int | None = None,
+    ) -> None:
         self._conn = conn
+        # Caps left unset resolve from the environment (PKA-24), exactly like
+        # PopReplayCache: the serve path constructs this store bare, so the
+        # operator-facing VINCTOR_POP_REPLAY_* knobs must land here too.
+        if max_entries is None or max_per_token is None:
+            env_entries, env_per_token = load_pop_replay_caps()
+            max_entries = env_entries if max_entries is None else max_entries
+            max_per_token = env_per_token if max_per_token is None else max_per_token
         self._max = max_entries
         self._max_per_token = max_per_token
 
@@ -497,7 +510,7 @@ class PostgresReplayStore:
                 # still-fresh nonces. NEVER evict a live nonce to make room
                 # (ADR 0007): a dropped fresh nonce would let its captured proof
                 # replay within the window. Fail closed; operators can raise the
-                # cap.
+                # cap via VINCTOR_POP_REPLAY_MAX_PER_TOKEN (PKA-24).
                 return False
             if self._conn.execute(
                 "SELECT COUNT(*) FROM pop_replay_nonces"

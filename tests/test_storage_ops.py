@@ -921,6 +921,52 @@ def test_postgres_init_refuses_database_newer_than_binary() -> None:
 
 
 @requires_postgres
+def test_postgres_schema_gate_covers_services_that_skip_schema_apply() -> None:
+    # Mirror of the SQLite invariant: a service constructed with
+    # initialize_schema=False skips the schema APPLY, not the version gate — a
+    # database newer than this binary must be refused on every construction
+    # path (PKA-40).
+    from vinctor_service.postgres import (
+        POSTGRES_SCHEMA_VERSION_MAX,
+        PostgresV1Service,
+        connect_postgres,
+        init_postgres_schema,
+    )
+
+    assert _POSTGRES_DSN is not None
+    conn = connect_postgres(_POSTGRES_DSN)
+    try:
+        init_postgres_schema(conn)
+        future = POSTGRES_SCHEMA_VERSION_MAX + 1
+        with conn.transaction():
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, applied_at)
+                VALUES (%s, %s)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                (future, NOW),
+            )
+        try:
+            with pytest.raises(SchemaVersionError) as excinfo:
+                PostgresV1Service(conn, initialize_schema=False)
+            message = str(excinfo.value)
+            assert str(future) in message
+            assert str(POSTGRES_SCHEMA_VERSION_MAX) in message
+        finally:
+            # Clean up the future stamp so later tests (and reruns) against the
+            # shared CI database are not refused by the gate under test.
+            with conn.transaction():
+                conn.execute(
+                    "DELETE FROM schema_migrations WHERE version = %s", (future,)
+                )
+        # Equal version again: the gate clears once the future stamp is gone.
+        PostgresV1Service(conn, initialize_schema=False)
+    finally:
+        conn.close()
+
+
+@requires_postgres
 def test_postgres_known_max_schema_version_matches_applied_migrations() -> None:
     from vinctor_service.postgres import (
         POSTGRES_SCHEMA_VERSION_MAX,

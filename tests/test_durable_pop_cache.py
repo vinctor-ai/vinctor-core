@@ -9,6 +9,7 @@ import sqlite3
 
 from vinctor_service.sqlite import (
     SQLiteReplayStore,
+    SQLiteV1Service,
     get_sqlite_schema_versions,
     init_sqlite_schema,
 )
@@ -254,4 +255,57 @@ def test_sqlite_replay_within_token_still_detected_with_per_token_cap(tmp_path) 
     ) is True
     assert store.check_and_record(
         token_id="A", nonce="n1", ts=t, now_unix=t, skew=SKEW
+    ) is False
+
+
+def test_sqlite_replay_caps_read_from_env(tmp_path, monkeypatch) -> None:
+    # Caps are constructor defaults resolved from the environment, matching
+    # PopReplayCache (PKA-24): the durable serve path must honor the same
+    # env vars, or the operator-facing knob is inert in production.
+    monkeypatch.setenv("VINCTOR_POP_REPLAY_MAX_ENTRIES", "2")
+    monkeypatch.setenv("VINCTOR_POP_REPLAY_MAX_PER_TOKEN", "1")
+    store = SQLiteReplayStore(_conn(tmp_path / "v.sqlite"))
+    now_unix = 1_000_000
+    assert store.check_and_record(
+        token_id="A", nonce="a1", ts=now_unix, now_unix=now_unix, skew=SKEW
+    ) is True
+    # Per-token cap (1) from env: A's second fresh nonce is rejected.
+    assert store.check_and_record(
+        token_id="A", nonce="a2", ts=now_unix, now_unix=now_unix, skew=SKEW
+    ) is False
+    assert store.check_and_record(
+        token_id="B", nonce="b1", ts=now_unix, now_unix=now_unix, skew=SKEW
+    ) is True
+    # Global cap (2) from env: a third token's fresh nonce is rejected.
+    assert store.check_and_record(
+        token_id="C", nonce="c1", ts=now_unix, now_unix=now_unix, skew=SKEW
+    ) is False
+
+
+def test_sqlite_replay_explicit_args_override_env(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("VINCTOR_POP_REPLAY_MAX_ENTRIES", "1")
+    monkeypatch.setenv("VINCTOR_POP_REPLAY_MAX_PER_TOKEN", "1")
+    store = SQLiteReplayStore(
+        _conn(tmp_path / "v.sqlite"), max_entries=100, max_per_token=100
+    )
+    now_unix = 1_000_000
+    assert store.check_and_record(
+        token_id="A", nonce="a1", ts=now_unix, now_unix=now_unix, skew=SKEW
+    ) is True
+    assert store.check_and_record(
+        token_id="A", nonce="a2", ts=now_unix, now_unix=now_unix, skew=SKEW
+    ) is True
+
+
+def test_sqlite_service_replay_store_honors_env_caps(tmp_path, monkeypatch) -> None:
+    # The serve path constructs the store bare (SQLiteV1Service.__post_init__),
+    # so the env caps must reach it through the constructor defaults.
+    monkeypatch.setenv("VINCTOR_POP_REPLAY_MAX_PER_TOKEN", "1")
+    service = SQLiteV1Service(connect_sqlite(tmp_path / "v.sqlite"))
+    now_unix = 1_000_000
+    assert service._pop_replay.check_and_record(
+        token_id="A", nonce="a1", ts=now_unix, now_unix=now_unix, skew=SKEW
+    ) is True
+    assert service._pop_replay.check_and_record(
+        token_id="A", nonce="a2", ts=now_unix, now_unix=now_unix, skew=SKEW
     ) is False

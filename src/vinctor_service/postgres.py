@@ -1457,6 +1457,17 @@ class PostgresV1Service:
         self.conn = conn
         if initialize_schema:
             init_postgres_schema(conn)
+        else:
+            # Mirror SQLiteV1Service: skipping the schema APPLY must not skip
+            # the version gate — a database newer than this binary is refused
+            # on every construction path (PKA-40), not only the initializing one.
+            # Run the gate inside a transaction so the connection is left IDLE
+            # whether the gate passes (commit) or refuses (rollback), matching
+            # init_postgres_schema. A bare execute would open an implicit
+            # transaction that stays open past a raise, leaving the connection
+            # mid-transaction for the caller.
+            with conn.transaction():
+                _assert_postgres_schema_supported(conn)
         self.grant_repository = PostgresGrantRepository(conn)
         self.audit_writer = PostgresAuditWriter(
             conn, anchor=anchor_from_env(dict(os.environ))

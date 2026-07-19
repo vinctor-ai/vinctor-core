@@ -85,7 +85,10 @@ from vinctor_service.models import (
     V1SimulateResponse,
 )
 from vinctor_service.observations import record_observation
-from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS
+from vinctor_service.service_config import (
+    DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS,
+    load_pop_replay_caps,
+)
 from vinctor_service.simulations import simulate_v1_contract
 from vinctor_service.sqlite_txn import (
     conn_txn_lock,
@@ -1344,10 +1347,17 @@ class SQLiteReplayStore:
     def __init__(
         self,
         conn: sqlite3.Connection,
-        max_entries: int = 10000,
-        max_per_token: int = 256,
+        max_entries: int | None = None,
+        max_per_token: int | None = None,
     ) -> None:
         self._conn = require_serialized(conn)
+        # Caps left unset resolve from the environment (PKA-24), exactly like
+        # PopReplayCache: the serve path constructs this store bare, so the
+        # operator-facing VINCTOR_POP_REPLAY_* knobs must land here too.
+        if max_entries is None or max_per_token is None:
+            env_entries, env_per_token = load_pop_replay_caps()
+            max_entries = env_entries if max_entries is None else max_entries
+            max_per_token = env_per_token if max_per_token is None else max_per_token
         self._max = max_entries
         # Per-token-id row cap. The global cap alone couples tenants: one token
         # could mint distinct fresh nonces up to ``max_entries`` and lock out

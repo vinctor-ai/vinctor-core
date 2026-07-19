@@ -303,6 +303,63 @@ def test_postgres_replay_flood_cannot_evict_fresh_nonce() -> None:
     conn.close()
 
 
+def test_postgres_replay_caps_read_from_env(monkeypatch) -> None:
+    # Caps are constructor defaults resolved from the environment, matching
+    # PopReplayCache (PKA-24): the durable serve path must honor the same
+    # env vars, or the operator-facing knob is inert in production.
+    assert DSN is not None
+    monkeypatch.setenv("VINCTOR_POP_REPLAY_MAX_ENTRIES", "2")
+    monkeypatch.setenv("VINCTOR_POP_REPLAY_MAX_PER_TOKEN", "1")
+    conn = connect_postgres(DSN)
+    store = PostgresReplayStore(conn)
+    assert store.check_and_record(
+        token_id="vtk_a", nonce="a1", ts=100, now_unix=100, skew=30
+    )
+    # Per-token cap (1) from env: A's second fresh nonce is rejected.
+    assert not store.check_and_record(
+        token_id="vtk_a", nonce="a2", ts=100, now_unix=100, skew=30
+    )
+    assert store.check_and_record(
+        token_id="vtk_b", nonce="b1", ts=100, now_unix=100, skew=30
+    )
+    # Global cap (2) from env: a third token's fresh nonce is rejected.
+    assert not store.check_and_record(
+        token_id="vtk_c", nonce="c1", ts=100, now_unix=100, skew=30
+    )
+    conn.close()
+
+
+def test_postgres_replay_explicit_args_override_env(monkeypatch) -> None:
+    assert DSN is not None
+    monkeypatch.setenv("VINCTOR_POP_REPLAY_MAX_ENTRIES", "1")
+    monkeypatch.setenv("VINCTOR_POP_REPLAY_MAX_PER_TOKEN", "1")
+    conn = connect_postgres(DSN)
+    store = PostgresReplayStore(conn, max_entries=100, max_per_token=100)
+    assert store.check_and_record(
+        token_id="vtk_a", nonce="a1", ts=100, now_unix=100, skew=30
+    )
+    assert store.check_and_record(
+        token_id="vtk_a", nonce="a2", ts=100, now_unix=100, skew=30
+    )
+    conn.close()
+
+
+def test_postgres_service_replay_store_honors_env_caps(monkeypatch) -> None:
+    # The serve path constructs the store bare (PostgresV1Service.__init__),
+    # so the env caps must reach it through the constructor defaults.
+    assert DSN is not None
+    monkeypatch.setenv("VINCTOR_POP_REPLAY_MAX_PER_TOKEN", "1")
+    conn = connect_postgres(DSN)
+    service = PostgresV1Service(conn)
+    assert service._pop_replay.check_and_record(
+        token_id="vtk_a", nonce="a1", ts=100, now_unix=100, skew=30
+    )
+    assert not service._pop_replay.check_and_record(
+        token_id="vtk_a", nonce="a2", ts=100, now_unix=100, skew=30
+    )
+    conn.close()
+
+
 def test_postgres_full_runtime_shares_control_plane_across_instances() -> None:
     assert DSN is not None
     config = ServiceRuntimeConfig(
