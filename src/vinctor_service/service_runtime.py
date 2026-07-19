@@ -14,6 +14,7 @@ from vinctor_service.metrics import Metrics
 from vinctor_service.oidc import PyJwtOidcTokenVerifier
 from vinctor_service.postgres import PostgresV1Service, connect_postgres
 from vinctor_service.postgres_control import PostgresLocalKeyRepository
+from vinctor_service.runtime_signals import graceful_sigterm_shutdown
 from vinctor_service.service_config import ServiceRuntimeConfig
 from vinctor_service.sqlite import SQLiteV1Service
 from vinctor_service.sqlite_pool import SQLiteServicePool
@@ -167,7 +168,8 @@ def serve_service_runtime(config: ServiceRuntimeConfig) -> NoReturn:
         raise
     print(render_service_runtime_banner(handle), flush=True)
     try:
-        handle.server.serve_forever()
+        with graceful_sigterm_shutdown(handle.server):
+            handle.server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:

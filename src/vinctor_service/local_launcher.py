@@ -21,6 +21,7 @@ from vinctor_service.keys import (
 )
 from vinctor_service.local_http import create_v1_http_server
 from vinctor_service.models import GrantIssueRequest
+from vinctor_service.runtime_signals import graceful_sigterm_shutdown
 from vinctor_service.sqlite import SQLiteV1Service
 from vinctor_service.sqlite_pool import SQLiteServicePool
 from vinctor_service.sqlite_txn import connect_sqlite
@@ -200,7 +201,8 @@ def serve_local_service(config: LocalLaunchConfig) -> NoReturn:
     print(render_env_exports(handle), flush=True)
     print("# Local Vinctor service listening. Press Ctrl+C to stop.", flush=True)
     try:
-        handle.server.serve_forever()
+        with graceful_sigterm_shutdown(handle.server):
+            handle.server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:

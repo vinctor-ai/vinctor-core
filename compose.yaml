@@ -1,6 +1,7 @@
 services:
   vinctor:
     build: .
+    init: true
     command: ["vinctor", "service", "serve"]
     environment:
       VINCTOR_HOST: "0.0.0.0"
