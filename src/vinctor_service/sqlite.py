@@ -94,6 +94,49 @@ from vinctor_service.sqlite_txn import (
 from vinctor_service.subject_tokens import mint_subject_token
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 
+# Highest schema version this binary knows how to create or migrate to (PKA-40).
+# Bump this together with every migration added to _apply_sqlite_schema; the
+# drift guard in tests/test_storage_ops.py fails when the constant does not
+# match the versions the code actually records, because a constant that lags
+# would refuse databases that are actually fine.
+SQLITE_SCHEMA_VERSION_MAX = 16
+
+
+class SchemaVersionError(RuntimeError):
+    """The database schema is newer than this binary understands (fail closed).
+
+    Schema is forward-only, so an older binary has nothing to offer a newer
+    database — running anyway would write audit hash-chain rows computed over
+    a shape the newer binary does not produce, silently corrupting the
+    evidentiary record. The only remedy is upgrading the binary.
+    """
+
+
+def _assert_schema_not_newer(
+    db_version: int | None, known_max: int, *, backend: str
+) -> None:
+    if db_version is not None and db_version > known_max:
+        raise SchemaVersionError(
+            f"{backend} database schema version {db_version} is newer than the "
+            f"highest version this binary understands ({known_max}); refusing "
+            "to open. Upgrade the binary to one that supports this schema."
+        )
+
+
+def _assert_sqlite_schema_supported(conn: sqlite3.Connection) -> None:
+    """Refuse a database stamped by a newer binary, before touching its schema."""
+    table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+    ).fetchone()
+    if table is None:
+        return
+    row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+    _assert_schema_not_newer(
+        row[0] if row is not None else None,
+        SQLITE_SCHEMA_VERSION_MAX,
+        backend="SQLite",
+    )
+
 
 def init_sqlite_schema(conn: sqlite3.Connection) -> None:
     """Create/upgrade the schema, serialized on the connection lock.
@@ -116,6 +159,7 @@ def init_sqlite_schema(conn: sqlite3.Connection) -> None:
                 "must own its transaction so its commits do not seal a caller's "
                 "partial write"
             )
+        _assert_sqlite_schema_supported(conn)
         _apply_sqlite_schema(conn)
 
 
@@ -1992,6 +2036,12 @@ class SQLiteV1Service:
         self.conn = require_serialized(self.conn)
         if self.initialize_schema:
             init_sqlite_schema(self.conn)
+        else:
+            # Pooled services (SQLiteServicePool's non-primary connections) skip
+            # the schema APPLY, not the version gate: a database newer than this
+            # binary must be refused on every construction path (PKA-40), not
+            # only on the pool primary's.
+            _assert_sqlite_schema_supported(self.conn)
         self.grant_repository = SQLiteGrantRepository(self.conn)
         import os
         if self.shared_state is None:

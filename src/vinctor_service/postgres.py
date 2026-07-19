@@ -92,6 +92,10 @@ from vinctor_service.postgres_control import (
 )
 from vinctor_service.service_config import DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS
 from vinctor_service.simulations import simulate_v1_contract
+
+# The shared checker raises SchemaVersionError on both backends, so callers
+# (the CLI startup path) handle a too-new database uniformly.
+from vinctor_service.sqlite import _assert_schema_not_newer
 from vinctor_service.subject_tokens import mint_subject_token
 from vinctor_service.v1_enforce import delegated_enforce_v1_contract, enforce_v1_contract
 
@@ -262,6 +266,33 @@ def _postgres_column_exists(conn: Any, table_name: str, column_name: str) -> boo
         (table_name, column_name),
     ).fetchone()
     return row is not None
+
+
+# Highest schema version this binary knows how to create or migrate to (PKA-40).
+# _POSTGRES_SCHEMA_VERSIONS below derives from it and is what init_postgres_schema
+# records, so the constant cannot drift from the recorded versions; the CI-only
+# drift guard in tests/test_storage_ops.py pins the pairing against a live
+# database as well.
+POSTGRES_SCHEMA_VERSION_MAX = 7
+_POSTGRES_SCHEMA_VERSIONS = tuple(range(1, POSTGRES_SCHEMA_VERSION_MAX + 1))
+
+
+def _assert_postgres_schema_supported(conn: Any) -> None:
+    """Refuse a database stamped by a newer binary, before touching its schema."""
+    table = conn.execute(
+        """
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = current_schema() AND table_name = 'schema_migrations'
+        """
+    ).fetchone()
+    if table is None:
+        return
+    row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+    _assert_schema_not_newer(
+        row[0] if row is not None else None,
+        POSTGRES_SCHEMA_VERSION_MAX,
+        backend="Postgres",
+    )
 
 
 def init_postgres_schema(conn: Any) -> None:
@@ -500,6 +531,10 @@ def init_postgres_schema(conn: Any) -> None:
         """,
     )
     with conn.transaction():
+        # Fail closed BEFORE any DDL: an older binary must not touch — let
+        # alone write audit hash-chain rows into — a database whose schema a
+        # newer binary owns (PKA-40). Raising here rolls the transaction back.
+        _assert_postgres_schema_supported(conn)
         legacy_subject_token_verified = _postgres_column_exists(
             conn, "audit_events", "identity_proven"
         )
@@ -555,7 +590,7 @@ def init_postgres_schema(conn: Any) -> None:
                 SET require_boundary_set = require_boundary
                 """
             )
-        for version in (1, 2, 3, 4, 5, 6, 7):
+        for version in _POSTGRES_SCHEMA_VERSIONS:
             conn.execute(
                 """
                 INSERT INTO schema_migrations (version, applied_at)

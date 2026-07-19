@@ -49,7 +49,7 @@ from vinctor_service.service_config import (
     load_service_runtime_config,
 )
 from vinctor_service.service_runtime import serve_service_runtime
-from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite import SchemaVersionError, SQLiteV1Service
 from vinctor_service.sqlite_txn import connect_sqlite
 from vinctor_service.storage_ops import (
     backup_sqlite,
@@ -86,6 +86,11 @@ def run_vinctor(
     except CliError as error:
         _emit_error(args, error, stderr=stderr)
         return error.code
+    except SchemaVersionError as error:
+        # PKA-40 fail-closed startup gate: the database was stamped by a newer
+        # binary. Surface the versions and the upgrade remedy, not a traceback.
+        _emit_error(args, CliError(str(error), code=EXIT_SERVICE), stderr=stderr)
+        return EXIT_SERVICE
     except KeyboardInterrupt:
         print("interrupted", file=stderr)
         return EXIT_UNEXPECTED

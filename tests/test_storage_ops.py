@@ -13,7 +13,13 @@ import pytest
 
 from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.models import GrantIssueRequest
-from vinctor_service.sqlite import SQLiteV1Service
+from vinctor_service.sqlite import (
+    SQLITE_SCHEMA_VERSION_MAX,
+    SchemaVersionError,
+    SQLiteV1Service,
+    get_sqlite_schema_versions,
+    init_sqlite_schema,
+)
 from vinctor_service.sqlite_txn import connect_sqlite
 from vinctor_service.storage_ops import (
     _atomic_replace_sqlite,
@@ -749,3 +755,187 @@ def test_restore_preserves_live_db_when_snapshot_chain_is_broken(tmp_path: Path)
     finally:
         conn.close()
     assert grant is not None
+
+
+# ---------------------------------------------------------------------------
+# PKA-40: schema-version startup gate — refuse a database newer than the binary
+# ---------------------------------------------------------------------------
+
+
+def _seed_future_schema_version(db_path: Path, version: int) -> None:
+    """Stamp a schema version the binary does not know, as a newer binary would."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+            (version, NOW.isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_migrate_refuses_database_newer_than_binary(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_db(db_path)
+    future = SQLITE_SCHEMA_VERSION_MAX + 1
+    _seed_future_schema_version(db_path, future)
+
+    with pytest.raises(SchemaVersionError) as excinfo:
+        migrate_sqlite(db_path)
+
+    message = str(excinfo.value)
+    assert str(future) in message
+    assert str(SQLITE_SCHEMA_VERSION_MAX) in message
+
+
+def test_service_construction_refuses_database_newer_than_binary(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_db(db_path)
+    _seed_future_schema_version(db_path, SQLITE_SCHEMA_VERSION_MAX + 1)
+
+    conn = connect_sqlite(db_path)
+    try:
+        with pytest.raises(SchemaVersionError):
+            SQLiteV1Service(conn)
+    finally:
+        conn.close()
+
+
+def test_schema_gate_covers_services_that_skip_schema_apply(tmp_path: Path) -> None:
+    # SQLiteServicePool constructs its non-primary services with
+    # initialize_schema=False; the version gate must still fire for them.
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_db(db_path)
+    _seed_future_schema_version(db_path, SQLITE_SCHEMA_VERSION_MAX + 1)
+
+    conn = connect_sqlite(db_path)
+    try:
+        with pytest.raises(SchemaVersionError):
+            SQLiteV1Service(conn, initialize_schema=False)
+    finally:
+        conn.close()
+
+
+def test_migrate_accepts_equal_schema_version(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_db(db_path)
+
+    result = migrate_sqlite(db_path)
+
+    assert result.schema_versions == tuple(range(1, SQLITE_SCHEMA_VERSION_MAX + 1))
+
+
+def test_migrate_upgrades_older_schema_version(tmp_path: Path) -> None:
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_db(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "DELETE FROM schema_migrations WHERE version = ?",
+            (SQLITE_SCHEMA_VERSION_MAX,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = migrate_sqlite(db_path)
+
+    assert result.schema_versions == tuple(range(1, SQLITE_SCHEMA_VERSION_MAX + 1))
+
+
+def test_known_max_schema_version_matches_applied_migrations(tmp_path: Path) -> None:
+    # Drift guard: adding a migration without bumping SQLITE_SCHEMA_VERSION_MAX
+    # must fail here — a constant that lags would refuse databases that are fine.
+    conn = connect_sqlite(tmp_path / "fresh.sqlite")
+    try:
+        init_sqlite_schema(conn)
+        versions = get_sqlite_schema_versions(conn)
+    finally:
+        conn.close()
+
+    assert versions == tuple(range(1, SQLITE_SCHEMA_VERSION_MAX + 1))
+    assert max(versions) == SQLITE_SCHEMA_VERSION_MAX
+
+
+def test_backup_still_works_against_newer_database(tmp_path: Path) -> None:
+    # `storage backup` opens raw and dumps SQL — version-agnostic, and exactly
+    # what an operator wants BEFORE upgrading the binary. It must not be gated.
+    db_path = tmp_path / "vinctor.sqlite"
+    output_path = tmp_path / "vinctor.backup.sqlite"
+    _seed_db(db_path)
+    future = SQLITE_SCHEMA_VERSION_MAX + 1
+    _seed_future_schema_version(db_path, future)
+
+    result = backup_sqlite(db_path, output_path)
+
+    assert result.bytes > 0
+    assert future in result.schema_versions
+
+
+_POSTGRES_DSN = os.environ.get("VINCTOR_TEST_POSTGRES_DSN")
+requires_postgres = pytest.mark.skipif(
+    not _POSTGRES_DSN, reason="VINCTOR_TEST_POSTGRES_DSN is not set"
+)
+
+
+@requires_postgres
+def test_postgres_init_refuses_database_newer_than_binary() -> None:
+    from vinctor_service.postgres import (
+        POSTGRES_SCHEMA_VERSION_MAX,
+        connect_postgres,
+        init_postgres_schema,
+    )
+
+    assert _POSTGRES_DSN is not None
+    conn = connect_postgres(_POSTGRES_DSN)
+    try:
+        init_postgres_schema(conn)
+        future = POSTGRES_SCHEMA_VERSION_MAX + 1
+        with conn.transaction():
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, applied_at)
+                VALUES (%s, %s)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                (future, NOW),
+            )
+        try:
+            with pytest.raises(SchemaVersionError) as excinfo:
+                init_postgres_schema(conn)
+            message = str(excinfo.value)
+            assert str(future) in message
+            assert str(POSTGRES_SCHEMA_VERSION_MAX) in message
+        finally:
+            # Clean up the future stamp so later tests (and reruns) against the
+            # shared CI database are not refused by the gate under test.
+            with conn.transaction():
+                conn.execute(
+                    "DELETE FROM schema_migrations WHERE version = %s", (future,)
+                )
+        # Equal version again: the gate clears once the future stamp is gone.
+        init_postgres_schema(conn)
+    finally:
+        conn.close()
+
+
+@requires_postgres
+def test_postgres_known_max_schema_version_matches_applied_migrations() -> None:
+    from vinctor_service.postgres import (
+        POSTGRES_SCHEMA_VERSION_MAX,
+        connect_postgres,
+        init_postgres_schema,
+    )
+
+    assert _POSTGRES_DSN is not None
+    conn = connect_postgres(_POSTGRES_DSN)
+    try:
+        init_postgres_schema(conn)
+        with conn.transaction():
+            row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert row[0] == POSTGRES_SCHEMA_VERSION_MAX

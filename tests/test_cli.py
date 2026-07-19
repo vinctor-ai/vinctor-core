@@ -21,6 +21,7 @@ from vinctor_service import (
 )
 from vinctor_service.cli import (
     EXIT_AUTH,
+    EXIT_SERVICE,
     EXIT_USAGE,
     CliError,
     _request_json,
@@ -29,6 +30,7 @@ from vinctor_service.cli import (
 from vinctor_service.keys import SQLiteLocalKeyRepository
 from vinctor_service.local_launcher import LocalLaunchConfig, prepare_local_service
 from vinctor_service.models import GrantIssueRequest
+from vinctor_service.sqlite import SQLITE_SCHEMA_VERSION_MAX
 from vinctor_service.sqlite_txn import connect_sqlite
 
 NOW = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
@@ -1063,6 +1065,36 @@ def test_vinctor_cli_storage_migrate_reports_versions(tmp_path: Path) -> None:
     finally:
         conn.close()
     assert grant is not None
+
+
+def test_vinctor_cli_storage_migrate_refuses_newer_database(tmp_path: Path) -> None:
+    # PKA-40: a database stamped by a newer binary must be refused fail-closed,
+    # with an error naming the database's version and this binary's maximum.
+    db_path = tmp_path / "vinctor.sqlite"
+    _seed_storage_db(db_path)
+    future = SQLITE_SCHEMA_VERSION_MAX + 1
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+            (future, NOW.isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    stdout = StringIO()
+    stderr = StringIO()
+    status = run_vinctor(
+        ["--db", str(db_path), "operator", "storage", "migrate"],
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert status == EXIT_SERVICE
+    message = stderr.getvalue()
+    assert str(future) in message
+    assert str(SQLITE_SCHEMA_VERSION_MAX) in message
 
 
 def test_vinctor_cli_keys_list_and_revoke(tmp_path: Path) -> None:

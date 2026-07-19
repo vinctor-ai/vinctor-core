@@ -96,4 +96,6 @@ jobs:
         run: python -m pip install -e ".[dev,postgres]"
 
       - name: Run Postgres storage contract
-        run: python -m pytest -q tests/test_postgres_storage.py
+        # test_storage_ops.py carries the PKA-40 schema-version gate tests,
+        # whose Postgres half only runs when VINCTOR_TEST_POSTGRES_DSN is set.
+        run: python -m pytest -q tests/test_postgres_storage.py tests/test_storage_ops.py
