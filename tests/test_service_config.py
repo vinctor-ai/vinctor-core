@@ -5,9 +5,12 @@ from pathlib import Path
 import pytest
 
 from vinctor_service.service_config import (
+    DEFAULT_POP_REPLAY_MAX_ENTRIES,
+    DEFAULT_POP_REPLAY_MAX_PER_TOKEN,
     DEFAULT_SERVICE_DB_PATH,
     KEY_STORAGE_MODE,
     ServiceRuntimeConfig,
+    load_pop_replay_caps,
     load_service_runtime_config,
 )
 
@@ -114,3 +117,29 @@ def test_service_runtime_config_rejects_invalid_values(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         ServiceRuntimeConfig(**kwargs)
+
+
+def test_pop_replay_caps_defaults() -> None:
+    assert load_pop_replay_caps(env={}) == (
+        DEFAULT_POP_REPLAY_MAX_ENTRIES,
+        DEFAULT_POP_REPLAY_MAX_PER_TOKEN,
+    )
+    assert load_pop_replay_caps(env={}) == (10000, 256)
+
+
+def test_pop_replay_caps_read_environment() -> None:
+    assert load_pop_replay_caps(
+        env={
+            "VINCTOR_POP_REPLAY_MAX_ENTRIES": "50000",
+            "VINCTOR_POP_REPLAY_MAX_PER_TOKEN": "1024",
+        }
+    ) == (50000, 1024)
+
+
+def test_pop_replay_caps_reject_invalid_values() -> None:
+    with pytest.raises(ValueError, match="VINCTOR_POP_REPLAY_MAX_ENTRIES"):
+        load_pop_replay_caps(env={"VINCTOR_POP_REPLAY_MAX_ENTRIES": "many"})
+    with pytest.raises(ValueError, match="VINCTOR_POP_REPLAY_MAX_PER_TOKEN"):
+        load_pop_replay_caps(env={"VINCTOR_POP_REPLAY_MAX_PER_TOKEN": "0"})
+    with pytest.raises(ValueError, match="VINCTOR_POP_REPLAY_MAX_ENTRIES"):
+        load_pop_replay_caps(env={"VINCTOR_POP_REPLAY_MAX_ENTRIES": "-5"})

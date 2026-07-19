@@ -1,6 +1,7 @@
-# TODO: pin by digest (FROM python:3.11-slim@sha256:<digest>  # 3.11-slim) once
-# a digest can be resolved in CI (e.g. `docker buildx imagetools inspect`).
-FROM python:3.11-slim
+# Base image pinned by digest for reproducible builds (PKA-24). This is the
+# multi-arch index digest of python:3.11-slim; refresh it when bumping the tag:
+#   docker buildx imagetools inspect python:3.11-slim
+FROM python:3.11-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93
 
 WORKDIR /app
 

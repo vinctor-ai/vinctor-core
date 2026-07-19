@@ -43,3 +43,5 @@ Current decisions:
 - `0016-oidc-role-mapping.md`
 - `0017-storage-readiness-probe.md`
 - `0018-postgres-full-control-plane.md`
+- `0019-remote-operator-surface-and-control-plane-audit.md`
+- `0020-default-posture-enforcement-first-guided-activation.md`

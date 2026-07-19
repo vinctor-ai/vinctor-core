@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -7,6 +8,8 @@ from pathlib import Path
 from vinctor_service.oidc import OidcConfig, load_oidc_config
 
 DEFAULT_SERVICE_DB_PATH = Path(".vinctor/vinctor.sqlite")
+DEFAULT_POP_REPLAY_MAX_ENTRIES = 10000
+DEFAULT_POP_REPLAY_MAX_PER_TOKEN = 256
 DEFAULT_SUBJECT_TOKEN_TTL_SECONDS = 300
 DEFAULT_SUBJECT_TOKEN_MAX_TTL_SECONDS = 3600
 DEFAULT_SUBJECT_TOKEN_POP_SKEW_SECONDS = 30
@@ -98,6 +101,36 @@ def load_service_runtime_config(
         postgres_dsn=resolved_postgres_dsn,
         oidc=load_oidc_config(values),
     )
+
+
+def load_pop_replay_caps(env: Mapping[str, str] | None = None) -> tuple[int, int]:
+    """Resolve the PoP replay-cache caps ``(max_entries, max_per_token)``.
+
+    Reads ``VINCTOR_POP_REPLAY_MAX_ENTRIES`` and
+    ``VINCTOR_POP_REPLAY_MAX_PER_TOKEN`` (defaulting to ``os.environ``), so a
+    high-throughput deployment can raise the fail-closed caps without a code
+    change. Invalid values raise instead of silently falling back: a typo must
+    not quietly restore a cap the operator meant to raise.
+    """
+    values = os.environ if env is None else env
+    return (
+        _parse_cap(values.get("VINCTOR_POP_REPLAY_MAX_ENTRIES"),
+                   DEFAULT_POP_REPLAY_MAX_ENTRIES, "VINCTOR_POP_REPLAY_MAX_ENTRIES"),
+        _parse_cap(values.get("VINCTOR_POP_REPLAY_MAX_PER_TOKEN"),
+                   DEFAULT_POP_REPLAY_MAX_PER_TOKEN, "VINCTOR_POP_REPLAY_MAX_PER_TOKEN"),
+    )
+
+
+def _parse_cap(value: str | None, default: int, name: str) -> int:
+    if value is None or value.strip() == "":
+        return default
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise ValueError(f"{name} must be a positive integer") from error
+    if parsed < 1:
+        raise ValueError(f"{name} must be a positive integer")
+    return parsed
 
 
 def _parse_port(value: int | str) -> int:

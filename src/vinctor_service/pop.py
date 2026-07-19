@@ -1,6 +1,6 @@
 """HMAC proof-of-possession (PoP) for subject tokens (ADR 0007 C3).
 
-Stdlib only. The canonical form is length-prefixed (not delimiter-joined) so the
+No third-party deps. The canonical form is length-prefixed (not delimiter-joined) so the
 binding is injection-proof regardless of field content or validation order. The
 replay cache is a per-process instance, injected by the owning service; a bad or
 stale proof never consumes a cache slot (record only AFTER mac + freshness pass).
@@ -13,6 +13,8 @@ import hashlib
 import hmac
 import threading
 from datetime import UTC, datetime
+
+from vinctor_service.service_config import load_pop_replay_caps
 
 
 def pop_canonical(action: str, resource: str, ts: int, nonce: str, token_id: str) -> bytes:
@@ -39,7 +41,16 @@ def pop_mac(pop_secret: str, canonical: bytes) -> str:
 class PopReplayCache:
     """Per-process anti-replay for PoP nonces. Single-node only (see spec Risks)."""
 
-    def __init__(self, max_entries: int = 10000, max_per_token: int = 256) -> None:
+    def __init__(
+        self, max_entries: int | None = None, max_per_token: int | None = None
+    ) -> None:
+        # Caps left unset resolve from the environment (PKA-24), so a legit
+        # high-throughput token can be accommodated by raising the fail-closed
+        # caps at deploy time without a code change.
+        if max_entries is None or max_per_token is None:
+            env_entries, env_per_token = load_pop_replay_caps()
+            max_entries = env_entries if max_entries is None else max_entries
+            max_per_token = env_per_token if max_per_token is None else max_per_token
         self._seen: dict[tuple[str, str], int] = {}
         self._max = max_entries
         # Per-token-id cap mirrors SQLiteReplayStore: one token's nonce flood is

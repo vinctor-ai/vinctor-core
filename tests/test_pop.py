@@ -517,3 +517,39 @@ def test_pop_token_without_cache_wired_fails_closed() -> None:
     )
     assert r.status_code == 403
     assert audit.events[-1].reason_code == REASON_SUBJECT_TOKEN_INVALID
+
+
+def test_pop_cache_caps_read_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Caps are constructor defaults resolved from the environment, so an
+    # operator can raise them without a code change (PKA-24).
+    monkeypatch.setenv("VINCTOR_POP_REPLAY_MAX_ENTRIES", "2")
+    monkeypatch.setenv("VINCTOR_POP_REPLAY_MAX_PER_TOKEN", "1")
+    cache = PopReplayCache()
+    now_unix = _now_unix()
+    assert cache.check_and_record(
+        token_id="A", nonce="a1", ts=now_unix, now_unix=now_unix, skew=SKEW
+    ) is True
+    # Per-token cap (1) from env: A's second fresh nonce is rejected.
+    assert cache.check_and_record(
+        token_id="A", nonce="a2", ts=now_unix, now_unix=now_unix, skew=SKEW
+    ) is False
+    assert cache.check_and_record(
+        token_id="B", nonce="b1", ts=now_unix, now_unix=now_unix, skew=SKEW
+    ) is True
+    # Global cap (2) from env: a third token's fresh nonce is rejected.
+    assert cache.check_and_record(
+        token_id="C", nonce="c1", ts=now_unix, now_unix=now_unix, skew=SKEW
+    ) is False
+
+
+def test_pop_cache_explicit_args_override_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VINCTOR_POP_REPLAY_MAX_ENTRIES", "1")
+    monkeypatch.setenv("VINCTOR_POP_REPLAY_MAX_PER_TOKEN", "1")
+    cache = PopReplayCache(max_entries=100, max_per_token=100)
+    now_unix = _now_unix()
+    assert cache.check_and_record(
+        token_id="A", nonce="a1", ts=now_unix, now_unix=now_unix, skew=SKEW
+    ) is True
+    assert cache.check_and_record(
+        token_id="A", nonce="a2", ts=now_unix, now_unix=now_unix, skew=SKEW
+    ) is True
