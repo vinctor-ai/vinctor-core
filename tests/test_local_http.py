@@ -1555,6 +1555,78 @@ def test_local_http_metrics_endpoint_records_requests_and_decisions() -> None:
         assert secret not in metrics_text
 
 
+def test_local_http_metrics_records_request_duration_histogram() -> None:
+    svc = service()
+    metrics = Metrics()
+
+    with running_server(svc, metrics=metrics) as server:
+        permit_status, _ = post_json(server)
+        metrics_status, metrics_text = get_text(server, path="/metrics")
+
+    assert permit_status == 200
+    assert metrics_status == 200
+    assert "# TYPE vinctor_http_request_duration_seconds histogram" in metrics_text
+    labels = 'method="POST",path="/v1/enforce"'
+    assert (
+        f'vinctor_http_request_duration_seconds_bucket{{{labels},le="+Inf"}} 1'
+        in metrics_text
+    )
+    assert f"vinctor_http_request_duration_seconds_count{{{labels}}} 1" in metrics_text
+    assert f"vinctor_http_request_duration_seconds_sum{{{labels}}}" in metrics_text
+
+
+def test_local_http_metrics_records_error_counter() -> None:
+    svc = service()
+    metrics = Metrics()
+
+    with running_server(svc, metrics=metrics) as server:
+        permit_status, _ = post_json(server)
+        missing_status, _ = get_text(server, path="/nope")
+        metrics_status, metrics_text = get_text(server, path="/metrics")
+
+    assert permit_status == 200
+    assert missing_status == 404
+    assert metrics_status == 200
+    assert "# TYPE vinctor_http_errors_total counter" in metrics_text
+    assert (
+        'vinctor_http_errors_total{error="not_found",method="GET",path="other",status="404"} 1'
+        in metrics_text
+    )
+    # Success responses never increment the error counter: the 200 enforce
+    # request above must not appear under vinctor_http_errors_total.
+    error_lines = [
+        line
+        for line in metrics_text.splitlines()
+        if line.startswith("vinctor_http_errors_total{")
+    ]
+    assert error_lines == [
+        'vinctor_http_errors_total{error="not_found",method="GET",path="other",status="404"} 1'
+    ]
+
+
+def test_local_http_rate_limited_requests_carry_error_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The pre-auth 429 is an error like any other rejection: it must land in
+    # the error counter with its own code, not an "unknown" placeholder.
+    monkeypatch.setenv("VINCTOR_RATE_LIMIT_PER_MINUTE", "1")
+    metrics = Metrics()
+    svc = service()
+
+    with running_server(svc, metrics=metrics) as server:
+        first = post_json(server)[0]
+        over = post_json(server)[0]
+
+    assert first == 200
+    assert over == 429
+    rendered = metrics.render()
+    expected = (
+        'vinctor_http_errors_total{error="rate_limited",'
+        'method="POST",path="/v1/enforce",status="429"} 1'
+    )
+    assert expected in rendered
+
+
 def test_local_http_metrics_collapses_ids_and_unknown_paths_to_route_templates() -> (
     None
 ):

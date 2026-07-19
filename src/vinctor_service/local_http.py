@@ -480,6 +480,8 @@ def create_v1_http_handler(
         path = _route_label(urlsplit(handler.path).path)
         decision = getattr(handler, "_vinctor_decision", None)
         error = getattr(handler, "_vinctor_error", None)
+        start = getattr(handler, "_vinctor_start", None)
+        latency_seconds = (time.monotonic() - start) if start is not None else 0.0
         if metrics is not None:
             metrics.increment(
                 "vinctor_http_requests_total",
@@ -487,14 +489,33 @@ def create_v1_http_handler(
                 path=path,
                 status=str(status),
             )
+            # Per-request latency, exported as a route-labelled histogram so SLO
+            # monitoring no longer has to parse the JSON access log. Labels stay
+            # method/path only (status is not a histogram label) to bound
+            # cardinality; path is already collapsed to a fixed route template.
+            metrics.observe(
+                "vinctor_http_request_duration_seconds",
+                latency_seconds,
+                method=method,
+                path=path,
+            )
+            # Error responses get their own counter keyed by the disclosed error
+            # code, so error-rate alerts don't have to sum every 4xx/5xx status.
+            if status >= 400:
+                metrics.increment(
+                    "vinctor_http_errors_total",
+                    method=method,
+                    path=path,
+                    status=str(status),
+                    error=error or "unknown",
+                )
             if decision in ("permit", "deny"):
                 metrics.increment(
                     "vinctor_enforce_decisions_total",
                     decision=decision,
                 )
         if access_log:
-            start = getattr(handler, "_vinctor_start", None)
-            latency_ms = round((time.monotonic() - start) * 1000, 1) if start is not None else 0.0
+            latency_ms = round(latency_seconds * 1000, 1)
             line: dict[str, object] = {
                 "ts": now().isoformat(),
                 "method": method,
@@ -986,6 +1007,7 @@ def _send_json(handler: BaseHTTPRequestHandler, response: V1HttpResponse) -> Non
 def _send_rate_limited(handler: BaseHTTPRequestHandler) -> None:
     """Write the pre-auth 429 with a generic body and nothing else disclosed."""
     handler._vinctor_status = 429  # type: ignore[attr-defined]
+    handler._vinctor_error = "rate_limited"  # type: ignore[attr-defined]
     payload = json.dumps({"error": "rate_limited"}, sort_keys=True).encode("utf-8")
     handler.send_response(429)
     handler.send_header("Content-Type", "application/json")
