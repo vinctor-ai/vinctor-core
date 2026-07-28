@@ -1,0 +1,15 @@
+version: 1
+workspace_id: ws_local
+agent_bounds:
+  - agent_id: agent_local
+    scopes:
+      - execute:ci/test
+      - write:repo/vinctor-core/*
+auto_approval_rules:
+  - rule_id: apr_ci
+    name: CI auto approval
+    target_agent_id: agent_local
+    allowed_scopes:
+      - execute:ci/test
+    max_ttl: 30m
+    status: active
