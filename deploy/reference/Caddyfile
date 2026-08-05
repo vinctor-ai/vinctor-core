@@ -1,0 +1,32 @@
+# TLS termination for the production reference topology (PKA-33).
+# Caddy terminates HTTPS and proxies to the internal vinctor service.
+#
+# - For a public hostname, Caddy obtains and renews ACME certificates
+#   automatically. For `localhost` testing it uses a local CA (curl needs -k
+#   or the local root trusted).
+# - Since Caddy 2.5, incoming X-Forwarded-For from untrusted clients is
+#   dropped and replaced with the socket-proved client address, so the header
+#   Vinctor sees always ends in an address Caddy accepted the connection
+#   from. That is the property VINCTOR_TRUSTED_PROXIES depends on — preserve
+#   it if you swap in another proxy (see
+#   docs/deployment/production-topology.md).
+
+{$VINCTOR_PUBLIC_HOSTNAME:localhost} {
+	# Cap request bodies at the edge. Legitimate Vinctor bodies are tiny
+	# JSON; 64KiB (65536 bytes) matches the server-side MAX_BODY_BYTES cap
+	# exactly, defense-in-depth. (Caddy reads `KB` as 1000 bytes and `KiB` as
+	# 1024, so `64KiB` — not `64KB` — is the value that equals the server's.)
+	request_body {
+		max_size 64KiB
+	}
+
+	# /metrics is unauthenticated by design and must not be reachable from
+	# the public edge. Scrape it from inside the compose network instead
+	# (http://vinctor:8765/metrics). `respond` runs before `reverse_proxy`
+	# in Caddy's directive order, so matched requests never reach the
+	# backend.
+	@metrics path /metrics
+	respond @metrics 404
+
+	reverse_proxy vinctor:8765
+}

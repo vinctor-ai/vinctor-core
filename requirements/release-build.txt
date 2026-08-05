@@ -1,0 +1,36 @@
+# Build toolchain for the release workflow (PKA-227).
+#
+# `pip install --upgrade build` + default build isolation re-resolved the
+# backend from PyPI on every release, so a compromised hatchling release would
+# have backdoored the published wheel without touching a vinctor commit. The
+# release job installs exactly this list and then runs `python -m build
+# --no-isolation`, so the artifact is built by the versions committed here.
+#
+# This is the build toolchain ONLY. Runtime dependencies live in pyproject.toml.
+#
+# To move a pin: change the version here, keep `hatchling` inside the
+# `requires` range in pyproject.toml, and let the release job's test gate run.
+#
+# TODO(PKA-227): add `--hash=sha256:...` to every line and switch the release
+# job's install step to `pip install --require-hashes -r`. Exact pins already
+# stop a NEW upstream release from reaching the build; hashes additionally pin
+# the BYTES, closing a compromised index or mirror serving different content for
+# an existing version. Generate them with network access to PyPI:
+#
+#   pip download --no-deps --no-binary :none: -d /tmp/rb -r requirements/release-build.txt
+#   pip hash /tmp/rb/*
+#
+# and paste the resulting digests here. They are deliberately not guessed from a
+# local cache: a wrong digest breaks every release.
+
+build==1.5.0
+hatchling==1.31.0
+
+# Transitive: required in the ambient environment because the build runs with
+# --no-isolation. `pip install` resolves these itself, but they are listed so
+# the set that builds a release is fully enumerated in the repository.
+packaging==26.2
+pathspec==1.1.1
+pluggy==1.6.0
+pyproject_hooks==1.2.0
+trove-classifiers==2026.6.1.19

@@ -1,0 +1,225 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  test:
+    name: Python 3.11
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        run: python -m pip install -e ".[dev,postgres]"
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Check README VINCTOR_* names exist in the shipped artifact
+        # Named separately from the suite so this failure is legible in the job
+        # list: the README has twice documented an environment variable the
+        # published wheel never reads.
+        run: >-
+          python -m pytest -q
+          tests/test_readme_env_vars_exist_in_artifact.py
+
+      - name: Run keyed HTTP concurrency carrier
+        run: >-
+          python -m pytest -q
+          tests/test_idempotency_http_concurrency_live.py
+
+      - name: Run E2E demo
+        run: python demo/boundary_registry_core_e2e.py
+
+      - name: Run in-memory service demo
+        run: python demo/in_memory_v1_service_demo.py
+
+      - name: Run SQLite grant/audit demo
+        run: python demo/sqlite_grant_audit_demo.py
+
+      - name: Run SQLite boundary registry demo
+        run: python demo/sqlite_boundary_registry_demo.py
+
+      - name: Run SQLite V1 service demo
+        run: python demo/sqlite_v1_service_demo.py
+
+      - name: Run V1 HTTP contract demo
+        run: python demo/v1_http_contract_demo.py
+
+      - name: Run local V1 HTTP service demo
+        run: python demo/local_v1_http_service_demo.py
+
+      - name: Run boundary admin HTTP demo
+        run: python demo/boundary_admin_http_demo.py
+
+      - name: Run local service launch helper demo
+        run: python demo/local_service_launch_helper_demo.py
+
+      - name: Run local service bootstrap demo
+        run: python demo/local_service_bootstrap_demo.py
+
+      - name: Run Ruff
+        run: ruff check .
+
+      - name: Build package
+        run: python -m build
+
+      - name: Check whitespace
+        run: git diff --check
+
+  bare-install:
+    # The other jobs install ".[dev,postgres]", so neither can reach the
+    # configuration a plain "pip install vinctor-core" produces. PKA-167 shipped
+    # a package that could not run a single command in that configuration and
+    # merged on a green CI. This job is the only thing that sees it.
+    name: Bare install (no extras)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.11"
+
+      - name: Build wheel
+        run: |
+          python -m pip install build
+          python -m build --wheel
+
+      - name: Install the wheel into a clean venv with no extras
+        run: |
+          python -m venv /tmp/bare-install
+          /tmp/bare-install/bin/pip install dist/*.whl
+
+      - name: Assert the optional extras really are absent
+        # Without this the job silently stops testing anything the day a
+        # transitive dependency starts pulling psycopg in.
+        run: |
+          for module in psycopg mcp jwt; do
+            if /tmp/bare-install/bin/python -c "import $module" 2>/dev/null; then
+              echo "::error::$module is installed; this job no longer tests a bare install"
+              exit 1
+            fi
+          done
+
+      - name: Run the console scripts
+        run: |
+          /tmp/bare-install/bin/vinctor --help
+          /tmp/bare-install/bin/vinctor-mcp-server --help
+
+      - name: Import every module in the distribution
+        run: |
+          /tmp/bare-install/bin/python - <<'PY'
+          import importlib
+          import pkgutil
+          import sys
+
+          failures = []
+          imported = 0
+          for package_name in ("vinctor_core", "vinctor_service", "vinctor_mcp_server"):
+              package = importlib.import_module(package_name)
+              for module in pkgutil.walk_packages(package.__path__, package_name + "."):
+                  imported += 1
+                  try:
+                      importlib.import_module(module.name)
+                  except Exception as exc:
+                      failures.append(f"{module.name}: {type(exc).__name__}: {exc}")
+
+          print(f"imported {imported} modules")
+          for failure in failures:
+              print(f"::error::{failure}")
+          sys.exit(1 if failures else 0)
+          PY
+
+      - name: Serve and enforce on SQLite with no extras installed
+        run: /tmp/bare-install/bin/python demo/sqlite_v1_service_demo.py
+
+  postgres:
+    name: Postgres 16 storage contract
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: vinctor
+          POSTGRES_PASSWORD: vinctor-test
+          POSTGRES_DB: vinctor_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vinctor -d vinctor_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      VINCTOR_TEST_POSTGRES_DSN: postgresql://vinctor:vinctor-test@127.0.0.1:5432/vinctor_test
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Postgres test dependencies
+        run: python -m pip install -e ".[dev,postgres]"
+
+      - name: Run Postgres storage contract
+        run: >-
+          python -m pytest -q
+          tests/test_postgres_idempotency_schema.py::test_postgres_migration_8_has_exact_tables_constraints_index_and_foreign_keys
+          tests/test_postgres_idempotency_schema.py::test_postgres_keyring_bootstrap_converges_across_connections
+          tests/test_postgres_idempotency_schema.py::test_postgres_keyring_bootstrap_conflict_is_atomic_and_redacted
+          tests/test_postgres_idempotency_schema.py::test_postgres_signed_advisory_key_is_stable_and_domain_separated
+          tests/test_postgres_idempotency_audit.py::test_postgres_concurrent_first_misses_across_processes_run_one_callback
+          tests/test_postgres_idempotency_audit.py::test_postgres_best_effort_audit_savepoint_does_not_poison_outer_transaction
+          tests/test_postgres_idempotency_audit.py::test_postgres_record_rejection_cannot_fall_back_to_self_suppressing_write
+          tests/test_postgres_idempotency_audit.py::test_postgres_best_effort_savepoint_schedules_no_anchor_or_export_after_failure
+          tests/test_postgres_idempotency_audit.py::test_postgres_authoritative_audit_failure_rolls_back_state_audit_and_result
+          tests/test_postgres_idempotency_audit.py::test_postgres_slot_guard_never_exceeds_hard_limit_across_connections
+          tests/test_postgres_idempotency_audit.py::test_postgres_nonce_collision_commits_disable_on_fresh_transaction
+          tests/test_postgres_idempotency_audit.py::test_postgres_gc_uses_skip_locked_and_deletes_at_most_100
+          tests/test_postgres_idempotency_limits_lifecycle.py::test_postgres_lifecycle_uses_db_time_and_preserves_retired_tombstone
+          tests/test_postgres_service_writer_attestation_live.py::test_real_postgres_service_blocks_drain_and_retire_until_idempotent_close
+          tests/test_postgres_service_writer_attestation_live.py::test_real_postgres_replacement_service_does_not_block_old_lifecycle
+          tests/test_postgres_service_writer_attestation_live.py::test_real_postgres_late_old_constructor_revalidates_after_target_guard
+          tests/test_postgres_service_writer_attestation_live.py::test_postgres_ambiguity_recovery_restores_writer_lock_before_publish
+          tests/test_postgres_idempotency_recovery.py::test_postgres_reservation_commit_ack_loss_quarantines_connection_before_callback
+          tests/test_postgres_idempotency_recovery.py::test_postgres_business_commit_ack_loss_recovers_only_via_fresh_primary_lookup
+          tests/test_postgres_idempotency_recovery.py::test_postgres_unknown_commit_happened_replays_and_did_not_run_callback_twice
+          tests/test_postgres_idempotency_recovery.py::test_postgres_unknown_commit_not_happened_allows_fresh_reservation
+          tests/test_postgres_idempotency_recovery.py::test_postgres_barrier_ambiguity_may_recover_but_business_callback_may_not
+          tests/test_postgres_idempotency_schema.py::test_postgres_7_upgrades_to_8_and_repeated_8_start_is_idempotent
+          tests/test_postgres_ambiguous_connection.py
+          tests/test_postgres_idempotency_phase01.py
+          tests/test_postgres_idempotency_phase01_replay.py
+          tests/test_postgres_idempotency_phase01_lifecycle.py
+          tests/test_postgres_idempotency_phase01_reservation.py
+          tests/test_postgres_idempotency_expiry_auth_lifecycle.py
+          tests/test_postgres_idempotency_reservation_consumption.py
+          tests/test_postgres_idempotency_reservation_consumption_live.py
+          tests/test_postgres_idempotency_reservation_claim.py
+          tests/test_idempotency_reservation_consumption_migration.py
+          tests/test_postgres_idempotency_reservation_owner.py
+          tests/test_postgres_idempotency_phase2_faults.py
+          tests/test_postgres_idempotency_recovery_live.py
+          tests/test_postgres_idempotency_http_composition.py
+          tests/test_postgres_idempotency_http_terminal_matrix.py
+          tests/test_postgres_recovery_live.py
+          tests/test_postgres_storage.py
+          tests/test_idempotency_rng_failure.py
+          tests/test_storage_ops.py

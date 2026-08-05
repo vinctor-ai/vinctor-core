@@ -1,0 +1,14 @@
+version: 1
+workspace_id: ws_local
+agent_bounds:
+  - agent_id: agent_local
+    scopes:
+      - write:repo/vinctor-core/*
+auto_approval_rules:
+  - rule_id: apr_core_repo_docs
+    name: Core repo docs auto approval
+    target_agent_id: agent_local
+    allowed_scopes:
+      - write:repo/vinctor-core/docs/*
+    max_ttl: 30m
+    status: active
